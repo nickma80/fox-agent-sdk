@@ -1,0 +1,11 @@
+[package]
+name = "fox-agent-swarm"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+serde.workspace = true
+tokio.workspace = true
+
+fox-agent-tools = { path = "../fox-agent-tools" }

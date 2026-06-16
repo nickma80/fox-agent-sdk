@@ -1,0 +1,106 @@
+use fox_agent_core::{ContextInfo, PromptBuilder as CorePromptBuilder, SkillInfo, SplitPrompt};
+use std::path::Path;
+
+/// SDK-level prompt builder that wraps the core PromptBuilder with
+/// SDK-specific sections (planning context, session identity, AGENTS.md).
+#[derive(Clone)]
+pub struct PromptBuilder {
+    core: CorePromptBuilder,
+}
+
+impl PromptBuilder {
+    /// Create a new SDK PromptBuilder with version metadata.
+    pub fn new(version: impl Into<String>, git_hash: impl Into<String>) -> Self {
+        Self {
+            core: CorePromptBuilder::new(version, git_hash),
+        }
+    }
+
+    /// Build a split prompt from all available sections.
+    ///
+    /// Sections routed to `static_part` (cacheable):
+    /// - system template
+    /// - session context (date, OS, hardware, git)
+    /// - AGENTS.md (project + global)
+    /// - prompt overlay
+    /// - skills list
+    ///
+    /// Sections routed to `dynamic_part` (per-turn):
+    /// - planning context (todos, plan, goals)
+    /// - memory injection
+    /// - active skill prompt
+    pub fn build_split(
+        &self,
+        session_id: &str,
+        working_dir: Option<&Path>,
+        skills: &[SkillInfo],
+        memory_injection: Option<&str>,
+        active_skill: Option<&str>,
+    ) -> (SplitPrompt, ContextInfo) {
+        // === Dynamic sections (per-turn) ===
+        let mut dynamic_sections: Vec<String> = Vec::new();
+
+        let planning_context = fox_agent_tools::render_planning_context(session_id);
+        if !planning_context.is_empty() {
+            dynamic_sections.push(format!("# Planning Context\n\n{}", planning_context));
+        }
+
+        if let Some(mem) = memory_injection {
+            dynamic_sections.push(mem.to_string());
+        }
+
+        if let Some(skill) = active_skill {
+            dynamic_sections.push(format!("# Active Skill\n\n{}", skill));
+        }
+
+        // === Static sections (cacheable) ===
+        let mut static_sections: Vec<String> = Vec::new();
+
+        // System template
+        static_sections.push(self.core.system_template().to_string());
+
+        // Session context
+        let session_ctx = self.core.build_session_context(working_dir);
+        static_sections.push(session_ctx);
+
+        // AGENTS.md
+        if let (Some(content), _info) = CorePromptBuilder::load_agents_md(working_dir) {
+            static_sections.push(content);
+        }
+
+        // Prompt overlay
+        if let (Some(content), _size) = CorePromptBuilder::load_prompt_overlay(working_dir) {
+            static_sections.push(content);
+        }
+
+        // Skills list
+        if !skills.is_empty() {
+            let mut section =
+                "# Available Skills\n\nYou have access to the following skills that the user can invoke with `/skillname`:\n"
+                    .to_string();
+            for skill in skills {
+                section.push_str(&format!("\n- `/{} ` - {}", skill.name, skill.description));
+            }
+            section.push_str(
+                "\n\nWhen a user asks about available skills or capabilities, mention these skills.",
+            );
+            static_sections.push(section);
+        }
+
+        let split = self.core.build_split(static_sections, dynamic_sections);
+
+        // Build ContextInfo
+        let mut info = ContextInfo {
+            system_prompt_chars: self.core.system_template().len(),
+            ..Default::default()
+        };
+        info.total_chars = split.chars();
+
+        (split, info)
+    }
+
+    /// Access the underlying core PromptBuilder.
+    pub fn core(&self) -> &CorePromptBuilder {
+        &self.core
+    }
+}

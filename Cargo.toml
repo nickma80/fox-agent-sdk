@@ -1,0 +1,66 @@
+[workspace]
+members = [
+    "crates/fox-agent-core",
+    "crates/fox-agent-providers",
+    "crates/fox-agent-tools",
+    "crates/fox-agent-swarm",
+    "crates/fox-agent-sdk",
+]
+resolver = "3"
+
+# Allow examples to use the root package as a binary target
+[package]
+name = "fox-agent-sdk-workspace"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[[example]]
+name = "simple_agent"
+path = "examples/simple_agent.rs"
+
+[[example]]
+name = "multi_provider"
+path = "examples/multi_provider.rs"
+
+[[example]]
+name = "swarm_demo"
+path = "examples/swarm_demo.rs"
+
+[[example]]
+name = "custom_tool"
+path = "examples/custom_tool.rs"
+
+[dependencies]
+fox-agent-sdk = { path = "crates/fox-agent-sdk" }
+async-trait.workspace = true
+tokio.workspace = true
+serde_json.workspace = true
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "MIT OR Apache-2.0"
+
+[workspace.dependencies]
+async-stream = "0.3.6"
+anyhow = "1.0.99"
+async-trait = "0.1.89"
+futures = "0.3.31"
+reqwest = { version = "0.12.23", default-features = false, features = ["json", "rustls-tls", "stream"] }
+serde = { version = "1.0.219", features = ["derive"] }
+serde_json = "1.0.143"
+thiserror = "2.0.16"
+tokio = { version = "1.47.1", features = ["fs", "io-util", "macros", "process", "rt-multi-thread", "sync", "time"] }
+uuid = { version = "1.18.0", features = ["v4"] }
+tracing = "0.1.41"
+base64 = "0.22.1"
+chrono = { version = "0.4.41", features = ["serde"] }
+glob = "0.3.2"
+ignore = "0.4.23"
+regex = "1.11.1"
+similar = "2.7.0"
+urlencoding = "2.1.3"
+dirs = "5.0.1"
+agentgrep = { git = "https://github.com/1jehuang/agentgrep.git", tag = "v0.1.2" }

@@ -1,0 +1,20 @@
+[package]
+name = "fox-agent-providers"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+async-stream.workspace = true
+async-trait.workspace = true
+futures.workspace = true
+reqwest.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tokio.workspace = true
+
+fox-agent-core = { path = "../fox-agent-core" }
+
+[features]
+default = []
+mock = []
