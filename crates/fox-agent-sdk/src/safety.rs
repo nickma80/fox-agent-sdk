@@ -102,6 +102,7 @@ mod tests {
             tool_denylist: Some(vec!["bash".to_string()]),
             tool_allowlist: None,
             default_policy: DefaultSafetyPolicy::Allow,
+            ..Default::default()
         };
         let system = SafetySystem::new(cfg);
         let result = system.check("bash", &serde_json::json!({}));
@@ -114,6 +115,7 @@ mod tests {
             tool_allowlist: Some(vec!["read".to_string(), "grep".to_string()]),
             tool_denylist: None,
             default_policy: DefaultSafetyPolicy::Deny,
+            ..Default::default()
         };
         let system = SafetySystem::new(cfg);
         let result = system.check("read", &serde_json::json!({}));
@@ -126,6 +128,7 @@ mod tests {
             tool_allowlist: Some(vec!["read".to_string(), "grep".to_string()]),
             tool_denylist: None,
             default_policy: DefaultSafetyPolicy::Deny,
+            ..Default::default()
         };
         let system = SafetySystem::new(cfg);
         let result = system.check("write", &serde_json::json!({}));
@@ -138,6 +141,7 @@ mod tests {
             tool_allowlist: None,
             tool_denylist: None,
             default_policy: DefaultSafetyPolicy::Confirm,
+            ..Default::default()
         };
         let system = SafetySystem::new(cfg);
         let result = system.check("read", &serde_json::json!({}));
@@ -150,6 +154,7 @@ mod tests {
             tool_allowlist: None,
             tool_denylist: None,
             default_policy: DefaultSafetyPolicy::Deny,
+            ..Default::default()
         };
         let system = SafetySystem::new(cfg);
         let result = system.check("read", &serde_json::json!({}));
@@ -163,6 +168,7 @@ mod tests {
             tool_allowlist: Some(vec!["bash".to_string()]),
             tool_denylist: Some(vec!["bash".to_string()]),
             default_policy: DefaultSafetyPolicy::Allow,
+            ..Default::default()
         };
         let system = SafetySystem::new(cfg);
         let result = system.check("bash", &serde_json::json!({}));

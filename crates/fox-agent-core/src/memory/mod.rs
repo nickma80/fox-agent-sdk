@@ -40,7 +40,7 @@ use std::sync::Arc;
 use tracing::warn;
 
 /// Events emitted by the memory pipeline.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub enum MemoryStateEvent {
     InjectionComputed { count: u32, memory_ids: Vec<String>, prompt_chars: usize },
     InjectionConsumed { count: u32, memory_ids: Vec<String>, prompt_chars: usize },

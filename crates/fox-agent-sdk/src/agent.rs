@@ -62,12 +62,16 @@ impl From<PendingToolCallSnapshot> for PendingToolCall {
 // Agent — the main entry point for running the Agent Loop
 // ---------------------------------------------------------------------------
 
+use crate::governance::GovernanceGuard;
+
 pub struct Agent {
     pub model: Arc<dyn Model>,
     pub harness: Harness,
     pending_permission: Option<PermissionRequest>,
     pending_tool_calls: Vec<PendingToolCall>,
     next_turn_id: u64,
+    /// Optional budget governance guard.
+    governance: Option<GovernanceGuard>,
 }
 
 impl Agent {
@@ -78,7 +82,18 @@ impl Agent {
             pending_permission: None,
             pending_tool_calls: Vec::new(),
             next_turn_id: 1,
+            governance: None,
         }
+    }
+
+    /// Attach a budget governance guard.
+    pub fn set_governance(&mut self, guard: GovernanceGuard) {
+        self.governance = Some(guard);
+    }
+
+    /// Get the budget governance guard, if attached.
+    pub fn governance(&self) -> Option<&GovernanceGuard> {
+        self.governance.as_ref()
     }
 
     pub fn harness(&self) -> &Harness { &self.harness }
@@ -139,6 +154,7 @@ impl Agent {
                 .map(PendingToolCall::from)
                 .collect(),
             next_turn_id: snapshot.next_turn_id.max(1),
+            governance: None,
         }
     }
 
@@ -174,6 +190,15 @@ impl Agent {
         user_message: &str,
         event_tx: &AgentEventTx,
     ) -> Result<TurnOutcome, AgentError> {
+        // Governance: check budget before starting
+        if let Some(ref guard) = self.governance {
+            let snap = guard.snapshot().await;
+            if let Some(msg) = snap.exceeds_budget(guard.budget()) {
+                return Err(AgentError::BudgetExceeded { message: msg });
+            }
+            guard.turn_begin().await;
+        }
+
         info!(msg_preview = %truncate(user_message, 120), "Processing user message");
         self.pending_permission = None;
         self.pending_tool_calls.clear();
@@ -485,7 +510,16 @@ impl Agent {
                             ?usage.cache_creation_input_tokens,
                             "Token usage"
                         );
-                        let _ = event_tx.send(AgentEvent::ModelUsage { usage }).await;
+                        let _ = event_tx.send(AgentEvent::ModelUsage { usage: usage.clone() }).await;
+
+                        // Governance: record usage & check budget
+                        if let Some(ref guard) = self.governance {
+                            let cost = crate::governance::estimate_cost_cents(
+                                &self.model.model_id(), &usage);
+                            if let Err(msg) = guard.record_usage(&usage, 0, cost).await {
+                                return Err(AgentError::BudgetExceeded { message: msg });
+                            }
+                        }
                     }
                     StreamEvent::ToolUse { id, name, input } => {
                         info!(

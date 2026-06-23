@@ -521,6 +521,7 @@ mod sdk_tests {
                     default_policy: DefaultSafetyPolicy::Allow,
                     tool_denylist: Some(vec!["echo".to_string()]),
                     tool_allowlist: None,
+                    ..Default::default()
                 },
                 ..Default::default()
             })

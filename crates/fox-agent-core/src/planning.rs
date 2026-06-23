@@ -637,7 +637,7 @@ fn snapshot_session_id<'a>(session_id: &'a str, scope: GoalScope) -> &'a str {
     }
 }
 
-fn now_secs() -> u64 {
+pub fn now_secs() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|duration| duration.as_secs())

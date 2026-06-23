@@ -1,4 +1,6 @@
 /// SDK top-level configuration.
+use serde::{Deserialize, Serialize};
+
 #[derive(Debug, Clone)]
 pub struct FoxAgentSdkConfig {
     /// Memory system configuration
@@ -13,6 +15,9 @@ pub struct FoxAgentSdkConfig {
     pub planning_storage_dir: Option<std::path::PathBuf>,
     /// Whether to persist a fresh session snapshot at key lifecycle points.
     pub auto_snapshot: bool,
+
+    /// Budget governance configuration.
+    pub budget: BudgetConfig,
 }
 
 impl Default for FoxAgentSdkConfig {
@@ -24,6 +29,7 @@ impl Default for FoxAgentSdkConfig {
             session_storage_dir: None,
             planning_storage_dir: None,
             auto_snapshot: true,
+            budget: BudgetConfig::default(),
         }
     }
 }
@@ -211,6 +217,13 @@ pub struct SafetyConfig {
 
     /// Default policy for tools not covered by allowlist or denylist.
     pub default_policy: DefaultSafetyPolicy,
+
+    /// Approval cache configuration.
+    pub approval_cache: crate::event::ApprovalCacheConfig,
+
+    /// Timeout in seconds before a pending permission request is auto-denied.
+    /// 0 means no timeout.
+    pub approval_timeout_secs: u64,
 }
 
 impl Default for SafetyConfig {
@@ -219,6 +232,8 @@ impl Default for SafetyConfig {
             tool_allowlist: None,
             tool_denylist: None,
             default_policy: DefaultSafetyPolicy::Allow,
+            approval_cache: crate::event::ApprovalCacheConfig::default(),
+            approval_timeout_secs: 120,
         }
     }
 }
@@ -363,5 +378,133 @@ impl WorkspaceSandbox {
                 root: self.root_dir.clone(),
             }),
         }
+    }
+}
+
+// ── Budget governance ──
+
+/// Budget configuration for governing agent resource consumption.
+///
+/// When any limit is exceeded, the agent returns a structured error
+/// instead of silently continuing.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BudgetConfig {
+    /// Maximum total tokens (input + output) per session.
+    /// When exceeded, `ErrorKind::BudgetExceeded` is returned.
+    #[serde(default)]
+    pub token_budget: Option<u64>,
+
+    /// Maximum estimated cost in USD cents per session.
+    /// When exceeded, `ErrorKind::BudgetExceeded` is returned.
+    #[serde(default)]
+    pub cost_budget_cents: Option<u64>,
+
+    /// Provider request timeout in seconds.
+    /// When exceeded, the HTTP request is aborted.
+    #[serde(default = "default_provider_timeout_secs")]
+    pub provider_timeout_secs: u64,
+
+    /// Number of retries on transient provider errors.
+    #[serde(default = "default_provider_retries")]
+    pub provider_retries: u32,
+
+    /// Tool execution timeout in seconds per invocation.
+    /// When exceeded, the tool is killed and `ToolError::Timeout` is returned.
+    #[serde(default = "default_tool_timeout_secs")]
+    pub tool_timeout_secs: u64,
+
+    /// Maximum parallel tool invocations allowed.
+    #[serde(default)]
+    pub tool_concurrency_limit: usize,
+
+    /// Maximum number of turns per session (0 = unlimited).
+    #[serde(default)]
+    pub max_turns: u64,
+}
+
+fn default_provider_timeout_secs() -> u64 {
+    120
+}
+fn default_provider_retries() -> u32 {
+    2
+}
+fn default_tool_timeout_secs() -> u64 {
+    60
+}
+
+impl Default for BudgetConfig {
+    fn default() -> Self {
+        Self {
+            token_budget: None,
+            cost_budget_cents: None,
+            provider_timeout_secs: default_provider_timeout_secs(),
+            provider_retries: default_provider_retries(),
+            tool_timeout_secs: default_tool_timeout_secs(),
+            tool_concurrency_limit: 8,
+            max_turns: 0,
+        }
+    }
+}
+
+/// Accumulated metrics for an agent session.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct MetricsSnapshot {
+    pub total_tokens: u64,
+    pub total_input_tokens: u64,
+    pub total_output_tokens: u64,
+    pub estimated_cost_cents: u64,
+    pub tool_calls: u64,
+    pub turns_completed: u64,
+    pub total_latency_ms: u64,
+    pub token_usage_history: Vec<TokenUsageEntry>,
+}
+
+/// A single token usage record with timing.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TokenUsageEntry {
+    pub timestamp: u64,
+    pub input_tokens: u32,
+    pub output_tokens: u32,
+    pub latency_ms: u64,
+    pub cost_cents: u64,
+}
+
+impl MetricsSnapshot {
+    /// Record a model usage event.
+    pub fn record(&mut self, usage: &crate::provider::TokenUsage, latency_ms: u64, cost_cents: u64) {
+        self.total_input_tokens += usage.input_tokens as u64;
+        self.total_output_tokens += usage.output_tokens as u64;
+        self.total_tokens = self.total_input_tokens + self.total_output_tokens;
+        self.estimated_cost_cents += cost_cents;
+        self.tool_calls += 1; // increment tool call count per usage record
+        self.total_latency_ms += latency_ms;
+        self.token_usage_history.push(TokenUsageEntry {
+            timestamp: crate::planning::now_secs(),
+            input_tokens: usage.input_tokens,
+            output_tokens: usage.output_tokens,
+            latency_ms,
+            cost_cents,
+        });
+    }
+
+    /// Check whether the accumulated metrics exceed the given budget.
+    pub fn exceeds_budget(&self, budget: &BudgetConfig) -> Option<String> {
+        if let Some(limit) = budget.token_budget {
+            if self.total_tokens > limit {
+                return Some(format!(
+                    "token budget exceeded: {}/{} tokens",
+                    self.total_tokens, limit
+                ));
+            }
+        }
+        if let Some(limit) = budget.cost_budget_cents {
+            if self.estimated_cost_cents > limit {
+                return Some(format!(
+                    "cost budget exceeded: {}/{} cents",
+                    self.estimated_cost_cents, limit
+                ));
+            }
+        }
+        None
     }
 }
