@@ -86,6 +86,14 @@ struct MemoryInput {
     limit: Option<usize>,
     #[serde(default)]
     mode: Option<String>,
+    #[serde(default)]
+    file_path: Option<String>,
+    #[serde(default)]
+    merge: Option<bool>,
+    #[serde(default)]
+    max_age_hours: Option<u64>,
+    #[serde(default)]
+    replacement: Option<String>,
 }
 
 #[async_trait]
@@ -95,7 +103,7 @@ impl Tool for MemoryTool {
     }
 
     fn description(&self) -> &str {
-        "Manage cross-session memory. Supports remember, recall, search, list, forget, tag, link, related, stats."
+        "Manage cross-session memory. Supports remember, recall, search, list, forget, disable, enable, redact, tag, link, related, stats, reembed, reindex, refresh_clusters, rebuild_ann, export, import, compact."
     }
 
     fn parameters_schema(&self) -> Value {
@@ -104,7 +112,7 @@ impl Tool for MemoryTool {
             "properties": {
                 "action": {
                     "type": "string",
-                    "enum": ["remember", "recall", "search", "list", "forget", "tag", "link", "related", "stats"],
+                    "enum": ["remember", "recall", "search", "list", "forget", "disable", "enable", "redact", "tag", "link", "related", "stats", "reembed", "reindex", "refresh_clusters", "rebuild_ann", "export", "import", "compact"],
                     "description": "Action to perform."
                 },
                 "content": { "type": "string", "description": "Content to remember (for remember action)." },
@@ -118,7 +126,11 @@ impl Tool for MemoryTool {
                 "weight": { "type": "number", "description": "Link weight 0.0-1.0 (default: 0.5)." },
                 "depth": { "type": "integer", "description": "Graph traversal depth (default: 2)." },
                 "limit": { "type": "integer", "description": "Max results (default: 10)." },
-                "mode": { "type": "string", "enum": ["recent", "keyword", "cascade"], "description": "Recall mode (default: keyword)." }
+                "mode": { "type": "string", "enum": ["recent", "keyword", "semantic", "cascade"], "description": "Recall mode (default: keyword)." },
+                "file_path": { "type": "string", "description": "Path used by export/import actions." },
+                "merge": { "type": "boolean", "description": "Whether import should merge with existing memories (default: true)." },
+                "max_age_hours": { "type": "integer", "description": "Max age hours for compact/gc action (default: 720)." },
+                "replacement": { "type": "string", "description": "Replacement content for redact action." }
             },
             "required": ["action"]
         })
@@ -173,13 +185,14 @@ impl Tool for MemoryTool {
                 let mode = match input.mode.as_deref().unwrap_or("keyword") {
                     "recent" => RecallMode::Recent,
                     "keyword" => RecallMode::Keyword,
-                    "semantic" | "cascade" => RecallMode::Cascade,
+                    "semantic" => RecallMode::Semantic,
+                    "cascade" => RecallMode::Cascade,
                     other => return Err(ToolError::Message {
-                        message: format!("Unknown mode: {other}. Use recent, keyword, or cascade"),
+                        message: format!("Unknown mode: {other}. Use recent, keyword, semantic, or cascade"),
                     }),
                 };
 
-                let results = manager.recall(query, limit, mode, scope).map_err(|e| ToolError::Message { message: e })?;
+                let results = manager.recall_detailed(query, limit, mode, scope).map_err(|e| ToolError::Message { message: e })?;
 
                 if results.is_empty() {
                     return Ok(ToolOutput {
@@ -193,19 +206,29 @@ impl Tool for MemoryTool {
                 }
 
                 let mut out = format!("Found {} memories:\n\n", results.len());
-                for (entry, score) in &results {
+                for hit in &results {
+                    let entry = &hit.entry;
                     let tags = if entry.tags.is_empty() {
                         String::new()
                     } else {
                         format!(" [{}]", entry.tags.join(", "))
                     };
                     out.push_str(&format!(
-                        "- [{}] {}{}\n  id: {} (score: {:.0}%)\n\n",
-                        entry.category, entry.content, tags, entry.id, score * 100.0
+                        "- [{}] {}{}\n  id: {} (score: {:.0}%, source: {:?})\n",
+                        entry.category, entry.content, tags, entry.id, hit.score * 100.0, hit.retrieval_source
+                    ));
+                    out.push_str(&format!(
+                        "  breakdown: semantic={:?}, keyword={:?}, graph={:?}, recency={:.2}, trust={:.2}, final={:.2}\n\n",
+                        hit.score_breakdown.semantic_score,
+                        hit.score_breakdown.keyword_score,
+                        hit.score_breakdown.graph_score,
+                        hit.score_breakdown.recency_score,
+                        hit.score_breakdown.trust_score,
+                        hit.score_breakdown.final_score
                     ));
                 }
 
-                let ids: Vec<String> = results.iter().map(|(e, _)| e.id.clone()).collect();
+                let ids: Vec<String> = results.iter().map(|hit| hit.entry.id.clone()).collect();
                 Ok(ToolOutput {
                     text: out,
                     is_error: false,
@@ -213,6 +236,19 @@ impl Tool for MemoryTool {
                         "action": "recall",
                         "count": results.len(),
                         "memory_ids": ids,
+                        "results": results.iter().map(|hit| json!({
+                            "id": hit.entry.id,
+                            "score": hit.score,
+                            "source": format!("{:?}", hit.retrieval_source),
+                            "score_breakdown": {
+                                "semantic": hit.score_breakdown.semantic_score,
+                                "keyword": hit.score_breakdown.keyword_score,
+                                "graph": hit.score_breakdown.graph_score,
+                                "recency": hit.score_breakdown.recency_score,
+                                "trust": hit.score_breakdown.trust_score,
+                                "final": hit.score_breakdown.final_score
+                            }
+                        })).collect::<Vec<_>>(),
                     })),
                 })
             }
@@ -274,6 +310,54 @@ impl Tool for MemoryTool {
                     text: if found { format!("Forgot: {id}") } else { format!("Not found: {id}") },
                     is_error: false,
                     json: Some(json!({ "action": "forget", "id": id, "found": found })),
+                })
+            }
+
+            "disable" => {
+                let id = input.id.ok_or_else(|| ToolError::Message {
+                    message: "id required for disable action".to_string(),
+                })?;
+                let found = manager.disable_memory(&id).map_err(|e| ToolError::Message { message: e })?;
+                Ok(ToolOutput {
+                    text: if found { format!("Disabled memory: {id}") } else { format!("Not found: {id}") },
+                    is_error: false,
+                    json: Some(json!({ "action": "disable", "id": id, "found": found })),
+                })
+            }
+
+            "enable" => {
+                let id = input.id.ok_or_else(|| ToolError::Message {
+                    message: "id required for enable action".to_string(),
+                })?;
+                let found = manager.enable_memory(&id).map_err(|e| ToolError::Message { message: e })?;
+                Ok(ToolOutput {
+                    text: if found { format!("Enabled memory: {id}") } else { format!("Not found: {id}") },
+                    is_error: false,
+                    json: Some(json!({ "action": "enable", "id": id, "found": found })),
+                })
+            }
+
+            "redact" => {
+                let id = input.id.ok_or_else(|| ToolError::Message {
+                    message: "id required for redact action".to_string(),
+                })?;
+                let replacement = input.replacement.unwrap_or_else(|| "[redacted]".to_string());
+                let found = manager
+                    .redact_memory(&id, &replacement)
+                    .map_err(|e| ToolError::Message { message: e })?;
+                Ok(ToolOutput {
+                    text: if found {
+                        format!("Redacted memory {id}.")
+                    } else {
+                        format!("Not found: {id}")
+                    },
+                    is_error: false,
+                    json: Some(json!({
+                        "action": "redact",
+                        "id": id,
+                        "found": found,
+                        "replacement": replacement,
+                    })),
                 })
             }
 
@@ -348,6 +432,133 @@ impl Tool for MemoryTool {
                         "tags": stats.1,
                         "edges": stats.2,
                         "clusters": stats.3,
+                    })),
+                })
+            }
+
+            "reembed" => {
+                let scope = Self::parse_scope(input.scope.as_deref(), MemoryScope::All)?;
+                let count = manager.reembed(scope).map_err(|e| ToolError::Message { message: e })?;
+                Ok(ToolOutput {
+                    text: format!("Re-embedded {count} memories."),
+                    is_error: false,
+                    json: Some(json!({
+                        "action": "reembed",
+                        "count": count,
+                    })),
+                })
+            }
+
+            "reindex" => {
+                let scope = Self::parse_scope(input.scope.as_deref(), MemoryScope::All)?;
+                let count = manager.reindex(scope).map_err(|e| ToolError::Message { message: e })?;
+                Ok(ToolOutput {
+                    text: format!("Reindexed {count} memories."),
+                    is_error: false,
+                    json: Some(json!({
+                        "action": "reindex",
+                        "count": count,
+                    })),
+                })
+            }
+
+            "refresh_clusters" => {
+                let scope = Self::parse_scope(input.scope.as_deref(), MemoryScope::All)?;
+                let stats = manager.refresh_clusters(scope).map_err(|e| ToolError::Message { message: e })?;
+                Ok(ToolOutput {
+                    text: format!(
+                        "Refreshed clusters. project_clusters={}, global_clusters={}",
+                        stats.project_clusters, stats.global_clusters
+                    ),
+                    is_error: false,
+                    json: Some(json!({
+                        "action": "refresh_clusters",
+                        "project_clusters": stats.project_clusters,
+                        "global_clusters": stats.global_clusters,
+                    })),
+                })
+            }
+
+            "rebuild_ann" => {
+                let scope = Self::parse_scope(input.scope.as_deref(), MemoryScope::All)?;
+                let stats = manager.rebuild_ann(scope).map_err(|e| ToolError::Message { message: e })?;
+                Ok(ToolOutput {
+                    text: format!(
+                        "Rebuilt ANN indexes. project_vectors={}, global_vectors={}",
+                        stats.project_vectors, stats.global_vectors
+                    ),
+                    is_error: false,
+                    json: Some(json!({
+                        "action": "rebuild_ann",
+                        "project_vectors": stats.project_vectors,
+                        "global_vectors": stats.global_vectors,
+                    })),
+                })
+            }
+
+            "export" => {
+                let scope = Self::parse_scope(input.scope.as_deref(), MemoryScope::All)?;
+                let file_path = input.file_path.ok_or_else(|| ToolError::Message {
+                    message: "file_path required for export action".to_string(),
+                })?;
+                let stats = manager
+                    .export_to_path(scope, std::path::Path::new(&file_path))
+                    .map_err(|e| ToolError::Message { message: e })?;
+                Ok(ToolOutput {
+                    text: format!(
+                        "Exported memories to {} (project={}, global={}).",
+                        file_path, stats.project_memories, stats.global_memories
+                    ),
+                    is_error: false,
+                    json: Some(json!({
+                        "action": "export",
+                        "file_path": file_path,
+                        "project_memories": stats.project_memories,
+                        "global_memories": stats.global_memories,
+                    })),
+                })
+            }
+
+            "import" => {
+                let file_path = input.file_path.ok_or_else(|| ToolError::Message {
+                    message: "file_path required for import action".to_string(),
+                })?;
+                let merge = input.merge.unwrap_or(true);
+                let stats = manager
+                    .import_from_path(std::path::Path::new(&file_path), merge)
+                    .map_err(|e| ToolError::Message { message: e })?;
+                Ok(ToolOutput {
+                    text: format!(
+                        "Imported memories from {} (merge={}) -> project={}, global={}.",
+                        file_path, merge, stats.project_memories, stats.global_memories
+                    ),
+                    is_error: false,
+                    json: Some(json!({
+                        "action": "import",
+                        "file_path": file_path,
+                        "merge": merge,
+                        "project_memories": stats.project_memories,
+                        "global_memories": stats.global_memories,
+                    })),
+                })
+            }
+
+            "compact" => {
+                let max_age_hours = input.max_age_hours.unwrap_or(24 * 30);
+                let scope = Self::parse_scope(input.scope.as_deref(), MemoryScope::All)?;
+                let compact = manager.compact(scope, max_age_hours).map_err(|e| ToolError::Message { message: e })?;
+                Ok(ToolOutput {
+                    text: format!(
+                        "Compacted memories. project_removed={}, global_removed={}, removed_files={}, scanned={}.",
+                        compact.project_removed, compact.global_removed, compact.removed_files, compact.total_scanned
+                    ),
+                    is_error: false,
+                    json: Some(json!({
+                        "action": "compact",
+                        "project_removed": compact.project_removed,
+                        "global_removed": compact.global_removed,
+                        "removed_files": compact.removed_files,
+                        "total_scanned": compact.total_scanned,
                     })),
                 })
             }

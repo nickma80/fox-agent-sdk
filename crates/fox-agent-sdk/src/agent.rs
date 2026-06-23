@@ -468,6 +468,11 @@ impl Agent {
 
                 // Pure text response — save and return.
                 self.push_assistant_message(final_text.clone(), thinking_text.clone());
+                self.harness.memory_manager.trigger_ingestion_for_turn(
+                    self.harness.session_state.messages.clone(),
+                    self.model.clone(),
+                    event_tx.clone(),
+                );
                 info!(final_chars = final_text.len(), thinking_chars = thinking_text.len(), "Turn completed");
                 let outcome = TurnOutcome::Completed { text: final_text };
                 let _ = event_tx

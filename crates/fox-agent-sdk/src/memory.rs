@@ -7,9 +7,13 @@
 //!   `fox_agent_core::MemoryManager` (with MemoryGraph persistence).
 
 use fox_agent_core::{
-    ContentBlock, MemoryManager as CoreMemoryManager, MemoryScope, Message, RecallMode, Role,
-    MemoryConfig,
+    AgentEvent, AgentEventTx, ContentBlock, ExtractedMemory, MemoryExtractor,
+    MemoryManager as CoreMemoryManager, MemoryRelevanceChecker, MemoryScope, Message, Model,
+    RecallMode, Role, MemoryConfig, format_recall_hits_display_prompt,
+    format_recall_hits_prompt, select_recall_hits_for_injection,
 };
+use async_trait::async_trait;
+use futures::StreamExt;
 
 use std::sync::Arc;
 use std::time::Instant;
@@ -156,10 +160,10 @@ impl MemoryManager {
                 return;
             }
 
-            let results = match core.recall(
+            let results = match core.recall_detailed(
                 Some(&query),
                 cfg.max_results,
-                RecallMode::Keyword,
+                if core.semantic_enabled() { RecallMode::Cascade } else { RecallMode::Keyword },
                 MemoryScope::All,
             ) {
                 Ok(r) => r,
@@ -170,20 +174,223 @@ impl MemoryManager {
                 return;
             }
 
-            let prompt = results
-                .iter()
-                .map(|(e, _)| format!("- {}", e.content))
-                .collect::<Vec<_>>()
-                .join("\n");
+            let selected = select_recall_hits_for_injection(
+                &results,
+                cfg.injection_max_chars,
+                cfg.injection_max_per_category,
+            );
+            if selected.is_empty() {
+                return;
+            }
+            let Some(prompt) = format_recall_hits_prompt(
+                &selected,
+                cfg.injection_max_chars,
+                cfg.injection_max_per_category,
+            ) else {
+                return;
+            };
+            let display_prompt = format_recall_hits_display_prompt(
+                &selected,
+                cfg.injection_max_chars,
+                cfg.injection_max_per_category,
+            );
+            let selected_ids = selected.iter().map(|hit| hit.entry.id.clone()).collect::<Vec<_>>();
             let injection = MemoryInjection {
-                prompt: format!("Relevant memories:\n{prompt}\n"),
-                display_prompt: None,
-                count: results.len() as u32,
-                memory_ids: results.iter().map(|(e, _)| e.id.clone()).collect(),
+                prompt: format!("{prompt}\n"),
+                display_prompt,
+                count: selected.len() as u32,
+                memory_ids: selected_ids,
             };
 
             let mut state = memory_state.write().await;
             let _ = state.apply(MemoryInjectionEvent::InjectionComputed { injection });
         });
     }
+
+    pub fn trigger_ingestion_for_turn(
+        &self,
+        messages: Vec<Message>,
+        model: Arc<dyn Model>,
+        event_tx: AgentEventTx,
+    ) {
+        if !self.cfg.enabled || !self.cfg.auto_extract {
+            return;
+        }
+        let transcript = build_ingestion_transcript(&messages, self.cfg.auto_extract_message_window);
+        if transcript.trim().is_empty() {
+            return;
+        }
+        let core = self.core.clone();
+        let cfg = self.cfg.clone();
+        tokio::spawn(async move {
+            let worker = model_for_memory_tasks(model, cfg.verify_model.clone());
+            let extractor = ModelBackedExtractor { model: worker.clone() };
+            let checker = ModelBackedRelevanceChecker { model: worker };
+            let checker_ref: Option<&dyn MemoryRelevanceChecker> = Some(&checker);
+            let report = match core
+                .ingest_transcript(&transcript, &extractor, checker_ref)
+                .await
+            {
+                Ok(report) => report,
+                Err(_) => return,
+            };
+            if report.created_ids.is_empty()
+                && report.reinforced_ids.is_empty()
+                && report.skipped_duplicates == 0
+                && report.skipped_irrelevant == 0
+            {
+                return;
+            }
+            let _ = event_tx
+                .send(AgentEvent::MemoryStateChanged {
+                    event: fox_agent_core::MemoryStateEvent::IngestionCompleted {
+                        created_ids: report.created_ids,
+                        reinforced_ids: report.reinforced_ids,
+                        contradiction_ids: report.contradiction_ids,
+                        skipped: report.skipped_duplicates + report.skipped_irrelevant,
+                    },
+                })
+                .await;
+        });
+    }
+}
+
+fn build_ingestion_transcript(messages: &[Message], window: usize) -> String {
+    let start = messages.len().saturating_sub(window.max(1));
+    messages[start..]
+        .iter()
+        .filter_map(|message| {
+            let role = match message.role {
+                Role::User => "User",
+                Role::Assistant => "Assistant",
+                Role::Tool => "Tool",
+                Role::System => return None,
+            };
+            let text = message
+                .content
+                .iter()
+                .filter_map(|block| match block {
+                    ContentBlock::Text { text } => Some(text.as_str()),
+                    ContentBlock::Reasoning { .. } => None,
+                    ContentBlock::ToolUse { name, .. } => Some(name.as_str()),
+                    ContentBlock::ToolResult { text, .. } => Some(text.as_str()),
+                    ContentBlock::Image { .. } => None,
+                })
+                .collect::<Vec<_>>()
+                .join("\n");
+            if text.trim().is_empty() {
+                None
+            } else {
+                Some(format!("{role}: {}", text.trim()))
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+fn model_for_memory_tasks(model: Arc<dyn Model>, override_model: Option<String>) -> Arc<dyn Model> {
+    let fork = model.fork();
+    if let Some(model_id) = override_model {
+        let _ = fork.set_model(&model_id);
+    }
+    fork
+}
+
+struct ModelBackedExtractor {
+    model: Arc<dyn Model>,
+}
+
+struct ModelBackedRelevanceChecker {
+    model: Arc<dyn Model>,
+}
+
+#[async_trait]
+impl MemoryExtractor for ModelBackedExtractor {
+    async fn extract(&self, transcript: &str, existing: &[String]) -> Result<Vec<ExtractedMemory>, String> {
+        let mut system = String::from(
+            r#"You are a memory extraction assistant. Extract important NEW learnings from the conversation that should be remembered for future sessions.
+
+Categories (use EXACTLY one of these):
+- fact
+- preference
+- correction
+- entity
+
+For each memory, output in this exact format (one per line):
+CATEGORY|CONTENT|TRUST
+
+Where TRUST is high/medium/low. Output ONLY lines in that format."#,
+        );
+        if !existing.is_empty() {
+            system.push_str("\n\nAlready known memories:\n");
+            for mem in existing.iter().take(60) {
+                system.push_str("- ");
+                system.push_str(mem);
+                system.push('\n');
+            }
+        }
+        let response = run_memory_prompt(self.model.clone(), &system, transcript).await?;
+        Ok(response
+            .lines()
+            .filter(|line| line.contains('|'))
+            .filter_map(|line| {
+                let parts: Vec<&str> = line.split('|').collect();
+                if parts.len() < 3 {
+                    return None;
+                }
+                Some(ExtractedMemory {
+                    category: parts[0].trim().to_lowercase(),
+                    content: parts[1].trim().to_string(),
+                    trust: parts[2].trim().to_lowercase(),
+                })
+            })
+            .collect())
+    }
+}
+
+#[async_trait]
+impl MemoryRelevanceChecker for ModelBackedRelevanceChecker {
+    async fn check_relevance(&self, memory: &str, context: &str) -> Result<(bool, String), String> {
+        let system = "You decide whether an extracted memory is relevant and grounded in the given transcript. Reply with exactly:\nRELEVANT: yes/no\nREASON: <brief reason>";
+        let prompt = format!("## Candidate Memory\n{memory}\n\n## Transcript\n{context}");
+        let response = run_memory_prompt(self.model.clone(), system, &prompt).await?;
+        let relevant = response
+            .lines()
+            .find(|line| line.to_ascii_lowercase().starts_with("relevant:"))
+            .map(|line| line.to_ascii_lowercase().contains("yes"))
+            .unwrap_or(false);
+        let reason = response
+            .lines()
+            .find(|line| line.to_ascii_lowercase().starts_with("reason:"))
+            .map(|line| line["reason:".len()..].trim().to_string())
+            .unwrap_or_else(|| response.trim().to_string());
+        Ok((relevant, reason))
+    }
+
+    async fn check_contradiction(&self, new: &str, existing: &str) -> Result<bool, String> {
+        let system = "You are a contradiction detector. Given existing information and new information, reply with exactly YES or NO depending on whether the new information directly contradicts the existing information.";
+        let prompt = format!("## Existing\n{existing}\n\n## New\n{new}");
+        let response = run_memory_prompt(self.model.clone(), system, &prompt).await?;
+        Ok(response.trim().to_ascii_uppercase().starts_with("YES"))
+    }
+}
+
+async fn run_memory_prompt(
+    model: Arc<dyn Model>,
+    system: &str,
+    user_message: &str,
+) -> Result<String, String> {
+    let messages = vec![Message::user(user_message)];
+    let mut stream = model
+        .complete(&messages, &[], system, "", None)
+        .await
+        .map_err(|e| e.to_string())?;
+    let mut output = String::new();
+    while let Some(event) = stream.next().await {
+        match event.map_err(|e| e.to_string())? {
+            fox_agent_core::StreamEvent::TextDelta { text } => output.push_str(&text),
+            _ => {}
+        }
+    }
+    Ok(output)
 }

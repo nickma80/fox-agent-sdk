@@ -1,8 +1,9 @@
 #[cfg(test)]
 mod tools_tests {
     use crate::*;
-    use fox_agent_core::{Tool, ToolContext, ToolExecutionMode};
+    use fox_agent_core::{storage, MemoryConfig, MemoryManager, Tool, ToolContext, ToolExecutionMode};
     use serde_json::json;
+    use std::time::Duration;
     use uuid::Uuid;
 
     #[tokio::test]
@@ -487,5 +488,218 @@ mod tools_tests {
         };
         let stats = tool.execute(json!({"action":"stats"}), ctx).await.unwrap();
         assert!(stats.text.contains("Memories: 0"));
+    }
+
+    #[tokio::test]
+    async fn memory_tool_supports_reindex_and_reembed_actions() {
+        let tool = MemoryTool::new_test();
+        let ctx = ToolContext {
+            session_id: "mem-maint".into(), message_id: "m1".into(), tool_call_id: "t1".into(),
+            working_dir: None, execution_mode: ToolExecutionMode::Foreground,
+            graceful_shutdown_requested: false,
+        };
+        tool.execute(json!({"action":"remember","content":"reindex me"}), ctx.clone()).await.unwrap();
+
+        let reindex = tool.execute(json!({"action":"reindex"}), ctx.clone()).await.unwrap();
+        assert!(reindex.text.contains("Reindexed"));
+
+        let reembed = tool.execute(json!({"action":"reembed"}), ctx).await.unwrap();
+        assert!(reembed.text.contains("Re-embedded"));
+    }
+
+    #[tokio::test]
+    async fn memory_tool_supports_disable_enable_redact_and_refresh_clusters_actions() {
+        let tool = MemoryTool::new_test();
+        let ctx = ToolContext {
+            session_id: "mem-govern".into(),
+            message_id: "m1".into(),
+            tool_call_id: "t1".into(),
+            working_dir: None,
+            execution_mode: ToolExecutionMode::Foreground,
+            graceful_shutdown_requested: false,
+        };
+
+        let remembered = tool
+            .execute(
+                json!({"action":"remember","content":"private memory","category":"fact"}),
+                ctx.clone(),
+            )
+            .await
+            .unwrap();
+        let memory_id = remembered
+            .json
+            .as_ref()
+            .and_then(|value| value.get("id"))
+            .and_then(|value| value.as_str())
+            .unwrap()
+            .to_string();
+
+        let disabled = tool
+            .execute(json!({"action":"disable","id":memory_id}), ctx.clone())
+            .await
+            .unwrap();
+        assert!(disabled.text.contains("Disabled memory"));
+
+        let enabled = tool
+            .execute(json!({"action":"enable","id":memory_id}), ctx.clone())
+            .await
+            .unwrap();
+        assert!(enabled.text.contains("Enabled memory"));
+
+        let redacted = tool
+            .execute(
+                json!({"action":"redact","id":memory_id,"replacement":"[hidden]"}),
+                ctx.clone(),
+            )
+            .await
+            .unwrap();
+        assert!(redacted.text.contains("Redacted memory"));
+
+        let listed = tool
+            .execute(json!({"action":"list"}), ctx.clone())
+            .await
+            .unwrap();
+        assert!(listed.text.contains("[hidden]"));
+
+        let refreshed = tool
+            .execute(json!({"action":"refresh_clusters","scope":"all"}), ctx)
+            .await
+            .unwrap();
+        assert!(refreshed.text.contains("Refreshed clusters"));
+    }
+
+    #[tokio::test]
+    async fn memory_tool_supports_export_import_and_rebuild_ann_actions() {
+        let source_storage = std::env::temp_dir().join(format!("fox-agent-tools-memory-src-{}", Uuid::new_v4()));
+        let source_project = std::env::temp_dir().join(format!("fox-agent-tools-memory-src-project-{}", Uuid::new_v4()));
+        tokio::fs::create_dir_all(&source_storage).await.unwrap();
+        tokio::fs::create_dir_all(&source_project).await.unwrap();
+
+        let source_tool = MemoryTool::with_manager(
+            MemoryManager::new(&MemoryConfig::default()).with_storage_dir(source_storage.clone()),
+        );
+        let source_ctx = ToolContext {
+            session_id: "mem-export-src".into(),
+            message_id: "m1".into(),
+            tool_call_id: "t1".into(),
+            working_dir: Some(source_project.clone()),
+            execution_mode: ToolExecutionMode::Foreground,
+            graceful_shutdown_requested: false,
+        };
+
+        source_tool
+            .execute(
+                json!({"action":"remember","content":"project memory","scope":"project","category":"fact"}),
+                source_ctx.clone(),
+            )
+            .await
+            .unwrap();
+        source_tool
+            .execute(
+                json!({"action":"remember","content":"global memory","scope":"global","category":"preference"}),
+                source_ctx.clone(),
+            )
+            .await
+            .unwrap();
+
+        let export_path = source_storage.join("memory-bundle.json");
+        let exported = source_tool
+            .execute(
+                json!({"action":"export","scope":"all","file_path":export_path.to_string_lossy().to_string()}),
+                source_ctx.clone(),
+            )
+            .await
+            .unwrap();
+        assert!(exported.text.contains("Exported memories"));
+        assert!(export_path.exists());
+
+        let rebuilt = source_tool
+            .execute(json!({"action":"rebuild_ann","scope":"all"}), source_ctx)
+            .await
+            .unwrap();
+        assert!(rebuilt.text.contains("Rebuilt ANN indexes"));
+
+        let target_storage = std::env::temp_dir().join(format!("fox-agent-tools-memory-dst-{}", Uuid::new_v4()));
+        let target_project = std::env::temp_dir().join(format!("fox-agent-tools-memory-dst-project-{}", Uuid::new_v4()));
+        tokio::fs::create_dir_all(&target_storage).await.unwrap();
+        tokio::fs::create_dir_all(&target_project).await.unwrap();
+
+        let target_tool = MemoryTool::with_manager(
+            MemoryManager::new(&MemoryConfig::default()).with_storage_dir(target_storage),
+        );
+        let target_ctx = ToolContext {
+            session_id: "mem-export-dst".into(),
+            message_id: "m1".into(),
+            tool_call_id: "t1".into(),
+            working_dir: Some(target_project),
+            execution_mode: ToolExecutionMode::Foreground,
+            graceful_shutdown_requested: false,
+        };
+
+        let imported = target_tool
+            .execute(
+                json!({"action":"import","file_path":export_path.to_string_lossy().to_string(),"merge":false}),
+                target_ctx.clone(),
+            )
+            .await
+            .unwrap();
+        assert!(imported.text.contains("Imported memories"));
+
+        let listed = target_tool
+            .execute(json!({"action":"list","scope":"all"}), target_ctx)
+            .await
+            .unwrap();
+        assert!(listed.text.contains("project memory"));
+        assert!(listed.text.contains("global memory"));
+    }
+
+    #[tokio::test]
+    async fn memory_tool_compact_removes_stale_memory_files() {
+        let storage_dir = std::env::temp_dir().join(format!("fox-agent-tools-memory-gc-{}", Uuid::new_v4()));
+        let project_dir = std::env::temp_dir().join(format!("fox-agent-tools-memory-gc-project-{}", Uuid::new_v4()));
+        tokio::fs::create_dir_all(&storage_dir).await.unwrap();
+        tokio::fs::create_dir_all(&project_dir).await.unwrap();
+
+        let tool = MemoryTool::with_manager(
+            MemoryManager::new(&MemoryConfig::default()).with_storage_dir(storage_dir.clone()),
+        );
+        let ctx = ToolContext {
+            session_id: "mem-gc".into(),
+            message_id: "m1".into(),
+            tool_call_id: "t1".into(),
+            working_dir: Some(project_dir.clone()),
+            execution_mode: ToolExecutionMode::Foreground,
+            graceful_shutdown_requested: false,
+        };
+
+        tool.execute(
+            json!({"action":"remember","content":"project gc memory","scope":"project"}),
+            ctx.clone(),
+        )
+        .await
+        .unwrap();
+        tool.execute(
+            json!({"action":"remember","content":"global gc memory","scope":"global"}),
+            ctx.clone(),
+        )
+        .await
+        .unwrap();
+
+        let global_path = storage_dir.join("global.json");
+        let project_path = storage_dir
+            .join("projects")
+            .join(format!("{}.json", storage::project_hash(&project_dir)));
+        assert!(global_path.exists());
+        assert!(project_path.exists());
+
+        tokio::time::sleep(Duration::from_millis(1200)).await;
+
+        let compacted = tool
+            .execute(json!({"action":"compact","max_age_hours":0}), ctx)
+            .await
+            .unwrap();
+        assert!(compacted.text.contains("Compacted memories"));
+        assert!(!global_path.exists());
+        assert!(!project_path.exists());
     }
 }

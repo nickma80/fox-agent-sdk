@@ -224,6 +224,58 @@ mod sdk_tests {
     }
 
     #[tokio::test]
+    async fn phase3_auto_extract_emits_ingestion_event_and_persists_memory() {
+        let provider = MockProvider::new("mock");
+        provider.push_script(vec![
+            StreamEvent::TextDelta { text: "Done, I will keep answers concise.".into() },
+            StreamEvent::MessageStop { stop_reason: None },
+        ]);
+        provider.push_script(vec![
+            StreamEvent::TextDelta { text: "preference|User prefers concise rust answers|high".into() },
+            StreamEvent::MessageStop { stop_reason: None },
+        ]);
+
+        let model: Arc<dyn Model> = Arc::new(DefaultModel::new(Arc::new(provider), "mock-1"));
+        let harness = Harness::new(FoxAgentSdkConfig {
+            memory: MemoryConfig {
+                enabled: true,
+                auto_extract: true,
+                auto_extract_scope: fox_agent_core::AutoExtractScope::Global,
+                auto_extract_message_window: 4,
+                verify_relevance: false,
+                ..Default::default()
+            },
+            ..Default::default()
+        }, None);
+        let mut agent = Agent::new(model, harness);
+
+        let (tx, mut rx) = tokio::sync::mpsc::channel(32);
+        let _ = agent.run_once_streaming("Please keep rust answers concise", &tx).await.unwrap();
+
+        let mut saw_ingestion = false;
+        for _ in 0..24 {
+            let ev = tokio::time::timeout(std::time::Duration::from_millis(200), rx.recv()).await.ok().flatten();
+            let Some(ev) = ev else { break };
+            if let AgentEvent::MemoryStateChanged { event } = ev {
+                if let MemoryStateEvent::IngestionCompleted { created_ids, .. } = event {
+                    saw_ingestion = !created_ids.is_empty();
+                    if saw_ingestion { break; }
+                }
+            }
+        }
+        assert!(saw_ingestion);
+
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        let stored = agent
+            .harness
+            .memory_manager
+            .core()
+            .list(fox_agent_core::MemoryScope::Global)
+            .unwrap();
+        assert!(stored.iter().any(|entry| entry.content.contains("concise rust answers")));
+    }
+
+    #[tokio::test]
     async fn phase4_prompt_builder_includes_planning_context() {
         let session_id = format!("phase4-{}", uuid::Uuid::new_v4());
         let _ = save_todos(&session_id, vec![TodoItem {

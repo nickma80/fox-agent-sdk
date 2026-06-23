@@ -124,6 +124,12 @@ pub struct MemoryEntry {
     /// Embedding vector (384-dim for MiniLM-style).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub embedding: Option<Vec<f32>>,
+    /// Embedding model identifier used to generate `embedding`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub embedding_model: Option<String>,
+    /// Embedding model/version fingerprint used to detect re-embed needs.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub embedding_version: Option<String>,
     /// Confidence score 0.0-1.0.
     #[serde(default = "default_confidence")]
     pub confidence: f32,
@@ -158,6 +164,8 @@ impl MemoryEntry {
             superseded_by: None,
             reinforcements: Vec::new(),
             embedding: None,
+            embedding_model: None,
+            embedding_version: None,
             confidence: 1.0,
         }
     }
@@ -239,6 +247,17 @@ impl MemoryEntry {
     pub fn with_embedding(mut self, embedding: Vec<f32>) -> Self {
         self.embedding = Some(embedding);
         self
+    }
+
+    pub fn set_embedding_metadata(
+        &mut self,
+        embedding: Vec<f32>,
+        model_name: impl Into<String>,
+        version: impl Into<String>,
+    ) {
+        self.embedding = Some(embedding);
+        self.embedding_model = Some(model_name.into());
+        self.embedding_version = Some(version.into());
     }
 }
 
