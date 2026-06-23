@@ -15,6 +15,7 @@ mod builder;
 mod event_recorder;
 mod approval_manager;
 mod governance;
+mod replay_runner;
 mod agent;
 mod swarm_runtime;
 
@@ -28,6 +29,7 @@ pub use builder::*;
 pub use event_recorder::*;
 pub use approval_manager::*;
 pub use governance::*;
+pub use replay_runner::*;
 pub use agent::*;
 pub use swarm_runtime::*;
 

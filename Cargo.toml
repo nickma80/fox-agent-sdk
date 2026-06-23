@@ -25,8 +25,12 @@ name = "multi_provider"
 path = "examples/multi_provider.rs"
 
 [[example]]
-name = "swarm_demo"
-path = "examples/swarm_demo.rs"
+name = "permission_flow"
+path = "examples/permission_flow.rs"
+
+[[example]]
+name = "swarm_workflow"
+path = "examples/swarm_workflow.rs"
 
 [[example]]
 name = "custom_tool"

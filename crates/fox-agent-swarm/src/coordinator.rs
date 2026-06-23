@@ -39,7 +39,12 @@ impl SwarmCoordinator {
 
     /// Register a new worker in the swarm.
     pub async fn spawn(&self, worker_id: impl Into<String>, prompt: impl Into<String>) -> WorkerHandle {
-        let handle = WorkerHandle { worker_id: worker_id.into(), prompt: prompt.into(), status: WorkerStatus::Ready };
+        let handle = WorkerHandle {
+            worker_id: worker_id.into(),
+            prompt: prompt.into(),
+            status: WorkerStatus::Ready,
+            started_at_secs: None,
+        };
         self.workers.write().await.insert(handle.worker_id.clone(), handle.clone());
         self.inboxes.write().await.entry(handle.worker_id.clone()).or_default();
         self.notify.notify_waiters();
@@ -69,6 +74,12 @@ impl SwarmCoordinator {
         let assigned = item.clone();
         if let Some(worker) = self.workers.write().await.get_mut(worker_id) {
             worker.status = WorkerStatus::Running;
+            worker.started_at_secs = Some(
+                SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .map(|d| d.as_secs())
+                    .unwrap_or(0),
+            );
         }
         self.notify.notify_waiters();
         Some(assigned)
@@ -81,6 +92,7 @@ impl SwarmCoordinator {
         item.status = PlanStatus::Completed;
         if let Some(worker) = self.workers.write().await.get_mut(worker_id) {
             worker.status = WorkerStatus::Completed;
+            worker.started_at_secs = None;
         }
         let report = AgentReport { worker_id: worker_id.to_string(), task_id: Some(task_id.to_string()), status: WorkerStatus::Completed, summary: summary.into() };
         self.reports.write().await.push(report.clone());

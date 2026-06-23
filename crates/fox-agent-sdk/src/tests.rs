@@ -601,4 +601,177 @@ mod sdk_tests {
 
         assert!(runtime.cfg().auto_snapshot);
     }
+
+    // ── M4: Swarm + Replay tests ──
+
+    use crate::replay_runner::ReplayRunner;
+    use fox_agent_swarm::{WorkerStatus};
+    use fox_agent_core::{EnvelopePayload, EventEnvelope};
+
+    /// Swarm coordinator with supervisor: complete lifecycle test.
+    #[tokio::test]
+    async fn m4_supervisor_worker_lifecycle() {
+        let coordinator = Arc::new(SwarmCoordinator::new());
+        let supervisor = fox_agent_swarm::SwarmSupervisor::with_defaults(coordinator.clone());
+
+        // Spawn workers
+        coordinator.spawn("w1", "analyst").await;
+        coordinator.spawn("w2", "reviewer").await;
+
+        // Upsert plan
+        coordinator.upsert_plan(vec![
+            PlanItem {
+                id: "task-a".into(),
+                content: "analyse".into(),
+                status: PlanStatus::Pending,
+                priority: PlanPriority::High,
+                assigned_to: None,
+                blocked_by: vec![],
+            },
+        ]).await;
+
+        // Assign and complete
+        let task = coordinator.assign_next_runnable_task("w1").await.unwrap();
+        assert_eq!(task.id, "task-a");
+        let w1 = coordinator.list_workers().await.iter()
+            .find(|w| w.worker_id == "w1").cloned().unwrap();
+        assert_eq!(w1.status, WorkerStatus::Running);
+
+        coordinator.report_completion("w1", "task-a", "done").await.unwrap();
+        let w1 = coordinator.list_workers().await.iter()
+            .find(|w| w.worker_id == "w1").cloned().unwrap();
+        assert_eq!(w1.status, WorkerStatus::Completed);
+
+        // Summary
+        let summary = supervisor.generate_summary().await;
+        assert_eq!(summary.completed, 1);
+        assert!(summary.all_terminal());
+    }
+
+    /// Supervisor failure retry: task resets to Pending and worker goes Ready.
+    #[tokio::test]
+    async fn m4_supervisor_retry_resets_task_and_worker() {
+        let coordinator = Arc::new(SwarmCoordinator::new());
+        let supervisor = fox_agent_swarm::SwarmSupervisor::with_defaults(coordinator.clone());
+
+        coordinator.spawn("w1", "worker").await;
+        coordinator.upsert_plan(vec![
+            PlanItem {
+                id: "t1".into(),
+                content: "task".into(),
+                status: PlanStatus::Pending,
+                priority: PlanPriority::High,
+                assigned_to: None,
+                blocked_by: vec![],
+            },
+        ]).await;
+        coordinator.assign_next_runnable_task("w1").await.unwrap();
+
+        // Simulate failure
+        let handled = supervisor.handle_failure("w1", "t1").await;
+        assert!(handled, "failure should be handled");
+
+        // Worker should be Ready again
+        let w1 = coordinator.list_workers().await.iter()
+            .find(|w| w.worker_id == "w1").cloned().unwrap();
+        assert_eq!(w1.status, WorkerStatus::Ready);
+
+        // Plan item should be Pending
+        let plan = coordinator.shared_plan.read().await;
+        let item = plan.items.iter().find(|i| i.id == "t1").unwrap();
+        assert_eq!(item.status, PlanStatus::Pending);
+    }
+
+    /// SwarmSummaryReport aggregates correctly from reports.
+    #[test]
+    fn m4_summary_report_aggregation() {
+        let reports = vec![
+            AgentReport { worker_id: "a".into(), task_id: Some("t1".into()), status: WorkerStatus::Completed, summary: "ok".into() },
+            AgentReport { worker_id: "b".into(), task_id: Some("t2".into()), status: WorkerStatus::Failed, summary: "err".into() },
+            AgentReport { worker_id: "c".into(), task_id: Some("t3".into()), status: WorkerStatus::TimedOut, summary: "timeout".into() },
+        ];
+        let summary = SwarmSummaryReport::from_reports(&reports);
+        assert_eq!(summary.completed, 1);
+        assert_eq!(summary.failed, 1);
+        assert_eq!(summary.timed_out, 1);
+        assert!(summary.format().contains("3 workers total"));
+    }
+
+    /// ReplayRunner can load and verify a transcript from JSONL.
+    #[tokio::test]
+    async fn m4_replay_runner_load_and_verify() {
+        use std::io::Write;
+        use fox_agent_swarm::{GoldenTranscript, TranscriptCheck};
+
+        // Build envelopes directly (avoids EventRecorder blocking inside async runtime)
+        let envelopes = vec![
+            EventEnvelope::new("rp-session", 1, 0, "agent", EnvelopePayload::TurnStart { turn_id: 1 }),
+            EventEnvelope::new("rp-session", 1, 1, "agent", EnvelopePayload::ModelTextDelta { text: "hello world".into() }),
+        ];
+
+        // Export to temp file
+        let tmp_path = std::env::temp_dir().join(format!("fox-m4-replay-{}.jsonl", uuid::Uuid::new_v4()));
+        {
+            let mut f = std::fs::File::create(&tmp_path).unwrap();
+            for env in &envelopes {
+                writeln!(&mut f, "{}", env.to_json_line().unwrap()).unwrap();
+            }
+        }
+
+        // Load via ReplayRunner
+        let runner = ReplayRunner::from_file(&tmp_path).unwrap();
+        assert_eq!(runner.events().len(), 2);
+        assert_eq!(runner.total_tokens(), 0);
+
+        // Verify text
+        let transcript = GoldenTranscript {
+            session_id: "rp-session".into(),
+            events: runner.events().iter().map(|e| serde_json::to_string(e).unwrap()).collect(),
+            verification_checks: vec![
+                TranscriptCheck {
+                    description: "contains hello".into(),
+                    event_id: None,
+                    must_contain_text: Some("hello world".into()),
+                    must_have_tool_call: None,
+                    must_have_usage: false,
+                },
+                TranscriptCheck {
+                    description: "no tool call expected".into(),
+                    event_id: None,
+                    must_contain_text: None,
+                    must_have_tool_call: Some("read".into()),
+                    must_have_usage: false,
+                },
+            ],
+        };
+        let runner2 = ReplayRunner::from_transcript(transcript);
+        let failures = runner2.verify();
+        assert!(!failures.is_empty(), "one check should fail (no tool call present)");
+
+        let _ = tokio::fs::remove_file(&tmp_path).await;
+    }
+
+    /// ReplayRunner filters events by source.
+    #[test]
+    fn m4_replay_runner_events_by_source() {
+        let envelopes = vec![
+            EventEnvelope::new("s1", 1, 0, "agent", EnvelopePayload::TurnStart { turn_id: 1 }),
+            EventEnvelope::new("s1", 1, 1, "tool", EnvelopePayload::ToolCallStart { call_id: "c1".into(), name: "read".into(), input: serde_json::json!({"file":"x"}) }),
+            EventEnvelope::new("s1", 1, 2, "agent", EnvelopePayload::TurnEnd { turn_id: 1, outcome: "Completed".into() }),
+        ];
+
+        // Build a transcript manually
+        let transcript = fox_agent_swarm::GoldenTranscript {
+            session_id: "s1".into(),
+            events: envelopes.iter().map(|e| serde_json::to_string(e).unwrap()).collect(),
+            verification_checks: vec![],
+        };
+        let runner = ReplayRunner::from_transcript(transcript);
+
+        let agent_events = runner.events_by_source("agent");
+        assert_eq!(agent_events.len(), 2);
+
+        let tool_events = runner.events_by_source("tool");
+        assert_eq!(tool_events.len(), 1);
+    }
 }
