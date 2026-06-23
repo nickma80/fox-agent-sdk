@@ -3,9 +3,10 @@ mod sdk_tests {
     use crate::*;
     use fox_agent_core::{
         AgentEvent, AgentError, CompactionConfig, DefaultModel, DefaultSafetyPolicy,
-        FoxAgentSdkConfig, MemoryConfig, MemoryStateEvent, Message, Model, PermissionDecision,
-        PermissionRequest, PermissionResult, SafetyConfig, StreamEvent, TokenUsage, Tool,
-        ToolContext, ToolError, ToolOutput, TurnOutcome, ErrorKind,
+        FilePlanningStore, FileSessionStore, FoxAgentSdkConfig, MemoryConfig, MemoryStateEvent,
+        Message, Model, PermissionDecision, PermissionRequest, PermissionResult, PlanningStore,
+        PlanStatus, PlanPriority, SafetyConfig, SessionStore, StreamEvent, TokenUsage, Tool, ToolContext, ToolError,
+        ToolOutput, TurnOutcome, ErrorKind,
     };
     use fox_agent_providers::MockProvider;
     use fox_agent_tools::{TodoItem, TodoStatus, TodoPriority, PlanItem, save_todos, save_plan};
@@ -282,16 +283,76 @@ mod sdk_tests {
             id: "t1".into(), content: "implement phase4".into(), status: TodoStatus::InProgress, priority: TodoPriority::High,
         }], false);
         let _ = save_plan(&session_id, vec![PlanItem {
-            id: "p1".into(), content: "spawn worker".into(), status: "pending".into(), priority: "high".into(),
+            id: "p1".into(), content: "spawn worker".into(), status: PlanStatus::Pending, priority: PlanPriority::High,
             assigned_to: None, blocked_by: vec![],
         }], false);
 
         let builder = crate::prompt_builder::PromptBuilder::new("1.0.0", "abc123");
-        let (split, _) = builder.build_split(&session_id, None, &[], None, None);
+        let planning_store: Arc<dyn PlanningStore> = Arc::new(FilePlanningStore::new(
+            std::env::temp_dir().join(format!("fox-sdk-planning-{}", uuid::Uuid::new_v4())),
+        ));
+        let (split, _) = builder.build_split(&session_id, &planning_store, None, &[], None, None);
         assert!(split.dynamic_part.contains("implement phase4"));
         // The planning context is routed to dynamic_part, check that
         assert!(split.dynamic_part.contains("implement phase4"), "dynamic part should contain todo items: {}", split.dynamic_part);
         assert!(split.dynamic_part.contains("spawn worker"));
+    }
+
+    #[tokio::test]
+    async fn m1_auto_snapshot_persists_and_restores_session_state() {
+        let provider = MockProvider::new("mock");
+        provider.push_script(vec![
+            StreamEvent::TextDelta { text: "snapshot restored".into() },
+            StreamEvent::MessageStop { stop_reason: None },
+        ]);
+
+        let working_dir = std::env::temp_dir().join(format!("fox-sdk-m1-{}", uuid::Uuid::new_v4()));
+        tokio::fs::create_dir_all(&working_dir).await.unwrap();
+        let session_root = working_dir.join("session-store");
+        let planning_root = working_dir.join("planning-store");
+
+        let model: Arc<dyn Model> = Arc::new(DefaultModel::new(Arc::new(provider), "mock-1"));
+        let harness = Harness::new(
+            FoxAgentSdkConfig {
+                session_storage_dir: Some(session_root.clone()),
+                planning_storage_dir: Some(planning_root.clone()),
+                auto_snapshot: true,
+                ..Default::default()
+            },
+            Some(working_dir.clone()),
+        );
+        let mut agent = Agent::new(model.clone(), harness);
+        let session_id = agent.harness().session_state.id.clone();
+
+        let (tx, _rx) = tokio::sync::mpsc::channel(8);
+        let outcome = agent.run_once_streaming("persist this session", &tx).await.unwrap();
+        assert!(matches!(outcome, TurnOutcome::Completed { .. }));
+
+        let stored = agent
+            .harness()
+            .session_store
+            .load_session(&session_id)
+            .unwrap()
+            .expect("session snapshot should exist");
+        assert_eq!(stored.session_id, session_id);
+        assert!(stored.messages.len() >= 2);
+
+        let restore_harness = Harness::new(
+            FoxAgentSdkConfig {
+                session_storage_dir: Some(session_root),
+                planning_storage_dir: Some(planning_root),
+                auto_snapshot: true,
+                ..Default::default()
+            },
+            Some(working_dir.clone()),
+        );
+        let restored = Agent::load_from_store(model, restore_harness, &session_id)
+            .unwrap()
+            .expect("agent should restore from snapshot");
+        assert_eq!(restored.harness().session_state.id, session_id);
+        assert!(restored.harness().session_state.messages.len() >= 2);
+
+        let _ = tokio::fs::remove_dir_all(&working_dir).await;
     }
 
     #[tokio::test]
@@ -378,5 +439,165 @@ mod sdk_tests {
             }
         }
         assert!(saw_tool_error);
+    }
+
+    // ── M2: AgentBuilder tests ──
+
+    /// AgentBuilder::build() with MockProvider and default tools.
+    #[tokio::test]
+    async fn m2_builder_build_with_mock_provider_produces_agent() {
+        let provider = Arc::new(MockProvider::new("mock"));
+        provider.push_script(vec![
+            StreamEvent::TextDelta { text: "ok".into() },
+            StreamEvent::MessageStop { stop_reason: None },
+        ]);
+
+        let mut agent = AgentBuilder::new()
+            .with_provider(provider)
+            .model_id("mock-1")
+            .with_default_tools()
+            .build()
+            .await
+            .expect("build should succeed");
+
+        let (tx, _rx) = tokio::sync::mpsc::channel(8);
+        let outcome = agent.run_once_streaming("go", &tx).await.unwrap();
+        assert!(matches!(outcome, TurnOutcome::Completed { text } if text == "ok"));
+    }
+
+    /// AgentBuilder registers default tools without manual Harness wiring.
+    #[tokio::test]
+    async fn m2_builder_registers_default_tools() {
+        let provider = Arc::new(MockProvider::new("mock"));
+
+        let agent = AgentBuilder::new()
+            .with_provider(provider)
+            .model_id("mock-1")
+            .with_default_tools()
+            .build()
+            .await
+            .expect("build should succeed");
+
+        let defs = agent.harness().tool_definitions().await;
+        let names: Vec<&str> = defs.iter().map(|d| d.name.as_str()).collect();
+        assert!(names.contains(&"read"), "expected 'read' tool; got: {names:?}");
+        assert!(names.contains(&"todo"), "expected 'todo' tool; got: {names:?}");
+        assert!(names.contains(&"plan"), "expected 'plan' tool; got: {names:?}");
+        assert!(names.contains(&"goal"), "expected 'goal' tool; got: {names:?}");
+    }
+
+    /// AgentBuilder registers custom tool without direct Harness access.
+    #[tokio::test]
+    async fn m2_builder_registers_custom_tool() {
+        let provider = Arc::new(MockProvider::new("mock"));
+
+        let agent = AgentBuilder::new()
+            .with_provider(provider)
+            .model_id("mock-1")
+            .with_tool(Arc::new(EchoTool))
+            .build()
+            .await
+            .expect("build should succeed");
+
+        let defs = agent.harness().tool_definitions().await;
+        assert!(defs.iter().any(|d| d.name == "echo"), "missing echo tool");
+    }
+
+    /// AgentBuilder with safety denylist causes permission requests.
+    #[tokio::test]
+    async fn m2_builder_safety_denylist_requires_permission() {
+        let provider = Arc::new(MockProvider::new("mock"));
+        provider.push_script(vec![
+            StreamEvent::ToolUse { id: "c1".into(), name: "echo".into(), input: json!({"text":"hi"}) },
+            StreamEvent::MessageStop { stop_reason: None },
+        ]);
+
+        let mut agent = AgentBuilder::new()
+            .with_provider(provider)
+            .model_id("mock-1")
+            .with_tool(Arc::new(EchoTool))
+            .sdk_config(FoxAgentSdkConfig {
+                safety: SafetyConfig {
+                    default_policy: DefaultSafetyPolicy::Allow,
+                    tool_denylist: Some(vec!["echo".to_string()]),
+                    tool_allowlist: None,
+                },
+                ..Default::default()
+            })
+            .build()
+            .await
+            .expect("build should succeed");
+
+        let (tx, _rx) = tokio::sync::mpsc::channel(8);
+        let outcome = agent.run_once_streaming("go", &tx).await.unwrap();
+        assert!(matches!(outcome, TurnOutcome::RequiresUserDecision { ref request } if request.tool_name == "echo"));
+    }
+
+    /// AgentBuilder with working_dir sets the session directory.
+    #[tokio::test]
+    async fn m2_builder_with_working_dir() {
+        let tmp = std::env::temp_dir().join(format!("fox-m2-wd-{}", uuid::Uuid::new_v4()));
+        tokio::fs::create_dir_all(&tmp).await.unwrap();
+
+        let provider = Arc::new(MockProvider::new("mock"));
+        let agent = AgentBuilder::new()
+            .with_provider(provider)
+            .model_id("mock-1")
+            .working_dir(&tmp)
+            .build()
+            .await
+            .expect("build should succeed");
+
+        assert_eq!(
+            agent.harness().session_state.working_dir.as_deref(),
+            Some(tmp.as_path())
+        );
+
+        let _ = tokio::fs::remove_dir_all(&tmp).await;
+    }
+
+    /// AgentBuilder with sandbox blocks reads outside the workspace.
+    #[tokio::test]
+    async fn m2_builder_sandbox_blocks_outside_access() {
+        let tmp = std::env::temp_dir().join(format!("fox-m2-sandbox-{}", uuid::Uuid::new_v4()));
+        tokio::fs::create_dir_all(&tmp).await.unwrap();
+
+        let sandbox = fox_agent_core::WorkspaceSandbox::new(&tmp);
+        let harness = Harness::new(FoxAgentSdkConfig::default(), Some(tmp.clone()));
+        harness.set_sandbox(sandbox).await;
+
+        let ctx = fox_agent_core::ToolContext {
+            session_id: "test".into(),
+            message_id: uuid::Uuid::new_v4().to_string(),
+            tool_call_id: "c1".into(),
+            working_dir: Some(tmp.clone()),
+            execution_mode: fox_agent_core::ToolExecutionMode::Foreground,
+            graceful_shutdown_requested: false,
+        };
+        // Read outside sandbox → should fail
+        let result = harness
+            .execute_tool("read", json!({"file_path": r"C:\Windows"}), ctx)
+            .await;
+        assert!(result.is_err() || result.unwrap().is_error,
+            "sandbox should block reads outside the workspace");
+
+        let _ = tokio::fs::remove_dir_all(&tmp).await;
+    }
+
+    /// SwarmRuntimeBuilder creates a usable SwarmRuntime.
+    #[tokio::test]
+    async fn m2_swarm_runtime_builder_creates_runtime() {
+        let provider = Arc::new(MockProvider::new("mock"));
+        let coordinator = Arc::new(fox_agent_swarm::SwarmCoordinator::new());
+
+        let runtime = crate::builder::SwarmRuntimeBuilder::new()
+            .with_provider(provider)
+            .model_id("mock-1")
+            .coordinator(coordinator)
+            .build()
+            .await
+            .expect("swarm build should succeed");
+
+        assert!(runtime.cfg().auto_snapshot);
     }
 }

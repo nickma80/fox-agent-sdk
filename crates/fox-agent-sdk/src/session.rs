@@ -3,7 +3,7 @@
 //! All state changes flow through `SessionEvent` → `SessionState::apply()` → `SessionChange`,
 //! ensuring traceable, testable state transitions.
 
-use fox_agent_core::Message;
+use fox_agent_core::{EnvSnapshot, Message, SessionStatus, SessionSnapshot};
 use std::path::PathBuf;
 
 /// Immutable session identifier.
@@ -24,22 +24,6 @@ impl std::fmt::Display for SessionId {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "{}", self.0)
     }
-}
-
-/// Session status lifecycle.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum SessionStatus {
-    Active,
-    Paused,
-    Closed,
-    Crashed,
-}
-
-/// A snapshot of environment variables captured at a point in time.
-#[derive(Debug, Clone)]
-pub struct EnvSnapshot {
-    pub key: String,
-    pub value: String,
 }
 
 /// Events that drive the session state machine.
@@ -146,5 +130,19 @@ impl SessionState {
     /// Total number of messages in this session.
     pub fn message_count(&self) -> usize {
         self.messages.len()
+    }
+
+    pub fn from_snapshot(snapshot: &SessionSnapshot) -> Self {
+        Self {
+            id: snapshot.session_id.clone(),
+            parent_id: snapshot.parent_id.clone(),
+            title: snapshot.title.clone(),
+            model: snapshot.model.clone(),
+            provider_key: snapshot.provider_key.clone(),
+            status: snapshot.status,
+            working_dir: snapshot.working_dir.clone(),
+            messages: snapshot.messages.clone(),
+            env_snapshots: snapshot.env_snapshots.clone(),
+        }
     }
 }

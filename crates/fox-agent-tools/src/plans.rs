@@ -1,63 +1,9 @@
-use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
-use std::sync::OnceLock;
-use std::sync::RwLock as StdRwLock;
-
-/// A single item in a swarm plan.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct PlanItem {
-    /// Unique item identifier
-    pub id: String,
-    /// Task description
-    pub content: String,
-    /// Execution status (pending, in_progress, completed)
-    pub status: String,
-    /// Priority level
-    pub priority: String,
-    /// Worker assigned to this item
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub assigned_to: Option<String>,
-    /// Ids of items that must complete before this item can run
-    #[serde(default)]
-    pub blocked_by: Vec<String>,
-}
-
-/// A versioned shared plan used by swarm coordinator.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
-pub struct VersionedPlan {
-    /// Monotonically increasing plan version
-    pub version: u64,
-    /// Plan items in execution order
-    pub items: Vec<PlanItem>,
-}
-
-fn plan_store() -> &'static StdRwLock<HashMap<String, VersionedPlan>> {
-    static STORE: OnceLock<StdRwLock<HashMap<String, VersionedPlan>>> = OnceLock::new();
-    STORE.get_or_init(|| StdRwLock::new(HashMap::new()))
-}
-
-/// Load the shared plan for a session.
-pub fn load_plan(session_id: &str) -> VersionedPlan {
-    plan_store().read().ok().and_then(|store| store.get(session_id).cloned()).unwrap_or_default()
-}
-
-/// Save (and optionally merge) the shared plan for a session.
-pub fn save_plan(session_id: &str, items: Vec<PlanItem>, merge: bool) -> VersionedPlan {
-    let Ok(mut store) = plan_store().write() else { return VersionedPlan { version: 0, items } };
-    let entry = store.entry(session_id.to_string()).or_default();
-    entry.version += 1;
-    if !merge { entry.items = items; return entry.clone(); }
-    for incoming in items {
-        if let Some(existing) = entry.items.iter_mut().find(|item| item.id == incoming.id) {
-            *existing = incoming;
-        } else { entry.items.push(incoming); }
-    }
-    entry.clone()
-}
-
 use async_trait::async_trait;
-use fox_agent_core::{Tool, ToolContext, ToolError, ToolOutput};
+use fox_agent_core::{PlanningStore, Tool, ToolContext, ToolError, ToolOutput};
+pub use fox_agent_core::{PlanItem, PlanStatus, PlanPriority, VersionedPlan, load_plan, load_plan_with_store, save_plan, save_plan_with_store};
+use serde::Deserialize;
 use serde_json::{Value, json};
+use std::sync::Arc;
 
 #[derive(Debug, Deserialize)]
 pub(crate) struct PlanToolInput {
@@ -66,7 +12,21 @@ pub(crate) struct PlanToolInput {
 }
 
 /// Tool that reads or updates the session-local shared plan.
-pub struct PlanTool;
+pub struct PlanTool {
+    store: Arc<dyn PlanningStore>,
+}
+
+impl PlanTool {
+    pub fn new(store: Arc<dyn PlanningStore>) -> Self {
+        Self { store }
+    }
+}
+
+impl Default for PlanTool {
+    fn default() -> Self {
+        Self::new(fox_agent_core::default_planning_store())
+    }
+}
 
 #[async_trait]
 impl Tool for PlanTool {
@@ -84,8 +44,8 @@ impl Tool for PlanTool {
                         "properties": {
                             "id": { "type": "string" },
                             "content": { "type": "string" },
-                            "status": { "type": "string" },
-                            "priority": { "type": "string" },
+                            "status": { "type": "string", "enum": ["pending", "in_progress", "completed"] },
+                            "priority": { "type": "string", "enum": ["high", "medium", "low"] },
                             "assigned_to": { "type": "string" },
                             "blocked_by": { "type": "array", "items": { "type": "string" } }
                         }
@@ -101,8 +61,8 @@ impl Tool for PlanTool {
             message: format!("invalid plan input: {err}"),
         })?;
         let plan = match params.items {
-            Some(items) => save_plan(&ctx.session_id, items, params.merge),
-            None => load_plan(&ctx.session_id),
+            Some(items) => save_plan_with_store(self.store.as_ref(), &ctx.session_id, items, params.merge),
+            None => load_plan_with_store(self.store.as_ref(), &ctx.session_id),
         };
         Ok(ToolOutput {
             text: serde_json::to_string_pretty(&plan).map_err(|err| ToolError::Message {

@@ -1,4 +1,4 @@
-use fox_agent_tools::{PlanItem, VersionedPlan};
+use fox_agent_tools::{PlanItem, PlanStatus, VersionedPlan};
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -59,12 +59,12 @@ impl SwarmCoordinator {
     pub async fn assign_next_runnable_task(&self, worker_id: &str) -> Option<PlanItem> {
         let mut plan = self.shared_plan.write().await;
         let completed_ids: Vec<_> = plan.items.iter()
-            .filter(|i| i.status == "completed").map(|i| i.id.clone()).collect();
+            .filter(|i| i.status == PlanStatus::Completed).map(|i| i.id.clone()).collect();
         let next_idx = plan.items.iter().position(|item| {
-            item.status == "pending" && item.blocked_by.iter().all(|b| completed_ids.iter().any(|d| d == b))
+            item.status == PlanStatus::Pending && item.blocked_by.iter().all(|b| completed_ids.iter().any(|d| d == b))
         })?;
         let item = &mut plan.items[next_idx];
-        item.status = "in_progress".to_string();
+        item.status = PlanStatus::InProgress;
         item.assigned_to = Some(worker_id.to_string());
         let assigned = item.clone();
         if let Some(worker) = self.workers.write().await.get_mut(worker_id) {
@@ -78,7 +78,7 @@ impl SwarmCoordinator {
     pub async fn report_completion(&self, worker_id: &str, task_id: &str, summary: impl Into<String>) -> Option<AgentReport> {
         let mut plan = self.shared_plan.write().await;
         let item = plan.items.iter_mut().find(|i| i.id == task_id)?;
-        item.status = "completed".to_string();
+        item.status = PlanStatus::Completed;
         if let Some(worker) = self.workers.write().await.get_mut(worker_id) {
             worker.status = WorkerStatus::Completed;
         }

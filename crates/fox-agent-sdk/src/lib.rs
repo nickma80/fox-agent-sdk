@@ -11,6 +11,7 @@ mod safety;
 mod compaction;
 mod prompt_builder;
 mod harness;
+mod builder;
 mod agent;
 mod swarm_runtime;
 
@@ -20,6 +21,7 @@ pub use safety::*;
 pub use compaction::*;
 pub use prompt_builder::*;
 pub use harness::*;
+pub use builder::*;
 pub use agent::*;
 pub use swarm_runtime::*;
 

@@ -1,8 +1,12 @@
 #[cfg(test)]
 mod tools_tests {
     use crate::*;
-    use fox_agent_core::{storage, MemoryConfig, MemoryManager, Tool, ToolContext, ToolExecutionMode};
+    use fox_agent_core::{
+        storage, FilePlanningStore, MemoryConfig, MemoryManager, PlanningScope, Tool, ToolContext,
+        ToolExecutionMode,
+    };
     use serde_json::json;
+    use std::sync::Arc;
     use std::time::Duration;
     use uuid::Uuid;
 
@@ -234,7 +238,8 @@ mod tools_tests {
             execution_mode: ToolExecutionMode::Foreground,
             graceful_shutdown_requested: false,
         };
-        let output = TodoTool
+        let tool = TodoTool::default();
+        let output = tool
             .execute(
                 json!({"todos":[{"id":"a","content":"phase4","status":"pending","priority":"high"}]}),
                 ctx.clone(),
@@ -250,14 +255,14 @@ mod tools_tests {
             Some(1)
         );
 
-        TodoTool
+        tool
             .execute(
                 json!({"todos":[{"id":"b","content":"phase4-2","status":"in_progress","priority":"medium"}],"merge":true}),
                 ctx.clone(),
             )
             .await
             .unwrap();
-        let read = TodoTool.execute(json!({}), ctx).await.unwrap();
+        let read = tool.execute(json!({}), ctx).await.unwrap();
         let todos = read
             .json
             .as_ref()
@@ -278,7 +283,8 @@ mod tools_tests {
             execution_mode: ToolExecutionMode::Foreground,
             graceful_shutdown_requested: false,
         };
-        let output = PlanTool
+        let tool = PlanTool::default();
+        let output = tool
             .execute(
                 json!({"items":[{"id":"p1","content":"draft implementation","status":"pending","priority":"high","blocked_by":[]}]}),
                 ctx,
@@ -306,7 +312,8 @@ mod tools_tests {
             execution_mode: ToolExecutionMode::Foreground,
             graceful_shutdown_requested: false,
         };
-        let created = GoalTool
+        let tool = GoalTool::default();
+        let created = tool
             .execute(
                 json!({"action":"create","title":"finish phase4b","description":"goal tool + api"}),
                 ctx.clone(),
@@ -322,7 +329,7 @@ mod tools_tests {
             .unwrap()
             .to_string();
 
-        GoalTool
+        tool
             .execute(
                 json!({"action":"checkpoint","id":goal_id,"checkpoint_summary":"implemented goal tool","progress":30}),
                 ctx.clone(),
@@ -330,7 +337,7 @@ mod tools_tests {
             .await
             .unwrap();
 
-        let shown = GoalTool
+        let shown = tool
             .execute(json!({"action":"show","id":goal_id}), ctx)
             .await
             .unwrap();
@@ -438,14 +445,17 @@ mod tools_tests {
             graceful_shutdown_requested: false,
         };
 
-        GoalTool
+        let goal_tool = GoalTool::default();
+        let todo_tool = TodoTool::default();
+
+        goal_tool
             .execute(
                 json!({"action":"create","title":"context goal test"}),
                 ctx.clone(),
             )
             .await
             .unwrap();
-        TodoTool
+        todo_tool
             .execute(
                 json!({"todos":[{"id":"ct1","content":"context todo test","status":"pending","priority":"medium"}]}),
                 ctx,
@@ -456,6 +466,52 @@ mod tools_tests {
         let context = render_planning_context(&session_id);
         assert!(context.contains("context goal test"));
         assert!(context.contains("context todo test"));
+    }
+
+    #[tokio::test]
+    async fn planning_tools_persist_to_file_store_snapshot() {
+        let root = std::env::temp_dir().join(format!("fox-agent-tools-planning-{}", Uuid::new_v4()));
+        let store = Arc::new(FilePlanningStore::new(root.clone()));
+        let session_id = format!("plan-file-{}", Uuid::new_v4());
+        let ctx = ToolContext {
+            session_id: session_id.clone(),
+            message_id: "m1".into(),
+            tool_call_id: "t1".into(),
+            working_dir: None,
+            execution_mode: ToolExecutionMode::Foreground,
+            graceful_shutdown_requested: false,
+        };
+        let todo_tool = TodoTool::new(store.clone());
+        let plan_tool = PlanTool::new(store.clone());
+        let goal_tool = GoalTool::new(store.clone());
+
+        todo_tool
+            .execute(
+                json!({"todos":[{"id":"t1","content":"persist planning","status":"pending","priority":"high"}]}),
+                ctx.clone(),
+            )
+            .await
+            .unwrap();
+        plan_tool
+            .execute(
+                json!({"items":[{"id":"p1","content":"persist plan item","status":"pending","priority":"high","blocked_by":[]}]}),
+                ctx.clone(),
+            )
+            .await
+            .unwrap();
+        goal_tool
+            .execute(json!({"action":"create","title":"persist goal"}), ctx)
+            .await
+            .unwrap();
+
+        let snapshot = store
+            .load_snapshot(&session_id, PlanningScope::Session)
+            .unwrap();
+        assert_eq!(snapshot.todos.len(), 1);
+        assert_eq!(snapshot.plan.items.len(), 1);
+        assert_eq!(snapshot.goals.len(), 1);
+
+        let _ = tokio::fs::remove_dir_all(root).await;
     }
 
     #[tokio::test]

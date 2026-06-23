@@ -1,5 +1,7 @@
+use serde::{Deserialize, Serialize};
+
 /// Kind of interrupt injected into the agent loop.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub enum InterruptKind {
     /// Non-blocking soft interrupt (injected at safe points)
     Soft,
@@ -8,7 +10,7 @@ pub enum InterruptKind {
 }
 
 /// A concrete interrupt that was injected into a turn.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct InjectedInterrupt {
     /// The interrupt message content
     pub content: String,
@@ -21,6 +23,15 @@ pub struct InjectedInterrupt {
 use std::collections::VecDeque;
 
 /// Manages the lifecycle of soft interrupts and graceful shutdown signals.
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
+pub struct InterruptSnapshot {
+    #[serde(default)]
+    pub pending_interrupts: Vec<InjectedInterrupt>,
+    #[serde(default)]
+    pub pending_alerts: Vec<String>,
+    pub graceful_shutdown_requested: bool,
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct InterruptManager {
     /// Queue of pending soft interrupts
@@ -50,6 +61,20 @@ impl InterruptManager {
 
     pub fn is_graceful_shutdown_requested(&self) -> bool {
         self.graceful_shutdown_requested
+    }
+
+    pub fn snapshot(&self) -> InterruptSnapshot {
+        InterruptSnapshot {
+            pending_interrupts: self.soft_interrupts.iter().cloned().collect(),
+            pending_alerts: self.pending_alerts.clone(),
+            graceful_shutdown_requested: self.graceful_shutdown_requested,
+        }
+    }
+
+    pub fn restore(&mut self, snapshot: InterruptSnapshot) {
+        self.soft_interrupts = snapshot.pending_interrupts.into();
+        self.pending_alerts = snapshot.pending_alerts;
+        self.graceful_shutdown_requested = snapshot.graceful_shutdown_requested;
     }
 
     pub fn take_pending_interrupts(&mut self) -> Vec<InjectedInterrupt> {

@@ -6,7 +6,9 @@ mod tool;
 mod compaction;
 mod interrupt;
 mod memory;
+mod planning;
 mod prompt;
+mod session_store;
 mod skill;
 
 // event depends on most of the above
@@ -19,6 +21,7 @@ pub use model::*;
 pub use tool::*;
 pub use compaction::*;
 pub use interrupt::*;
+pub use planning::*;
 // Re-export memory types, but not `prompt` submodule (conflicts with crate-level prompt module)
 pub use memory::graph::{self, MemoryGraph, Edge, EdgeKind, TagEntry, ClusterEntry};
 pub use memory::embedding::{self, EmbeddingProvider, MistralEmbeddingProvider};
@@ -29,5 +32,6 @@ pub use memory::storage::{self, GCResult, MemoryGraphCache};
 pub use memory::types::{self, MemoryCategory, MemoryEntry, MemoryScope, RecallMode, Reinforcement, TrustLevel};
 pub use memory::{AnnRebuildStats, ClusterRefreshStats, CompactStats, ExportStats, ImportStats, IngestionReport, MemoryAuditEvent, MemoryExportBundle, MemoryManager, MemoryStateEvent, RecallHit, RetrievalSource, ScoreBreakdown};
 pub use prompt::*;
+pub use session_store::*;
 pub use skill::*;
 pub use event::*;

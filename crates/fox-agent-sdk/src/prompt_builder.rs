@@ -1,5 +1,6 @@
-use fox_agent_core::{ContextInfo, PromptBuilder as CorePromptBuilder, SkillInfo, SplitPrompt};
+use fox_agent_core::{ContextInfo, PlanningStore, PromptBuilder as CorePromptBuilder, SkillInfo, SplitPrompt, render_planning_context_with_store};
 use std::path::Path;
+use std::sync::Arc;
 
 /// SDK-level prompt builder that wraps the core PromptBuilder with
 /// SDK-specific sections (planning context, session identity, AGENTS.md).
@@ -32,6 +33,7 @@ impl PromptBuilder {
     pub fn build_split(
         &self,
         session_id: &str,
+        planning_store: &Arc<dyn PlanningStore>,
         working_dir: Option<&Path>,
         skills: &[SkillInfo],
         memory_injection: Option<&str>,
@@ -40,7 +42,7 @@ impl PromptBuilder {
         // === Dynamic sections (per-turn) ===
         let mut dynamic_sections: Vec<String> = Vec::new();
 
-        let planning_context = fox_agent_tools::render_planning_context(session_id);
+        let planning_context = render_planning_context_with_store(planning_store.as_ref(), session_id);
         if !planning_context.is_empty() {
             dynamic_sections.push(format!("# Planning Context\n\n{}", planning_context));
         }

@@ -4,11 +4,20 @@
 ///   DEEPSEEK_API_KEY="sk-xxx" cargo run --example simple_agent
 ///
 /// Supports all DeepSeek v4 features (thinking, prefix caching, streaming).
+///
+/// # Builder API (minimal init: 3 lines)
+///
+/// ```ignore
+/// let mut agent = AgentBuilder::new()
+///     .provider_config(ProviderConfig::deepseek(api_key))
+///     .model_id("deepseek-v4-flash")
+///     .with_default_tools()
+///     .build()
+///     .await?;
+/// ```
 use fox_agent_sdk::{
-    Agent, AgentEvent, DeepSeekProvider, DefaultModel, FoxAgentSdkConfig, Harness, Model,
-    ProviderConfig, TurnOutcome,
+    AgentBuilder, AgentEvent, ProviderConfig, TurnOutcome,
 };
-use std::sync::Arc;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -16,15 +25,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let api_key = std::env::var("DEEPSEEK_API_KEY")
         .expect("Set DEEPSEEK_API_KEY to your DeepSeek API key");
 
-    // ── Provider + Model ──
+    // ── Build agent with minimal config ──
     // ProviderConfig::deepseek() sets the correct base URL, auth, and defaults.
-    let provider = Arc::new(DeepSeekProvider::new(ProviderConfig::deepseek(api_key)));
-    let model: Arc<dyn Model> = Arc::new(DefaultModel::new(provider, "deepseek-v4-flash"));
-
-    // ── Harness + Agent ──
-    let harness = Harness::new(FoxAgentSdkConfig::default(), None);
-    harness.register_default_tools().await;
-    let mut agent = Agent::new(model, harness);
+    let mut agent = AgentBuilder::new()
+        .provider_config(ProviderConfig::deepseek(api_key))
+        .model_id("deepseek-v4-flash")
+        .with_default_tools()
+        .build()
+        .await?;
 
     println!("=== Fox Agent SDK — Simple Agent (DeepSeek v4) ===\n");
 

@@ -1,4 +1,4 @@
-use fox_agent_core::{FoxAgentSdkConfig, Model, SkillRegistry, TurnOutcome, AgentError, AgentEventTx};
+use fox_agent_core::{FoxAgentSdkConfig, Model, SkillRegistry, TurnOutcome, AgentError, AgentEventTx, PlanStatus};
 use fox_agent_swarm::{SwarmCoordinator, SwarmMessage, SwarmMessageKind, WorkerHandle, WorkerStatus, AgentReport};
 use fox_agent_tools::{ToolExecutor, VersionedPlan, PlanItem, save_plan};
 use std::sync::Arc;
@@ -118,8 +118,8 @@ impl WorkerAgent {
         let items: Vec<PlanItem> = {
             let Ok(guard) = self.coordinator.shared_plan.try_read() else { return };
             guard.items.iter().map(|i| PlanItem {
-                id: i.id.clone(), content: i.content.clone(), status: "pending".to_string(),
-                priority: i.priority.clone(), assigned_to: None, blocked_by: i.blocked_by.clone(),
+                id: i.id.clone(), content: i.content.clone(), status: PlanStatus::Pending,
+                priority: i.priority, assigned_to: None, blocked_by: i.blocked_by.clone(),
             }).collect()
         };
         if !items.is_empty() { save_plan(session_id, items, false); }

@@ -1,3 +1,4 @@
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use thiserror::Error;
 use uuid::Uuid;
@@ -26,7 +27,7 @@ pub enum TurnOutcome {
 // ── Permission types ──
 
 /// A request to ask the user for permission before executing a tool.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct PermissionRequest {
     /// Unique request id for correlation with the decision
     pub request_id: String,

@@ -1,4 +1,4 @@
-use fox_agent_core::{SandboxError, SandboxOperation, Tool, ToolContext, ToolDefinition, ToolError, ToolOutput, WorkspaceSandbox};
+use fox_agent_core::{PlanningStore, SandboxError, SandboxOperation, Tool, ToolContext, ToolDefinition, ToolError, ToolOutput, WorkspaceSandbox};
 use std::collections::HashMap;
 use std::path::Path;
 use std::sync::Arc;
@@ -171,6 +171,13 @@ fn resolve_path(working_dir: Option<&Path>, path: &Path) -> std::path::PathBuf {
 
 /// Register all default built-in tools on an executor.
 pub async fn register_default_tools(executor: &ToolExecutor) {
+    register_default_tools_with_planning_store(executor, fox_agent_core::default_planning_store()).await;
+}
+
+pub async fn register_default_tools_with_planning_store(
+    executor: &ToolExecutor,
+    planning_store: Arc<dyn PlanningStore>,
+) {
     executor.register_tool(Arc::new(ReadTool)).await;
     executor.register_tool(Arc::new(WriteTool)).await;
     executor.register_tool(Arc::new(EditTool)).await;
@@ -180,9 +187,9 @@ pub async fn register_default_tools(executor: &ToolExecutor) {
     executor.register_tool(Arc::new(BashTool)).await;
     executor.register_tool(Arc::new(WebFetchTool::new())).await;
     executor.register_tool(Arc::new(WebSearchTool::new())).await;
-    executor.register_tool(Arc::new(TodoTool)).await;
-    executor.register_tool(Arc::new(PlanTool)).await;
-    executor.register_tool(Arc::new(GoalTool)).await;
+    executor.register_tool(Arc::new(TodoTool::new(planning_store.clone()))).await;
+    executor.register_tool(Arc::new(PlanTool::new(planning_store.clone()))).await;
+    executor.register_tool(Arc::new(GoalTool::new(planning_store))).await;
     executor.register_tool(Arc::new(LspTool)).await;
     executor.register_tool(Arc::new(InvalidTool)).await;
     executor.register_tool(Arc::new(AgentGrepTool)).await;

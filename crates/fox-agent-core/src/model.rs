@@ -1,4 +1,5 @@
 use async_trait::async_trait;
+use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
 use crate::message::Message;
@@ -15,7 +16,7 @@ pub struct ModelRoute {
 }
 
 /// Mutable runtime state of a model instance (e.g. provider session id).
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ModelRuntimeState {
     /// Opaque session id used to resume a prior provider conversation
     pub resume_session_id: Option<String>,

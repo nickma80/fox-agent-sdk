@@ -7,6 +7,12 @@ pub struct FoxAgentSdkConfig {
     pub compaction: CompactionConfig,
     /// Tool permission safety configuration
     pub safety: SafetyConfig,
+    /// Optional root directory for persisted session snapshots.
+    pub session_storage_dir: Option<std::path::PathBuf>,
+    /// Optional root directory for persisted planning snapshots.
+    pub planning_storage_dir: Option<std::path::PathBuf>,
+    /// Whether to persist a fresh session snapshot at key lifecycle points.
+    pub auto_snapshot: bool,
 }
 
 impl Default for FoxAgentSdkConfig {
@@ -15,6 +21,9 @@ impl Default for FoxAgentSdkConfig {
             memory: MemoryConfig::default(),
             compaction: CompactionConfig::default(),
             safety: SafetyConfig::default(),
+            session_storage_dir: None,
+            planning_storage_dir: None,
+            auto_snapshot: true,
         }
     }
 }

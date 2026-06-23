@@ -1,7 +1,8 @@
 use fox_agent_core::{
     ContextInfo, FoxAgentSdkConfig, InterruptManager, InjectedInterrupt, MemoryStateEvent,
-    PermissionResult, SkillRegistry, SplitPrompt, Tool, ToolContext, ToolDefinition, ToolError, ToolOutput,
-    WorkspaceSandbox,
+    PermissionResult, PlanningStore, SessionStore, SkillRegistry, SplitPrompt, Tool, ToolContext,
+    ToolDefinition, ToolError, ToolOutput, WorkspaceSandbox, FilePlanningStore, FileSessionStore,
+    InMemoryPlanningStore, InMemorySessionStore, set_default_planning_store,
 };
 use fox_agent_tools::ToolExecutor;
 use std::path::PathBuf;
@@ -25,6 +26,8 @@ pub struct Harness {
     pub compaction_manager: Arc<RwLock<CompactionManager>>,
     pub safety_system: SafetySystem,
     pub prompt_builder: PromptBuilder,
+    pub planning_store: Arc<dyn PlanningStore>,
+    pub session_store: Arc<dyn SessionStore>,
     pub skill_registry: Arc<RwLock<SkillRegistry>>,
     pub interrupt_manager: Arc<RwLock<InterruptManager>>,
 }
@@ -34,6 +37,9 @@ impl Harness {
         let memory_cfg = cfg.memory.clone();
         let compaction_cfg = cfg.compaction.clone();
         let safety_cfg = cfg.safety.clone();
+        let session_store = resolve_session_store(&cfg, working_dir.as_deref());
+        let planning_store = resolve_planning_store(&cfg, working_dir.as_deref());
+        set_default_planning_store(planning_store.clone());
         let memory_state = Arc::new(RwLock::new(MemoryInjectionState::with_enabled(memory_cfg.enabled)));
         let session = SessionState::new(working_dir);
         info!(
@@ -53,6 +59,8 @@ impl Harness {
             compaction_manager: Arc::new(RwLock::new(CompactionManager::new(compaction_cfg))),
             safety_system: SafetySystem::new(safety_cfg),
             prompt_builder: PromptBuilder::new(version, git_hash),
+            planning_store,
+            session_store,
             skill_registry: Arc::new(RwLock::new(SkillRegistry::default())),
             interrupt_manager: Arc::new(RwLock::new(InterruptManager::default())),
         }
@@ -66,6 +74,9 @@ impl Harness {
         let memory_cfg = cfg.memory.clone();
         let compaction_cfg = cfg.compaction.clone();
         let safety_cfg = cfg.safety.clone();
+        let session_store = resolve_session_store(&cfg, working_dir.as_deref());
+        let planning_store = resolve_planning_store(&cfg, working_dir.as_deref());
+        set_default_planning_store(planning_store.clone());
         let memory_state = Arc::new(RwLock::new(MemoryInjectionState::with_enabled(memory_cfg.enabled)));
         let session = SessionState::new(working_dir);
         info!(
@@ -84,6 +95,8 @@ impl Harness {
             compaction_manager: Arc::new(RwLock::new(CompactionManager::new(compaction_cfg))),
             safety_system: SafetySystem::with_permission_hook(safety_cfg, hook),
             prompt_builder: PromptBuilder::new(version, git_hash),
+            planning_store,
+            session_store,
             skill_registry: Arc::new(RwLock::new(SkillRegistry::default())),
             interrupt_manager: Arc::new(RwLock::new(InterruptManager::default())),
         }
@@ -96,7 +109,11 @@ impl Harness {
 
     pub async fn register_default_tools(&self) {
         info!("Registering all default tools");
-        fox_agent_tools::register_default_tools(&self.tool_executor).await;
+        fox_agent_tools::register_default_tools_with_planning_store(
+            &self.tool_executor,
+            self.planning_store.clone(),
+        )
+        .await;
     }
 
     pub fn tool_executor(&self) -> &ToolExecutor {
@@ -125,6 +142,7 @@ impl Harness {
     pub async fn build_system_prompt_split(&self, memory_prompt: Option<&str>, active_skill: Option<&str>) -> (SplitPrompt, ContextInfo) {
         self.prompt_builder.build_split(
             &self.session_state.id,
+            &self.planning_store,
             self.session_state.working_dir.as_deref(),
             &[],  // skills — provided externally via Agent
             memory_prompt,
@@ -162,4 +180,34 @@ impl Harness {
     pub async fn is_graceful_shutdown_requested(&self) -> bool {
         self.interrupt_manager.read().await.is_graceful_shutdown_requested()
     }
+}
+
+fn resolve_session_store(
+    cfg: &FoxAgentSdkConfig,
+    working_dir: Option<&std::path::Path>,
+) -> Arc<dyn SessionStore> {
+    if let Some(dir) = &cfg.session_storage_dir {
+        return Arc::new(FileSessionStore::new(dir.clone()));
+    }
+    if let Some(dir) = working_dir {
+        return Arc::new(FileSessionStore::new(
+            dir.join(".fox-agent-sdk").join("sessions"),
+        ));
+    }
+    Arc::new(InMemorySessionStore::default())
+}
+
+fn resolve_planning_store(
+    cfg: &FoxAgentSdkConfig,
+    working_dir: Option<&std::path::Path>,
+) -> Arc<dyn PlanningStore> {
+    if let Some(dir) = &cfg.planning_storage_dir {
+        return Arc::new(FilePlanningStore::new(dir.clone()));
+    }
+    if let Some(dir) = working_dir {
+        return Arc::new(FilePlanningStore::new(
+            dir.join(".fox-agent-sdk").join("planning"),
+        ));
+    }
+    Arc::new(InMemoryPlanningStore::default())
 }

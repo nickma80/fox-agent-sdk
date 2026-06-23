@@ -1,7 +1,7 @@
 use fox_agent_core::{
     AgentError, AgentEvent, AgentEventTx, ContentBlock, Message, Model, PermissionDecision,
-    PermissionRequest, PermissionResult, ProviderError, Role, StreamEvent, ToolContext, TurnOutcome,
-    ToolExecutionMode,
+    PermissionRequest, PermissionResult, PendingToolCallSnapshot, ProviderError, Role,
+    SessionSnapshot, StreamEvent, ToolContext, TurnOutcome, ToolExecutionMode, now_secs,
 };
 use futures::StreamExt;
 use std::sync::Arc;
@@ -38,6 +38,26 @@ struct PendingToolCall {
     input: serde_json::Value,
 }
 
+impl From<&PendingToolCall> for PendingToolCallSnapshot {
+    fn from(value: &PendingToolCall) -> Self {
+        Self {
+            call_id: value.call_id.clone(),
+            name: value.name.clone(),
+            input: value.input.clone(),
+        }
+    }
+}
+
+impl From<PendingToolCallSnapshot> for PendingToolCall {
+    fn from(value: PendingToolCallSnapshot) -> Self {
+        Self {
+            call_id: value.call_id,
+            name: value.name,
+            input: value.input,
+        }
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Agent — the main entry point for running the Agent Loop
 // ---------------------------------------------------------------------------
@@ -63,6 +83,73 @@ impl Agent {
 
     pub fn harness(&self) -> &Harness { &self.harness }
     pub fn model(&self) -> &Arc<dyn Model> { &self.model }
+
+    pub fn snapshot(&self) -> SessionSnapshot {
+        SessionSnapshot {
+            session_id: self.harness.session_state.id.clone(),
+            parent_id: self.harness.session_state.parent_id.clone(),
+            title: self.harness.session_state.title.clone(),
+            model: self.harness.session_state.model.clone().or_else(|| Some(self.model.model_id())),
+            provider_key: self.harness.session_state.provider_key.clone(),
+            status: self.harness.session_state.status,
+            working_dir: self.harness.session_state.working_dir.clone(),
+            messages: self.harness.session_state.messages.clone(),
+            env_snapshots: self.harness.session_state.env_snapshots.clone(),
+            model_runtime_state: self.model.runtime_state(),
+            pending_permission: self.pending_permission.clone(),
+            pending_tool_calls: self
+                .pending_tool_calls
+                .iter()
+                .map(PendingToolCallSnapshot::from)
+                .collect(),
+            interrupt_state: self
+                .harness
+                .interrupt_manager
+                .try_read()
+                .map(|guard| guard.snapshot())
+                .unwrap_or_default(),
+            next_turn_id: self.next_turn_id,
+            metadata: None,
+            updated_at: now_secs(),
+        }
+    }
+
+    pub fn from_session_snapshot(
+        model: Arc<dyn Model>,
+        mut harness: Harness,
+        snapshot: SessionSnapshot,
+    ) -> Self {
+        harness.session_state = crate::session::SessionState::from_snapshot(&snapshot);
+        if let Some(model_id) = &snapshot.model {
+            let _ = model.set_model(model_id);
+        }
+        model.apply_state_event(fox_agent_core::ModelStateEvent::SetResumeSessionId(
+            snapshot.model_runtime_state.resume_session_id.clone(),
+        ));
+        if let Ok(mut interrupts) = harness.interrupt_manager.try_write() {
+            interrupts.restore(snapshot.interrupt_state.clone());
+        }
+        Self {
+            model,
+            harness,
+            pending_permission: snapshot.pending_permission,
+            pending_tool_calls: snapshot
+                .pending_tool_calls
+                .into_iter()
+                .map(PendingToolCall::from)
+                .collect(),
+            next_turn_id: snapshot.next_turn_id.max(1),
+        }
+    }
+
+    pub fn load_from_store(
+        model: Arc<dyn Model>,
+        harness: Harness,
+        session_id: &str,
+    ) -> Result<Option<Self>, String> {
+        let snapshot = harness.session_store.load_session(session_id)?;
+        Ok(snapshot.map(|snapshot| Self::from_session_snapshot(model, harness, snapshot)))
+    }
 
     pub fn set_model(&self, model: &str) -> Result<(), ProviderError> {
         info!(from = %self.model.provider_name(), to = %model, "Switching model");
@@ -91,6 +178,7 @@ impl Agent {
         self.pending_permission = None;
         self.pending_tool_calls.clear();
         self.harness.session_state.messages.push(Message::user(user_message));
+        self.persist_snapshot("user_message");
         self.run_turn_streaming(event_tx).await
     }
 
@@ -478,6 +566,7 @@ impl Agent {
                 let _ = event_tx
                     .send(AgentEvent::TurnEnd { turn_id, outcome: outcome.clone() })
                     .await;
+                self.persist_snapshot("turn_completed");
                 return Ok(outcome);
             }
 
@@ -533,6 +622,7 @@ impl Agent {
                             .send(AgentEvent::TurnEnd { turn_id, outcome: outcome.clone() })
                             .await;
                         info!("Turn paused awaiting user decision");
+                        self.persist_snapshot("awaiting_permission");
                         return Ok(outcome);
                     }
                 }
@@ -604,6 +694,7 @@ impl Agent {
         let _ = event_tx
             .send(AgentEvent::TurnEnd { turn_id, outcome: outcome.clone() })
             .await;
+        self.persist_snapshot("turn_cancelled");
         Ok(outcome)
     }
 
@@ -634,6 +725,17 @@ impl Agent {
             let _ = tx.send(AgentEvent::TurnEnd { turn_id, outcome }).await;
         });
         error
+    }
+
+    fn persist_snapshot(&self, trigger: &str) {
+        if !self.harness.cfg.auto_snapshot {
+            return;
+        }
+        let mut snapshot = self.snapshot();
+        snapshot.metadata = Some(serde_json::json!({ "trigger": trigger }));
+        if let Err(err) = self.harness.session_store.save_session(&snapshot) {
+            warn!(session_id = %snapshot.session_id, trigger, error = %err, "failed to persist session snapshot");
+        }
     }
 }
 

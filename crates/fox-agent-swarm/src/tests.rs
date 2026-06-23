@@ -2,15 +2,15 @@
 mod swarm_tests {
     use super::*;
     use crate::*;
-    use fox_agent_tools::PlanItem;
+    use fox_agent_tools::{PlanItem, PlanPriority, PlanStatus};
 
     #[tokio::test]
     async fn assign_next_skips_blocked_items_until_dependencies_complete() {
         let coordinator = SwarmCoordinator::new();
         coordinator.spawn("w1", "worker").await;
         coordinator.upsert_plan(vec![
-            PlanItem { id: "p1".into(), content: "first".into(), status: "pending".into(), priority: "high".into(), assigned_to: None, blocked_by: vec![] },
-            PlanItem { id: "p2".into(), content: "second".into(), status: "pending".into(), priority: "high".into(), assigned_to: None, blocked_by: vec!["p1".into()] },
+            PlanItem { id: "p1".into(), content: "first".into(), status: PlanStatus::Pending, priority: PlanPriority::High, assigned_to: None, blocked_by: vec![] },
+            PlanItem { id: "p2".into(), content: "second".into(), status: PlanStatus::Pending, priority: PlanPriority::High, assigned_to: None, blocked_by: vec!["p1".into()] },
         ]).await;
 
         let first = coordinator.assign_next_runnable_task("w1").await.unwrap();
