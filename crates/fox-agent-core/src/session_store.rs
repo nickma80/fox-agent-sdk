@@ -205,16 +205,10 @@ pub fn set_default_session_store(store: Arc<dyn SessionStore>) {
     }
 }
 
-pub fn now_secs() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|duration| duration.as_secs())
-        .unwrap_or(0)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::now_secs;
 
     #[test]
     fn file_session_store_roundtrip_persists_snapshot() {

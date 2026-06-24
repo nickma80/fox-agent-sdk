@@ -9,7 +9,7 @@ mod sdk_tests {
         ToolOutput, TurnOutcome, ErrorKind,
     };
     use fox_agent_providers::MockProvider;
-    use fox_agent_tools::{TodoItem, TodoStatus, TodoPriority, PlanItem, save_todos, save_plan};
+    use fox_agent_tools::{TodoItem, TodoStatus, TodoPriority, PlanItem};
     use serde_json::{json, Value};
     use std::sync::Arc;
 
@@ -237,6 +237,7 @@ mod sdk_tests {
         ]);
 
         let model: Arc<dyn Model> = Arc::new(DefaultModel::new(Arc::new(provider), "mock-1"));
+        let mem_dir = std::env::temp_dir().join(format!("fox-sdk-mem-{}", uuid::Uuid::new_v4()));
         let harness = Harness::new(FoxAgentSdkConfig {
             memory: MemoryConfig {
                 enabled: true,
@@ -244,6 +245,8 @@ mod sdk_tests {
                 auto_extract_scope: fox_agent_core::AutoExtractScope::Global,
                 auto_extract_message_window: 4,
                 verify_relevance: false,
+                embedding_enabled: false,
+                storage_dir: Some(mem_dir),
                 ..Default::default()
             },
             ..Default::default()
@@ -253,8 +256,10 @@ mod sdk_tests {
         let (tx, mut rx) = tokio::sync::mpsc::channel(32);
         let _ = agent.run_once_streaming("Please keep rust answers concise", &tx).await.unwrap();
 
+        // auto_extract is spawned async; wait for it to complete
+        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
         let mut saw_ingestion = false;
-        for _ in 0..24 {
+        for _ in 0..60 {
             let ev = tokio::time::timeout(std::time::Duration::from_millis(200), rx.recv()).await.ok().flatten();
             let Some(ev) = ev else { break };
             if let AgentEvent::MemoryStateChanged { event } = ev {
@@ -264,7 +269,7 @@ mod sdk_tests {
                 }
             }
         }
-        assert!(saw_ingestion);
+        assert!(saw_ingestion, "expected IngestionCompleted event from auto_extract");
 
         tokio::time::sleep(std::time::Duration::from_millis(50)).await;
         let stored = agent
@@ -279,21 +284,29 @@ mod sdk_tests {
     #[tokio::test]
     async fn phase4_prompt_builder_includes_planning_context() {
         let session_id = format!("phase4-{}", uuid::Uuid::new_v4());
-        let _ = save_todos(&session_id, vec![TodoItem {
-            id: "t1".into(), content: "implement phase4".into(), status: TodoStatus::InProgress, priority: TodoPriority::High,
-        }], false);
-        let _ = save_plan(&session_id, vec![PlanItem {
-            id: "p1".into(), content: "spawn worker".into(), status: PlanStatus::Pending, priority: PlanPriority::High,
-            assigned_to: None, blocked_by: vec![],
-        }], false);
+        let root = std::env::temp_dir().join(format!("fox-sdk-planning-{}", uuid::Uuid::new_v4()));
+        let planning_store: Arc<dyn PlanningStore> = Arc::new(FilePlanningStore::new(root));
+        let _ = fox_agent_core::save_todos_with_store(
+            planning_store.as_ref(),
+            &session_id,
+            vec![TodoItem {
+                id: "t1".into(), content: "implement phase4".into(), status: TodoStatus::InProgress, priority: TodoPriority::High,
+            }],
+            false,
+        );
+        let _ = fox_agent_core::save_plan_with_store(
+            planning_store.as_ref(),
+            &session_id,
+            vec![PlanItem {
+                id: "p1".into(), content: "spawn worker".into(), status: PlanStatus::Pending, priority: PlanPriority::High,
+                assigned_to: None, blocked_by: vec![],
+            }],
+            false,
+        );
 
         let builder = crate::prompt_builder::PromptBuilder::new("1.0.0", "abc123");
-        let planning_store: Arc<dyn PlanningStore> = Arc::new(FilePlanningStore::new(
-            std::env::temp_dir().join(format!("fox-sdk-planning-{}", uuid::Uuid::new_v4())),
-        ));
         let (split, _) = builder.build_split(&session_id, &planning_store, None, &[], None, None);
         assert!(split.dynamic_part.contains("implement phase4"));
-        // The planning context is routed to dynamic_part, check that
         assert!(split.dynamic_part.contains("implement phase4"), "dynamic part should contain todo items: {}", split.dynamic_part);
         assert!(split.dynamic_part.contains("spawn worker"));
     }

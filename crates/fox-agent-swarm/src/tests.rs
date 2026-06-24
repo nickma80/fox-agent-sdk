@@ -1,6 +1,5 @@
 #[cfg(test)]
 mod swarm_tests {
-    use super::*;
     use crate::*;
     use fox_agent_tools::{PlanItem, PlanPriority, PlanStatus};
 
