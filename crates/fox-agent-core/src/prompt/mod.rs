@@ -138,6 +138,8 @@ impl ContextInfo {
 pub struct PromptBuilder {
     pub version: String,
     pub git_hash: String,
+    /// When set, overrides the compiled-in default system template.
+    custom_system_template: Option<String>,
 }
 
 impl PromptBuilder {
@@ -145,6 +147,7 @@ impl PromptBuilder {
         Self {
             version: version.into(),
             git_hash: git_hash.into(),
+            custom_system_template: None,
         }
     }
 
@@ -178,9 +181,10 @@ impl PromptBuilder {
         planning_context: Option<&str>,
         active_skill: Option<&str>,
     ) -> (String, ContextInfo) {
-        let mut parts = vec![DEFAULT_SYSTEM_PROMPT.to_string()];
+        let template = self.system_template().to_string();
+        let mut parts = vec![template.clone()];
         let mut info = ContextInfo {
-            system_prompt_chars: DEFAULT_SYSTEM_PROMPT.len(),
+            system_prompt_chars: template.len(),
             ..Default::default()
         };
 
@@ -354,8 +358,20 @@ impl PromptBuilder {
     }
 
     /// Get the default system prompt string (for use as a static section).
-    pub fn system_template(&self) -> &'static str {
-        DEFAULT_SYSTEM_PROMPT
+    pub fn system_template(&self) -> &str {
+        self.custom_system_template
+            .as_deref()
+            .unwrap_or(DEFAULT_SYSTEM_PROMPT)
+    }
+
+    /// Override the compiled-in system prompt with a custom template.
+    ///
+    /// The provided string replaces `DEFAULT_SYSTEM_PROMPT` in all subsequent
+    /// prompt builds. Useful for generic (non-coding) agent applications that
+    /// need a different persona or domain-specific instructions.
+    pub fn with_system_template(mut self, template: impl Into<String>) -> Self {
+        self.custom_system_template = Some(template.into());
+        self
     }
 
     // ── Private helpers ──

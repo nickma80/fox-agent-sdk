@@ -105,4 +105,13 @@ impl PromptBuilder {
     pub fn core(&self) -> &CorePromptBuilder {
         &self.core
     }
+
+    /// Override the compiled-in system prompt with a custom template.
+    ///
+    /// Passes through to [`CorePromptBuilder::with_system_template`].
+    /// Use for non-coding agent applications that need a different persona.
+    pub fn with_system_template(mut self, template: impl Into<String>) -> Self {
+        self.core = self.core.with_system_template(template);
+        self
+    }
 }

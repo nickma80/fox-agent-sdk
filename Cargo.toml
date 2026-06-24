@@ -36,6 +36,10 @@ path = "examples/swarm_workflow.rs"
 name = "custom_tool"
 path = "examples/custom_tool.rs"
 
+[[example]]
+name = "general_agent"
+path = "examples/general_agent.rs"
+
 [dependencies]
 fox-agent-sdk = { path = "crates/fox-agent-sdk" }
 async-trait.workspace = true

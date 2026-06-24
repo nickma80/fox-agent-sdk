@@ -63,6 +63,7 @@ pub struct AgentBuilder {
     tools: Vec<Arc<dyn Tool>>,
     permission_hook:
         Option<Arc<dyn Fn(&str, &serde_json::Value) -> PermissionResult + Send + Sync>>,
+    system_prompt: Option<String>,
 }
 
 impl Default for AgentBuilder {
@@ -87,6 +88,7 @@ impl AgentBuilder {
             default_tools: false,
             tools: Vec::new(),
             permission_hook: None,
+            system_prompt: None,
         }
     }
 
@@ -183,6 +185,29 @@ impl AgentBuilder {
         self
     }
 
+    /// Override the default system prompt template.
+    ///
+    /// The provided string replaces the compiled-in coding-oriented system
+    /// prompt.  Use this for non-coding agent applications that need a
+    /// different persona or domain-specific instructions.
+    ///
+    /// # Example (customer-support agent)
+    ///
+    /// ```ignore
+    /// AgentBuilder::new()
+    ///     .provider_config(ProviderConfig::deepseek(key))
+    ///     .with_system_prompt(
+    ///         "You are a helpful customer support agent. \
+    ///          You can look up orders, process refunds, and answer FAQs."
+    ///     )
+    ///     .build()
+    ///     .await?;
+    /// ```
+    pub fn with_system_prompt(mut self, template: impl Into<String>) -> Self {
+        self.system_prompt = Some(template.into());
+        self
+    }
+
     // ── build ──
 
     /// Assemble an [`Agent`] from the accumulated config.
@@ -220,6 +245,11 @@ impl AgentBuilder {
         if let Some(store) = self.planning_store {
             harness.planning_store = store.clone();
             fox_agent_core::set_default_planning_store(store);
+        }
+
+        // Override system prompt if custom template provided
+        if let Some(template) = self.system_prompt {
+            harness.prompt_builder = harness.prompt_builder.with_system_template(template);
         }
 
         let agent = Agent::new(model, harness);
