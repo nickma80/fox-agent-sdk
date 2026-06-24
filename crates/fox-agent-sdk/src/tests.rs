@@ -3,9 +3,9 @@ mod sdk_tests {
     use crate::*;
     use fox_agent_core::{
         AgentEvent, AgentError, CompactionConfig, DefaultModel, DefaultSafetyPolicy,
-        FilePlanningStore, FileSessionStore, FoxAgentSdkConfig, MemoryConfig, MemoryStateEvent,
+        FilePlanningStore, FoxAgentSdkConfig, MemoryConfig, MemoryStateEvent,
         Message, Model, PermissionDecision, PermissionRequest, PermissionResult, PlanningStore,
-        PlanStatus, PlanPriority, SafetyConfig, SessionStore, StreamEvent, TokenUsage, Tool, ToolContext, ToolError,
+        PlanStatus, PlanPriority, SafetyConfig, StreamEvent, TokenUsage, Tool, ToolContext, ToolError,
         ToolOutput, TurnOutcome, ErrorKind,
     };
     use fox_agent_providers::MockProvider;

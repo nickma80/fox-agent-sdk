@@ -56,6 +56,10 @@ impl SafetySystem {
                     request: PermissionRequest::new(
                         tool_name,
                         format!("tool `{tool_name}` is in the denylist and requires your confirmation"),
+                    ).with_risk(
+                        fox_agent_core::RiskLevel::High,
+                        "denylist",
+                        tool_name.to_string(),
                     ),
                 };
             }
@@ -85,6 +89,10 @@ impl SafetySystem {
                 request: PermissionRequest::new(
                     tool_name,
                     format!("tool `{tool_name}` requires your confirmation"),
+                ).with_risk(
+                    fox_agent_core::RiskLevel::Medium,
+                    "default:confirm",
+                    tool_name.to_string(),
                 ),
             },
         }

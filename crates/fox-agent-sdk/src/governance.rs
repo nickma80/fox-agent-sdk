@@ -99,6 +99,21 @@ impl GovernanceGuard {
         self.metrics.read().await.clone()
     }
 
+    /// Record a tool execution success.
+    pub async fn record_tool_success(&self) {
+        self.metrics.write().await.record_tool_success();
+    }
+
+    /// Record a tool execution error.
+    pub async fn record_tool_error(&self) {
+        self.metrics.write().await.record_tool_error();
+    }
+
+    /// Record a compaction event.
+    pub async fn record_compaction(&self) {
+        self.metrics.write().await.record_compaction();
+    }
+
     /// Get the budget config.
     pub fn budget(&self) -> &BudgetConfig {
         &self.config

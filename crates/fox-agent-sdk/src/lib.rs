@@ -16,6 +16,7 @@ mod event_recorder;
 mod approval_manager;
 mod governance;
 mod replay_runner;
+mod scrub;
 mod agent;
 mod swarm_runtime;
 
@@ -23,13 +24,14 @@ pub use session::*;
 pub use memory::{MemoryInjection, MemoryInjectionEvent, MemoryInjectionState};
 pub use safety::*;
 pub use compaction::*;
-pub use prompt_builder::*;
+
 pub use harness::*;
 pub use builder::*;
 pub use event_recorder::*;
 pub use approval_manager::*;
 pub use governance::*;
 pub use replay_runner::*;
+pub use scrub::*;
 pub use agent::*;
 pub use swarm_runtime::*;
 

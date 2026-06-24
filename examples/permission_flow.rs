@@ -33,7 +33,7 @@ async fn main() {
         ..Default::default()
     };
 
-    let model: Arc<dyn Model> = Arc::new(DefaultModel::new(provider, "mock-1"));
+    let _model: Arc<dyn Model> = Arc::new(DefaultModel::new(provider, "mock-1"));
     let harness = Harness::new(
         FoxAgentSdkConfig { safety, ..Default::default() },
         None,

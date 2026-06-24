@@ -3,7 +3,7 @@
 //! Captures agent event transcripts and replays them with assertions
 //! (golden-file testing), useful for regression tests and CI.
 
-use fox_agent_core::{AgentEvent, EnvelopePayload, EventEnvelope};
+use fox_agent_core::{EnvelopePayload, EventEnvelope};
 use fox_agent_swarm::GoldenTranscript;
 use std::path::PathBuf;
 

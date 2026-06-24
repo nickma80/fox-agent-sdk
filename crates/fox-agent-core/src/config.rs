@@ -454,6 +454,9 @@ pub struct MetricsSnapshot {
     pub total_output_tokens: u64,
     pub estimated_cost_cents: u64,
     pub tool_calls: u64,
+    pub tool_success_count: u64,
+    pub tool_error_count: u64,
+    pub compaction_count: u64,
     pub turns_completed: u64,
     pub total_latency_ms: u64,
     pub token_usage_history: Vec<TokenUsageEntry>,
@@ -485,6 +488,30 @@ impl MetricsSnapshot {
             latency_ms,
             cost_cents,
         });
+    }
+
+    /// Record a tool success.
+    pub fn record_tool_success(&mut self) {
+        self.tool_success_count += 1;
+    }
+
+    /// Record a tool error.
+    pub fn record_tool_error(&mut self) {
+        self.tool_error_count += 1;
+    }
+
+    /// Record a compaction event.
+    pub fn record_compaction(&mut self) {
+        self.compaction_count += 1;
+    }
+
+    /// Computed tool error rate (0.0 - 1.0), or 0.0 if no tool calls.
+    pub fn tool_error_rate(&self) -> f64 {
+        let total = self.tool_success_count + self.tool_error_count;
+        if total == 0 {
+            return 0.0;
+        }
+        self.tool_error_count as f64 / total as f64
     }
 
     /// Check whether the accumulated metrics exceed the given budget.

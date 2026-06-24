@@ -89,7 +89,7 @@ impl EventRecorder {
         self.buffer.read().await.clone()
     }
 
-    /// Export buffer to a JSONL file.
+    /// Export buffer to a JSONL file, with secret scrubbing applied.
     pub async fn export_to_file(&self, path: &PathBuf) -> std::io::Result<()> {
         let buf = self.buffer.read().await;
         if let Some(parent) = path.parent() {
@@ -100,7 +100,9 @@ impl EventRecorder {
             let line = envelope.to_json_line().map_err(|e| {
                 std::io::Error::new(std::io::ErrorKind::InvalidData, e.to_string())
             })?;
-            writeln!(f, "{line}")?;
+            // Scrub secrets from exported data
+            let safe_line = crate::scrub::mask_event_payload(&line);
+            writeln!(f, "{safe_line}")?;
         }
         Ok(())
     }

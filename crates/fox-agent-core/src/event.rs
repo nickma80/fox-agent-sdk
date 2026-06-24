@@ -26,6 +26,30 @@ pub enum TurnOutcome {
 
 // ── Permission types ──
 
+/// Risk level for tool permission assessment.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
+pub enum RiskLevel {
+    /// Safe read-only operation
+    Low,
+    /// Read + limited write (e.g. edit, todo)
+    Medium,
+    /// Arbitrary write or shell invocation
+    High,
+    /// Network access or destructive operation
+    Critical,
+}
+
+impl std::fmt::Display for RiskLevel {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            RiskLevel::Low => write!(f, "low"),
+            RiskLevel::Medium => write!(f, "medium"),
+            RiskLevel::High => write!(f, "high"),
+            RiskLevel::Critical => write!(f, "critical"),
+        }
+    }
+}
+
 /// A request to ask the user for permission before executing a tool.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct PermissionRequest {
@@ -35,6 +59,16 @@ pub struct PermissionRequest {
     pub tool_name: String,
     /// Human-readable prompt to show the user
     pub prompt: String,
+    /// Risk level of the requested operation
+    pub risk_level: RiskLevel,
+    /// Unix timestamp when the request expires (None = no expiry)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expires_at: Option<u64>,
+    /// Policy source that triggered the permission check
+    /// (e.g. "denylist", "allowlist", "default:confirm", "default:deny")
+    pub policy_source: String,
+    /// Short human-readable summary of what the tool will do
+    pub tool_summary: String,
 }
 
 impl PermissionRequest {
@@ -43,7 +77,30 @@ impl PermissionRequest {
             request_id: Uuid::new_v4().to_string(),
             tool_name: tool_name.into(),
             prompt: prompt.into(),
+            risk_level: RiskLevel::Medium,
+            expires_at: None,
+            policy_source: String::new(),
+            tool_summary: String::new(),
         }
+    }
+
+    /// Build a request with risk level and policy source.
+    pub fn with_risk(
+        mut self,
+        level: RiskLevel,
+        policy_source: impl Into<String>,
+        tool_summary: impl Into<String>,
+    ) -> Self {
+        self.risk_level = level;
+        self.policy_source = policy_source.into();
+        self.tool_summary = tool_summary.into();
+        self
+    }
+
+    /// Set the expiry timestamp.
+    pub fn with_expiry(mut self, expires_at_secs: u64) -> Self {
+        self.expires_at = Some(expires_at_secs);
+        self
     }
 }
 
@@ -139,7 +196,7 @@ pub enum AgentEvent {
     /// A tool call completed (contains the tool output)
     ToolCallEnd { call_id: String, output: ToolOutput },
     /// Agent needs user permission before executing a tool
-    PermissionRequest { request_id: String, tool_name: String, prompt: String },
+    PermissionRequest { request_id: String, tool_name: String, prompt: String, risk_level: String, policy_source: String, tool_summary: String },
     /// A compaction event occurred
     Compaction { event: CompactionEvent },
     /// Memory injection state changed
@@ -199,7 +256,7 @@ pub enum EnvelopePayload {
     ModelUsage { usage: TokenUsage },
     ToolCallStart { call_id: String, name: String, input: Value },
     ToolCallEnd { call_id: String, output: ToolOutput },
-    PermissionRequest { request_id: String, tool_name: String, prompt: String },
+    PermissionRequest { request_id: String, tool_name: String, prompt: String, risk_level: String, policy_source: String, tool_summary: String },
     Compaction { removed_messages: u64, kept_messages: u64, summary_chars: u64 },
     MemoryStateChanged { event: MemoryStateEvent },
     MemoryInjected { count: u32, memory_ids: Vec<String> },
@@ -279,11 +336,14 @@ impl From<&AgentEvent> for EnvelopePayload {
                 call_id: call_id.clone(),
                 output: output.clone(),
             },
-            AgentEvent::PermissionRequest { request_id, tool_name, prompt } => {
+            AgentEvent::PermissionRequest { request_id, tool_name, prompt, risk_level, policy_source, tool_summary } => {
                 EnvelopePayload::PermissionRequest {
                     request_id: request_id.clone(),
                     tool_name: tool_name.clone(),
                     prompt: prompt.clone(),
+                    risk_level: risk_level.clone(),
+                    policy_source: policy_source.clone(),
+                    tool_summary: tool_summary.clone(),
                 }
             }
             AgentEvent::Compaction { event } => EnvelopePayload::Compaction {

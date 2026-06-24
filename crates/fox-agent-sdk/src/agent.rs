@@ -273,9 +273,17 @@ impl Agent {
 
                 let start = Instant::now();
                 let output = match self.harness.execute_tool(&pending.name, pending.input, ctx).await {
-                    Ok(output) => output,
+                    Ok(output) => {
+                        if let Some(ref guard) = self.governance {
+                            guard.record_tool_success().await;
+                        }
+                        output
+                    }
                     Err(err) => {
                         error!(tool = %pending.name, error = %err, "Tool execution failed");
+                        if let Some(ref guard) = self.governance {
+                            guard.record_tool_error().await;
+                        }
                         self.emit_error_event(event_tx, AgentError::Tool(err.clone())).await;
                         return Err(AgentError::Tool(err));
                     }
@@ -358,6 +366,9 @@ impl Agent {
                     kept = compaction.kept_messages,
                     "Compaction triggered"
                 );
+                if let Some(ref guard) = self.governance {
+                    guard.record_compaction().await;
+                }
                 let _ = event_tx
                     .send(AgentEvent::Compaction { event: compaction })
                     .await;
@@ -441,6 +452,9 @@ impl Agent {
                             "Context limit detected, compacting and retrying"
                         );
                         if let Some(compaction) = self.harness.maybe_compact_messages().await {
+                            if let Some(ref guard) = self.governance {
+                                guard.record_compaction().await;
+                            }
                             let _ = event_tx
                                 .send(AgentEvent::Compaction { event: compaction })
                                 .await;
@@ -649,6 +663,9 @@ impl Agent {
                                 request_id: request.request_id.clone(),
                                 tool_name: request.tool_name.clone(),
                                 prompt: request.prompt.clone(),
+                                risk_level: request.risk_level.to_string(),
+                                policy_source: request.policy_source.clone(),
+                                tool_summary: request.tool_summary.clone(),
                             })
                             .await;
                         let outcome = TurnOutcome::RequiresUserDecision { request };
@@ -679,6 +696,9 @@ impl Agent {
                 debug!(tool = %name, "Executing tool");
                 let output = match self.harness.execute_tool(&name, input, ctx).await {
                     Ok(output) => {
+                        if let Some(ref guard) = self.governance {
+                            guard.record_tool_success().await;
+                        }
                         info!(
                             tool = %name,
                             is_error = output.is_error,
@@ -689,6 +709,9 @@ impl Agent {
                     }
                     Err(err) => {
                         error!(tool = %name, error = %err, "Tool execution failed");
+                        if let Some(ref guard) = self.governance {
+                            guard.record_tool_error().await;
+                        }
                         return Err(self.handle_error(event_tx, turn_id, AgentError::Tool(err)));
                     }
                 };

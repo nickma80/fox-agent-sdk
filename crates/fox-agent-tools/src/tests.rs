@@ -2,8 +2,8 @@
 mod tools_tests {
     use crate::*;
     use fox_agent_core::{
-        storage, FilePlanningStore, MemoryConfig, MemoryManager, PlanningScope, Tool, ToolContext,
-        ToolExecutionMode,
+        storage, FilePlanningStore, MemoryConfig, MemoryManager, PlanningScope, PlanningStore,
+        Tool, ToolContext, ToolExecutionMode,
     };
     use serde_json::json;
     use std::sync::Arc;
