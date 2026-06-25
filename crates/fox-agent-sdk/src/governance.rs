@@ -145,14 +145,28 @@ impl GovernanceGuard {
 /// Prices are approximate per-model defaults. For production use,
 /// inject pricing via a custom `metrics_hook`.
 pub fn estimate_cost_cents(model_id: &str, usage: &TokenUsage) -> u64 {
-    let (input_price_per_1m, output_price_per_1m) = match model_id {
-        id if id.contains("deepseek") => (140, 280),     // DeepSeek v3 pricing
-        id if id.contains("claude") => (3000, 15000),     // Claude Sonnet
-        id if id.contains("gpt-4o") => (2500, 10000),     // GPT-4o
-        _ => (500, 1500),                                  // default conservative
+    let output_price_per_1m = match model_id {
+        id if id.contains("deepseek") => 42,     // $0.42/M
+        id if id.contains("claude") => 15000,     // $15.00/M
+        id if id.contains("gpt-4o") => 10000,     // $10.00/M
+        _ => 1500,                                 // $1.50/M default
     };
 
-    let input_cost = usage.input_tokens as u64 * input_price_per_1m / 1_000_000;
+    // DeepSeek prefix caching: cache-hit $0.028/M vs cache-miss $0.28/M (10x).
+    // Uses denominator 10_000_000 for fractional-cent precision (28 = 2.8 cents).
+    let input_cost = if model_id.contains("deepseek") {
+        let cache_hit = usage.cache_read_input_tokens.unwrap_or(0) as u64;
+        let cache_miss = usage.input_tokens.saturating_sub(cache_hit as u32) as u64;
+        (cache_hit * 28 + cache_miss * 280) / 10_000_000
+    } else {
+        let input_price = match model_id {
+            id if id.contains("claude") => 3000,    // $30.00/M
+            id if id.contains("gpt-4o") => 2500,     // $25.00/M
+            _ => 500,                                 // $5.00/M default
+        };
+        usage.input_tokens as u64 * input_price / 1_000_000
+    };
+
     let output_cost = usage.output_tokens as u64 * output_price_per_1m / 1_000_000;
     input_cost + output_cost
 }
@@ -184,8 +198,21 @@ mod tests {
             cache_creation_input_tokens: Some(0),
         };
         let cost = estimate_cost_cents("deepseek-v4-flash", &big_usage);
-        // 100000*140/1M=14, 50000*280/1M=14 → 28 cents
-        assert!(cost >= 14);
+        // 100000*280/10M=2, 50000*42/1M=2 → 4 cents
+        assert_eq!(cost, 4);
+
+        // Cache-hit: 90% of input tokens hit the cache
+        let cache_hit_usage = TokenUsage {
+            input_tokens: 100_000,
+            output_tokens: 50_000,
+            total_tokens: 150_000,
+            cache_read_input_tokens: Some(90_000),
+            cache_creation_input_tokens: Some(0),
+        };
+        let cost = estimate_cost_cents("deepseek-v4-flash", &cache_hit_usage);
+        // cache_hit: 90000*28/10M=0, cache_miss: 10000*280/10M=0, output: 50000*42/1M=2
+        // → total ≈ 2 cents (saved 50% vs all-cache-miss)
+        assert_eq!(cost, 2);
     }
 
     #[tokio::test]

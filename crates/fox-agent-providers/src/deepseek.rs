@@ -55,6 +55,8 @@ pub struct DeepSeekProvider {
     frozen_system: Arc<RwLock<Option<String>>>,
     /// Frozen tools JSON — serialized on first call with sorted keys.
     frozen_tools: Arc<RwLock<Option<Vec<Value>>>>,
+    /// Active session correlation id (set via resume_session_id on first call).
+    session_id: Arc<RwLock<Option<String>>>,
 }
 
 impl DeepSeekProvider {
@@ -75,6 +77,7 @@ impl DeepSeekProvider {
             thinking_enabled: Arc::new(RwLock::new(true)),
             frozen_system: Arc::new(RwLock::new(None)),
             frozen_tools: Arc::new(RwLock::new(None)),
+            session_id: Arc::new(RwLock::new(None)),
         }
     }
 
@@ -413,13 +416,21 @@ async fn parse_sse_stream(
                 if !usage.is_null() {
                     if let Some(prompt_tokens) = usage.get("prompt_tokens").and_then(|v| v.as_u64()) {
                         let output_tokens = usage.get("completion_tokens").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
+                        let reasoning_tokens = usage
+                            .get("completion_tokens_details")
+                            .and_then(|d| d.get("reasoning_tokens"))
+                            .and_then(|v| v.as_u64())
+                            .unwrap_or(0) as u32;
+                        let cache_hit = usage
+                            .get("prompt_cache_hit_tokens")
+                            .and_then(|v| v.as_u64());
                         send_ok(&tx, StreamEvent::Usage {
                             usage: TokenUsage {
                                 input_tokens: prompt_tokens as u32,
                                 output_tokens,
                                 total_tokens: (prompt_tokens + output_tokens as u64) as u32,
-                                cache_read_input_tokens: None,
-                                cache_creation_input_tokens: None,
+                                cache_read_input_tokens: cache_hit.map(|h| h as u32),
+                                cache_creation_input_tokens: Some(reasoning_tokens),
                             }
                         });
                         continue;
@@ -507,8 +518,22 @@ impl Provider for DeepSeekProvider {
         tools: &[ToolDefinition],
         system_static: &str,
         system_dynamic: &str,
-        _resume_session_id: Option<&str>,
+        resume_session_id: Option<&str>,
     ) -> Result<EventStream, ProviderError> {
+        // ── Session tracking ──
+        if let Some(sid) = resume_session_id {
+            let mut guard = self.session_id.write().await;
+            if guard.as_deref() != Some(sid) {
+                // Session changed — reset frozen prefix for new cache alignment
+                if guard.is_some() {
+                    tracing::info!(old_session = ?*guard, new_session = sid, "DeepSeek: session resumed, resetting frozen prefix");
+                    self.frozen_system.write().await.take();
+                    self.frozen_tools.write().await.take();
+                }
+                *guard = Some(sid.to_string());
+            }
+        }
+
         let thinking_enabled = *self.thinking_enabled.read().await;
 
         // Combine system parts
