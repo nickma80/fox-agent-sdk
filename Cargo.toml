@@ -3,6 +3,7 @@ members = [
     "crates/fox-agent-core",
     "crates/fox-agent-providers",
     "crates/fox-agent-tools",
+    "crates/fox-agent-mcp",
     "crates/fox-agent-swarm",
     "crates/fox-agent-sdk",
 ]
@@ -40,8 +41,13 @@ path = "examples/custom_tool.rs"
 name = "general_agent"
 path = "examples/general_agent.rs"
 
+[[example]]
+name = "mcp_integration"
+path = "examples/mcp_integration.rs"
+
 [dependencies]
 fox-agent-sdk = { path = "crates/fox-agent-sdk" }
+fox-agent-mcp = { path = "crates/fox-agent-mcp" }
 async-trait.workspace = true
 tokio.workspace = true
 serde_json.workspace = true

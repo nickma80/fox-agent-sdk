@@ -18,6 +18,9 @@ pub struct FoxAgentSdkConfig {
 
     /// Budget governance configuration.
     pub budget: BudgetConfig,
+
+    /// MCP integration configuration.
+    pub mcp: McpConfig,
 }
 
 impl Default for FoxAgentSdkConfig {
@@ -30,6 +33,7 @@ impl Default for FoxAgentSdkConfig {
             planning_storage_dir: None,
             auto_snapshot: true,
             budget: BudgetConfig::default(),
+            mcp: McpConfig::default(),
         }
     }
 }
@@ -533,5 +537,106 @@ impl MetricsSnapshot {
             }
         }
         None
+    }
+}
+
+// ── MCP Configuration ──
+
+/// Configuration for the Model Context Protocol integration.
+///
+/// When `enabled` is true, connected MCP servers contribute their tool
+/// definitions to the agent's tool list at build time.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct McpConfig {
+    /// Global MCP enable/disable switch.
+    #[serde(default = "default_enabled")]
+    pub enabled: bool,
+
+    /// Connection timeout in seconds.
+    #[serde(default = "default_mcp_connect_timeout")]
+    pub connect_timeout_secs: u64,
+
+    /// Per-tool-call timeout in seconds.
+    #[serde(default = "default_mcp_tool_timeout")]
+    pub tool_timeout_secs: u64,
+
+    /// Maximum concurrent MCP tool calls.
+    #[serde(default)]
+    pub max_concurrent_tools: usize,
+
+    /// Whether to automatically refresh tool lists (tools/list_changed).
+    #[serde(default)]
+    pub auto_refresh_tools: bool,
+
+    /// Refresh interval in seconds (0 = disabled).
+    #[serde(default)]
+    pub tool_refresh_interval_secs: u64,
+
+    /// Maximum reconnect attempts after SSE disconnect.
+    #[serde(default)]
+    pub max_reconnect_attempts: u32,
+
+    /// Reconnect backoff in milliseconds.
+    #[serde(default = "default_reconnect_backoff")]
+    pub reconnect_backoff_ms: u64,
+
+    /// Default risk level assigned to MCP server tools.
+    #[serde(default)]
+    pub default_risk_level: McpRiskLevel,
+
+    /// Whether to expose resources to the system prompt.
+    #[serde(default)]
+    pub expose_resources: bool,
+
+    /// Max resources to inject per turn.
+    #[serde(default = "default_max_resources")]
+    pub max_resources_per_injection: usize,
+}
+
+fn default_enabled() -> bool {
+    false
+}
+fn default_mcp_connect_timeout() -> u64 {
+    30
+}
+fn default_mcp_tool_timeout() -> u64 {
+    60
+}
+fn default_reconnect_backoff() -> u64 {
+    1000
+}
+fn default_max_resources() -> usize {
+    5
+}
+
+/// Risk level assigned to MCP server tools.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub enum McpRiskLevel {
+    /// Safe read-only operations
+    #[default]
+    Low,
+    /// Read + limited write
+    Medium,
+    /// Arbitrary write or shell invocation
+    High,
+    /// Network access or destructive operations
+    Critical,
+}
+
+impl Default for McpConfig {
+    fn default() -> Self {
+        Self {
+            enabled: default_enabled(),
+            connect_timeout_secs: default_mcp_connect_timeout(),
+            tool_timeout_secs: default_mcp_tool_timeout(),
+            max_concurrent_tools: 4,
+            auto_refresh_tools: false,
+            tool_refresh_interval_secs: 0,
+            max_reconnect_attempts: 3,
+            reconnect_backoff_ms: default_reconnect_backoff(),
+            default_risk_level: McpRiskLevel::High,
+            expose_resources: false,
+            max_resources_per_injection: default_max_resources(),
+        }
     }
 }

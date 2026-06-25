@@ -16,6 +16,7 @@ uuid.workspace = true
 tracing.workspace = true
 
 fox-agent-core = { path = "../fox-agent-core" }
+fox-agent-mcp = { path = "../fox-agent-mcp" }
 fox-agent-providers = { path = "../fox-agent-providers" }
 fox-agent-swarm = { path = "../fox-agent-swarm" }
 fox-agent-tools = { path = "../fox-agent-tools" }

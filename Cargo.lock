@@ -1589,6 +1589,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "fox-agent-mcp"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+ "tokio",
+ "tracing",
+ "uuid 1.23.3",
+]
+
+[[package]]
 name = "fox-agent-providers"
 version = "0.1.0"
 dependencies = [
@@ -1609,6 +1622,7 @@ dependencies = [
  "anyhow",
  "async-trait",
  "fox-agent-core",
+ "fox-agent-mcp",
  "fox-agent-providers",
  "fox-agent-swarm",
  "fox-agent-tools",
@@ -1626,6 +1640,7 @@ name = "fox-agent-sdk-workspace"
 version = "0.1.0"
 dependencies = [
  "async-trait",
+ "fox-agent-mcp",
  "fox-agent-sdk",
  "serde_json",
  "tokio",

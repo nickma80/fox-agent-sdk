@@ -64,6 +64,14 @@ graph TB
         H6[Compaction]
         H7[Safety / Approval]
         H8[Governance]
+        H9[MCP Client]
+    end
+
+    subgraph "MCP Servers (External)"
+        MS1[MCP Server A<br/>stdio / SSE]
+        MS2[MCP Server B<br/>stdio / SSE]
+        H9 -->|json-rpc| MS1
+        H9 -->|json-rpc| MS2
     end
 
     subgraph "Swarm"
@@ -87,6 +95,11 @@ graph TD
     Harness --> PromptBuilder
     Harness --> MemoryManager
     Harness --> GovernanceGuard
+    Harness --> McpClient
+    McpClient --> McpServer
+    McpServer --> McpTool
+    McpServer --> McpResource
+    McpServer --> McpPrompt
     Session --> SessionStore
     Agent --> EventEnvelope
     EventEnvelope --> EventRecorder
@@ -115,6 +128,7 @@ graph TD
 - **运行治理**：`GovernanceGuard`（token/cost budget 强制执行）、metrics hooks
 - **敏感信息脱敏**：`mask_secrets()` API key / JWT / PEM 自动脱敏
 - **Swarm**：`SwarmSupervisor`（health check、retry、任务重分配、汇总报告）+ coordinator
+- **MCP 集成**：`McpClient`（stdio / SSE 传输）、动态工具发现、资源/提示接入、权限集成
 - **回放测试**：`ReplayRunner` golden transcript 验证、`MockProvider` 确定性测试
 
 #### SDK 不做
@@ -128,6 +142,7 @@ fox-agent-sdk (Workspace)
  ├── fox-agent-core       # 核心类型、Trait、Event、Config
  ├── fox-agent-providers  # LLM 后端 (DeepSeek, OpenAI, Anthropic, Mock)
  ├── fox-agent-tools      # 内置工具集 (fs, bash, todo, plan, goal, memory)
+ ├── fox-agent-mcp        # MCP 客户端（json-rpc、stdio/SSE、工具/资源发现）
  ├── fox-agent-swarm      # SwarmCoordinator, SwarmSupervisor
  └── fox-agent-sdk        # 主入口 (Agent, Harness, Builder, Governance, EventRecorder...)
 ```
@@ -169,6 +184,8 @@ let mut agent = AgentBuilder::new()
 | `with_planning_store(store)` | Planning 持久化 | 配置驱动 |
 | `with_sandbox(sandbox)` | 文件系统沙箱 | — |
 | `with_permission_hook(hook)` | 自定义权限决策函数 | — |
+| `with_mcp_server(config)` | 连接一个 MCP Server | — |
+| `with_mcp_config(cfg)` | MCP 全局配置 | — |
 | `build()` | 组装 Agent | — |
 | `build_swarm_runtime()` | 组装 SwarmRuntime | — |
 
@@ -182,6 +199,37 @@ let runtime = SwarmRuntimeBuilder::new()
     .build()
     .await?;
 ```
+
+### 2.3 MCP 集成（Builder 视角）
+
+```rust
+let mut agent = AgentBuilder::new()
+    .provider_config(ProviderConfig::deepseek(api_key))
+    .model_id("deepseek-v4-flash")
+    .with_default_tools()
+    // 连接一个 stdio MCP server（本地进程）
+    .with_mcp_server(McpServerConfig {
+        name: "filesystem".into(),
+        transport: McpTransport::Stdio {
+            command: "npx".into(),
+            args: vec!["-y", "@anthropic/mcp-server-filesystem", "/tmp"],
+        },
+        auto_approve: true,              // 自动审批该 server 的工具
+    })
+    // 连接一个 SSE MCP server（远程/本地 HTTP）
+    .with_mcp_server(McpServerConfig {
+        name: "database".into(),
+        transport: McpTransport::Sse {
+            url: "http://localhost:3001/sse".into(),
+            headers: vec![("Authorization".into(), "Bearer token".into())],
+        },
+        auto_approve: false,             // 该 server 的工具需要审批
+        tools_only: Some(vec!["query".into()]),  // 只暴露特定工具
+    })
+    .build()
+    .await?;
+```
+MCP server 的工具在 `build()` 时自动发现并注册到 `ToolExecutor`，所有 `tools/list`、`tools/call` 协议交互对 Agent 透明。
 
 ---
 
@@ -256,6 +304,8 @@ pub struct Harness {
     pub prompt_builder: PromptBuilder,
     pub skill_registry: Arc<RwLock<SkillRegistry>>,
     pub interrupt_manager: InterruptManager,
+    // MCP 集成
+    pub mcp_client: Option<McpClient>,
     // 持久化（产品化增强）
     pub session_store: Arc<dyn SessionStore>,
     pub planning_store: Arc<dyn PlanningStore>,
@@ -388,6 +438,255 @@ SplitPrompt
 
 `dynamic_part` 自动注入 planning context（todos、plan items、goals），由 `PlanningStore` 驱动。
 
+### 4.8 MCP Protocol Support
+
+> **状态**: 设计阶段，尚未实现。
+
+[Model Context Protocol (MCP)](https://modelcontextprotocol.io) 是由 Anthropic 发布的开放协议，标准化了 LLM 应用与外部工具、数据源之间的通信方式。Fox Agent SDK 通过 `fox-agent-mcp` crate 提供 MCP 客户端能力，让 Agent 可以连接任意 MCP Server 并自动发现其提供的工具、资源和提示。
+
+#### 4.8.1 设计目标
+
+- **零侵入接入**：通过 Builder 一行配置即可连接 MCP Server，工具自动注册
+- **双传输模式**：支持 stdio（本地子进程）和 SSE（HTTP 长连接）两种传输
+- **权限可控**：MCP 工具纳入统一的 Safety / Approval 体系
+- **动态发现**：`build()` 时自动执行 `tools/list`，运行时支持 `tools/list_changed` 增量更新
+- **资源上下文**：`MCP Resource` 可注入到 system prompt 中，为模型提供外部知识
+- **远程提示模板**：`MCP Prompt` 允许 Server 提供预定义的提示词模板
+
+#### 4.8.2 协议交互流程
+
+```mermaid
+sequenceDiagram
+    participant B as AgentBuilder
+    participant C as McpClient
+    participant S as MCP Server
+
+    B->>C: with_mcp_server(config)
+    B->>B: build()
+    B->>C: initialize()
+
+    C->>S: initialize (protocol_version, capabilities)
+    S-->>C: { serverInfo, capabilities }
+
+    C->>S: tools/list
+    S-->>C: [ { name, description, inputSchema } ]
+
+    C->>B: Vec<McpToolDef>
+    B->>B: register to ToolExecutor
+
+    Note over B: Agent ready — MCP tools are now<br/>part of the agent's tool list
+
+    loop Agent Turn
+        Agent->>C: execute mcp://filesystem/read_file
+        C->>S: tools/call { name, arguments }
+        S-->>C: { content: [{ type: "text", text: "..." }] }
+        C->>Agent: ToolOutput
+    end
+```
+
+#### 4.8.3 McpClient 核心结构
+
+```rust
+/// MCP 客户端 — Agent 与 MCP Server 之间的桥梁。
+pub struct McpClient {
+    /// 已连接的 server 列表
+    servers: Vec<Arc<McpServerHandle>>,
+    /// 从 MCP tool_name 到本地 tool_id 的映射
+    tool_map: HashMap<String, String>,
+    /// 全局超时与重试策略
+    config: McpConfig,
+}
+
+/// 单个 MCP Server 连接句柄。
+struct McpServerHandle {
+    name: String,
+    transport: Box<dyn McpTransport>,
+    /// auto_approve → 该 server 的工具默认 Allow
+    auto_approve: bool,
+    /// 空 = 暴露全部；非空 = 只暴露列表中的工具
+    tools_only: Option<Vec<String>>,
+    /// Server capabilities（initialize 后获取）
+    capabilities: McpServerCapabilities,
+}
+```
+
+#### 4.8.4 McpTransport 抽象
+
+```rust
+/// MCP 传输层抽象。每个 Server 使用一种传输方式。
+#[async_trait]
+pub trait McpTransport: Send + Sync {
+    /// 发送 JSON-RPC 请求，返回原始 JSON 响应。
+    async fn send(&self, request: McpRequest) -> Result<McpResponse, McpError>;
+
+    /// 启动传输（建立连接、握手）。
+    async fn start(&self) -> Result<(), McpError>;
+
+    /// 健康检查。
+    async fn ping(&self) -> Result<(), McpError>;
+}
+```
+
+**stdio 传输**：
+
+```rust
+McpTransport::Stdio {
+    command: "npx",           // 启动命令
+    args: vec!["-y", "@anthropic/mcp-server-filesystem", "/tmp"],
+    env: None,                // 可选环境变量
+    cwd: None,                // 可选工作目录
+}
+```
+- Agent `build()` 时启动子进程
+- 通过 stdin/stdout 发送 JSON-RPC 请求/响应
+- Agent drop 时自动终止子进程
+- 支持自动重启（crash 时）
+
+**SSE (Server-Sent Events) 传输**：
+
+```rust
+McpTransport::Sse {
+    url: "http://localhost:3001/sse",
+    headers: vec![("Authorization".into(), "Bearer xxx".into())],
+    connect_timeout_secs: 30,
+    request_timeout_secs: 60,
+}
+```
+- 先 POST `/message` 建立 session
+- 通过 SSE 端点接收服务器推送
+- 支持重连与指数退避
+
+#### 4.8.5 工具映射与命名
+
+MCP Server 返回的工具名可能与内置工具冲突。SDK 使用 `mcp://` 前缀命名空间避免冲突：
+
+```
+MCP tool name        →  Agent tool name
+─────────────────────────────────────────
+filesystem/read_file →  mcp://filesystem/read_file
+database/query       →  mcp://database/query
+```
+
+当 `tools_only` 过滤时，只有白名单中的工具被注册。
+
+工具分类：
+- `McpToolSchema` → `ToolDefinition` 的自动转换
+- `inputSchema` (JSON Schema) → `parameters_schema` (保持原样)
+- `description` 直接映射
+
+#### 4.8.6 Resource 与 Prompt 集成
+
+**Resource（资源）**：
+
+MCP Server 可暴露文件、数据库表、API 端点等外部资源。SDK 将其注入到 system prompt 的 `dynamic_part`：
+
+```rust
+// 在 build_system_prompt_split 时：
+let resources = mcp_client.list_resources().await;
+for res in resources {
+    if res.mime_type.starts_with("text/") {
+        dynamic_part.push_str(&format!(
+            "\n[MCP Resource: {}]\n{}\n",
+            res.uri, res.text.unwrap_or_default()
+        ));
+    }
+}
+```
+
+**Prompt（提示模板）**：
+
+MCP Server 可提供预定义的提示词模板，通过 `list_prompts` / `get_prompt` 获取并注入。
+
+#### 4.8.7 权限与审批集成
+
+MCP 工具与内置工具共享同一套 Safety / Approval 体系：
+
+| 配置项 | 说明 |
+|--------|------|
+| `auto_approve: true` | 该 server 全部工具默认 Allow |
+| `auto_approve: false` | 该 server 的工具遵循 `SafetyConfig.default_policy` |
+| `tools_only` | 白名单过滤（未列出的工具不暴露给 Agent） |
+| `McpServerConfig.risk_level` | 覆盖该 server 工具的风险级别 |
+
+```rust
+McpServerConfig {
+    name: "database".into(),
+    transport: McpTransport::Sse { url: "...".into(), headers: vec![] },
+    auto_approve: false,
+    risk_level: Some(RiskLevel::Critical),  // 数据库操作默认高风险
+    tools_only: Some(vec!["query".into()]), // 只暴露 query，不暴露 migrate/delete
+}
+```
+
+MCP 工具调用会生成 `PermissionRequest`，`tool_name` 为 `mcp://server_name/tool_name`，`tool_summary` 自动从 tool description 生成。
+
+#### 4.8.8 McpConfig 全局配置
+
+```rust
+pub struct McpConfig {
+    /// 全局是否启用 MCP
+    pub enabled: bool,
+
+    /// 连接超时（秒）
+    pub connect_timeout_secs: u64,
+
+    /// 单次工具调用超时（秒）
+    pub tool_timeout_secs: u64,
+
+    /// 最大并发 MCP 工具调用
+    pub max_concurrent_tools: usize,
+
+    /// 自动刷新工具列表（检测 tools/list_changed）
+    pub auto_refresh_tools: bool,
+
+    /// 刷新间隔（秒），0 = 不自动刷新
+    pub tool_refresh_interval_secs: u64,
+
+    /// 最大重连次数（SSE 断开时）
+    pub max_reconnect_attempts: u32,
+
+    /// 重连退避（毫秒）
+    pub reconnect_backoff_ms: u64,
+
+    /// 默认 MCP server 风险级别
+    pub default_risk_level: RiskLevel,
+
+    /// 是否暴露 resources 到 system prompt
+    pub expose_resources: bool,
+
+    /// 单次注入的最大 resource 数量
+    pub max_resources_per_injection: usize,
+}
+```
+
+#### 4.8.9 错误处理与降级
+
+| 场景 | 行为 |
+|------|------|
+| MCP Server 连接失败 | Agent 构建失败，返回 `AgentError::McpConnectError` |
+| 单个 server 连接失败，但 `allow_partial_failure = true` | 跳过该 server，其他正常连接 |
+| 工具调用超时 | 返回 `ToolError::Timeout`，不计入 server 状态 |
+| MCP Server 崩溃（stdio） | 自动重启子进程，重建连接 |
+| SSE 连接断开 | 指数退避重连（最多 `max_reconnect_attempts` 次） |
+| `tools/list` 失败 | 该 server 不贡献任何工具 |
+| 运行时新增工具（`tools/list_changed`） | 自动注册新工具到 ToolExecutor |
+
+#### 4.8.10 子 crate 结构（fox-agent-mcp）
+
+```
+fox-agent-mcp/
+├── Cargo.toml
+└── src/
+    ├── lib.rs              # pub mod client, transport, types
+    ├── client.rs           # McpClient
+    ├── transport.rs        # McpTransport trait + stdio + SSE 实现
+    ├── types.rs            # McpRequest, McpResponse, McpToolSchema, McpResource...
+    ├── json_rpc.rs         # JSON-RPC 2.0 编解码
+    └── tool_adapter.rs     # McpToolSchema → ToolDefinition 转换
+```
+
+依赖：`serde_json`, `tokio`, `reqwest` (SSE), `serde`。不依赖 `fox-agent-core`（通过 `fox-agent-sdk` 适配层桥接）。
+
 ---
 
 ## 5. Agent Loop — 核心运行循环
@@ -420,6 +719,8 @@ sequenceDiagram
     participant G as GovernanceGuard
     participant H as Harness
     participant M as Model
+    participant MC as McpClient
+    participant MS as MCP Server
 
     U->>A: run_once("message")
     A->>G: turn_begin(), check budget
@@ -427,20 +728,26 @@ sequenceDiagram
     A->>A: run_turn()
 
     loop Turn
-        A->>H: messages + tools + split prompt + memory
+        A->>H: messages + tools (incl. MCP) + split prompt + memory
         A->>M: complete(...)
         M-->>A: EventStream
 
         loop Stream Events
             alt TextDelta
                 A->>A: accumulate
-            else ToolUse
+            else ToolUse (mcp://...)
                 A->>H: check_tool_permission()
                 H-->>A: PermissionResult
                 alt AskUser
                     A-->>U: TurnOutcome::RequiresUserDecision
                     U->>A: resume_streaming(decision)
                 end
+                A->>MC: execute_mcp_tool()
+                MC->>MS: tools/call (JSON-RPC)
+                MS-->>MC: { content: [...] }
+                MC-->>A: ToolOutput
+                A->>G: record_tool_success/error
+            else ToolUse (local)
                 A->>H: execute_tool()
                 H-->>A: ToolOutput
                 A->>G: record_tool_success/error
@@ -499,6 +806,8 @@ pub enum AgentEvent {
     Compaction { event: CompactionEvent },
     MemoryStateChanged { event: MemoryStateEvent },
     SoftInterruptInjected { interrupt: InjectedInterrupt },
+    McpServerConnected { server_name: String },
+    McpServerDisconnected { server_name: String, error: Option<String> },
 
     Error { error: AgentError },
 }
@@ -734,10 +1043,11 @@ pub struct FoxAgentSdkConfig {
     pub memory: MemoryConfig,
     pub compaction: CompactionConfig,
     pub safety: SafetyConfig,
-    pub session_storage_dir: Option<PathBuf>,    // session 持久化目录
-    pub planning_storage_dir: Option<PathBuf>,   // planning 持久化目录
-    pub auto_snapshot: bool,                      // turn 后自动快照
-    pub budget: BudgetConfig,                     // 运行治理
+    pub mcp: McpConfig,                            // MCP 集成
+    pub session_storage_dir: Option<PathBuf>,      // session 持久化目录
+    pub planning_storage_dir: Option<PathBuf>,     // planning 持久化目录
+    pub auto_snapshot: bool,                        // turn 后自动快照
+    pub budget: BudgetConfig,                       // 运行治理
 }
 ```
 
@@ -779,6 +1089,7 @@ let runtime = SwarmRuntimeBuilder::new()
 - `examples/permission_flow.rs` — 权限审批流、审批缓存、审计
 - `examples/swarm_workflow.rs` — Swarm 多 Agent 编排
 - `examples/custom_tool.rs` — 自定义工具注册
+- `examples/mcp_integration.rs` — MCP 集成（连接外部 MCP Server）
 - `examples/multi_provider.rs` — 多 Provider 切换
 
 ---
@@ -795,6 +1106,7 @@ let runtime = SwarmRuntimeBuilder::new()
 | M4 | 强化协作与测试 | `GovernanceGuard`（budget/metrics）、`SwarmSupervisor`、`ReplayRunner`、Examples |
 | M5 | 权限增强 | `PermissionRequest` 扩展（risk_level、policy_source、tool_summary、expires_at） |
 | M6 | 治理增强 | `MetricsSnapshot` 扩展（tool_error_count、compaction_count）、`GovernanceGuard` 接线 |
+| M7 | MCP 集成 | `McpClient`、stdio/SSE 传输、工具自动发现、权限集成、Resource/Prompt 注入 |
 | NFR | 安全 | 敏感信息脱敏（`scrub` 模块）、策略可解释性 |
 
 ### 12.2 任务拆解
@@ -811,6 +1123,8 @@ let runtime = SwarmRuntimeBuilder::new()
 | T8 | `SwarmSupervisor` + retry/reassign/timeout | 已完成 |
 | T9 | `ReplayRunner` + golden transcript | 已完成 |
 | T10 | Examples + 测试模板 | 已完成 |
+| T11 | `McpTransport` trait + stdio/SSE 实现 | 设计完成，待实现 |
+| T12 | `McpClient` + Builder 集成 + 权限适配 | 设计完成，待实现 |
 
 ---
 
@@ -826,6 +1140,9 @@ let runtime = SwarmRuntimeBuilder::new()
 | AC4 | 权限审批支持会话级缓存、超时和可解释来源 | 通过 |
 | AC5 | Swarm 支持失败处理与汇总 | 通过 |
 | AC6 | examples 覆盖单 Agent、权限流、Swarm 三类核心场景 | 通过 |
+| AC7 | Agent 可通过 Builder 连接 MCP Server，自动发现并注册工具 | 待实现 |
+| AC8 | MCP 工具调用纳入 Safety/Approval 体系 | 待实现 |
+| AC9 | MCP Resource 可注入到 system prompt 作为上下文 | 待实现 |
 
 ### 13.2 验收用例
 
@@ -838,6 +1155,10 @@ let runtime = SwarmRuntimeBuilder::new()
 **Swarm 失败重分配**：Given worker 任务失败 → When supervisor 启用 retry → Then 任务重试或转派。
 
 **预算超限**：Given token/cost 超过 budget → When agent 继续运行 → Then 返回 `AgentError::BudgetExceeded`。
+
+**MCP 工具发现**：Given 一个 MCP Server 提供 3 个工具 → When Agent build() 完成 → Then `tools/list` 被调用且 3 个 `mcp://` 工具注册到 ToolExecutor。
+
+**MCP 权限审批**：Given MCP Server 非 auto_approve 且 `default_policy = Confirm` → When Agent 调用 MCP 工具 → Then 生成 `PermissionRequest` 并中断等待用户决策。
 
 ---
 
@@ -882,7 +1203,8 @@ fox-agent-sdk/
 │   ├── fox-agent-core/        # 核心类型、Trait、Event、Config
 │   ├── fox-agent-providers/   # DeepSeek, OpenAI, Anthropic, Mock
 │   ├── fox-agent-tools/       # read, write, bash, grep, todo, plan, goal, memory
-│   ├── fox-agent-swarm/       # SwarmCoordinator, SwarmSupervisor
+│   ├── fox-agent-mcp/          # McpClient, McpTransport (stdio + SSE), 工具发现
+│   ├── fox-agent-swarm/        # SwarmCoordinator, SwarmSupervisor
 │   └── fox-agent-sdk/         # Agent, Harness, Builder, EventRecorder, Governance...
 │       ├── src/
 │       │   ├── agent.rs            # Agent 核心 + turn loop
@@ -899,6 +1221,7 @@ fox-agent-sdk/
 │       │   ├── prompt_builder.rs   # PromptBuilder
 │       │   ├── session.rs          # SessionState
 │       │   ├── swarm_runtime.rs    # SwarmRuntime
+│       │   ├── mcp.rs              # MCP 集成适配层
 │       │   └── tests.rs            # 集成测试 (39 tests)
 │
 ├── examples/
@@ -907,6 +1230,7 @@ fox-agent-sdk/
 │   ├── swarm_workflow.rs       # Swarm 多 Agent
 │   ├── non_coding_agent.rs    # 通用 Agent（客服机器人，自定义 system prompt + 领域工具）
 │   ├── custom_tool.rs          # 自定义工具注册
+│   ├── mcp_integration.rs      # MCP 集成（连接外部 MCP Server）
 │
 │   └── multi_provider.rs       # 多 Provider 切换
 │
@@ -930,3 +1254,4 @@ fox-agent-sdk/
 - **Builder 优先**：`AgentBuilder` 链式 API > 手动组装 Provider/Model/Harness
 - **异步非阻塞**：Memory 检索、auto_extract 不阻塞主 turn
 - **配置集中**：`FoxAgentSdkConfig` 为唯一行为来源；SDK 不读取环境变量
+- **MCP 透明集成**：`mcp://` 前缀命名空间隔离外部工具，纳入统一 Safety 体系，传输层与 Agent 解耦

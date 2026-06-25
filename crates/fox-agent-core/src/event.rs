@@ -144,6 +144,9 @@ pub enum AgentError {
     /// Budget exceeded (token or cost)
     #[error("budget exceeded: {message}")]
     BudgetExceeded { message: String },
+    /// MCP-related error
+    #[error("mcp: {message}")]
+    Mcp { message: String },
 }
 
 impl AgentError {
@@ -155,6 +158,7 @@ impl AgentError {
             AgentError::PermissionDenied { .. } => ErrorKind::Permission,
             AgentError::Internal { .. } => ErrorKind::Internal,
             AgentError::BudgetExceeded { .. } => ErrorKind::BudgetExceeded,
+            AgentError::Mcp { .. } => ErrorKind::Mcp,
         }
     }
 }
@@ -168,6 +172,7 @@ pub enum ErrorKind {
     Internal,
     Cancelled,
     BudgetExceeded,
+    Mcp,
 }
 
 // ── Agent event types ──
@@ -207,6 +212,10 @@ pub enum AgentEvent {
     SoftInterruptInjected { interrupt: InjectedInterrupt },
     /// An error occurred
     Error { error: AgentError },
+    /// An MCP server connected successfully
+    McpServerConnected { server_name: String },
+    /// An MCP server disconnected
+    McpServerDisconnected { server_name: String, error: Option<String> },
 }
 
 /// Type alias for the sender side of the agent event channel.
@@ -261,6 +270,8 @@ pub enum EnvelopePayload {
     MemoryStateChanged { event: MemoryStateEvent },
     MemoryInjected { count: u32, memory_ids: Vec<String> },
     SoftInterruptInjected { content: String, urgent: bool },
+    McpServerConnected { server_name: String },
+    McpServerDisconnected { server_name: String, error: Option<String> },
     Error { kind: String, message: String },
 }
 
@@ -362,6 +373,15 @@ impl From<&AgentEvent> for EnvelopePayload {
                 EnvelopePayload::SoftInterruptInjected {
                     content: interrupt.content.clone(),
                     urgent: interrupt.urgent,
+                }
+            }
+            AgentEvent::McpServerConnected { server_name } => {
+                EnvelopePayload::McpServerConnected { server_name: server_name.clone() }
+            }
+            AgentEvent::McpServerDisconnected { server_name, error } => {
+                EnvelopePayload::McpServerDisconnected {
+                    server_name: server_name.clone(),
+                    error: error.clone(),
                 }
             }
             AgentEvent::Error { error } => EnvelopePayload::Error {

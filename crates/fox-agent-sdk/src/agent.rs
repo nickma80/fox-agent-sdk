@@ -3,6 +3,7 @@ use fox_agent_core::{
     PermissionRequest, PermissionResult, PendingToolCallSnapshot, ProviderError, Role,
     SessionSnapshot, StreamEvent, ToolContext, TurnOutcome, ToolExecutionMode, now_secs,
 };
+use fox_agent_mcp::McpClient;
 use futures::StreamExt;
 use std::sync::Arc;
 use std::time::Instant;
@@ -72,17 +73,21 @@ pub struct Agent {
     next_turn_id: u64,
     /// Optional budget governance guard.
     governance: Option<GovernanceGuard>,
+    /// MCP client for external tool servers.
+    pub mcp_client: Option<McpClient>,
 }
 
 impl Agent {
     pub fn new(model: Arc<dyn Model>, harness: Harness) -> Self {
         debug!(session_id = %harness.session_state.id, "Agent created");
         Self {
-            model, harness,
+            model,
+            harness,
             pending_permission: None,
             pending_tool_calls: Vec::new(),
             next_turn_id: 1,
             governance: None,
+            mcp_client: None,
         }
     }
 
@@ -155,6 +160,7 @@ impl Agent {
                 .collect(),
             next_turn_id: snapshot.next_turn_id.max(1),
             governance: None,
+            mcp_client: None,
         }
     }
 

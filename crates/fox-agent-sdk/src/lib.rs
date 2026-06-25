@@ -18,6 +18,7 @@ mod governance;
 mod replay_runner;
 mod scrub;
 mod agent;
+mod mcp;
 mod swarm_runtime;
 
 pub use session::*;
@@ -33,6 +34,7 @@ pub use governance::*;
 pub use replay_runner::*;
 pub use scrub::*;
 pub use agent::*;
+pub use mcp::*;
 pub use swarm_runtime::*;
 
 #[cfg(test)]

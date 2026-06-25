@@ -14,6 +14,7 @@ use std::sync::Arc;
 
 use crate::agent::Agent;
 use crate::harness::Harness;
+use crate::mcp::{McpServerConfig, connect_and_discover_tools};
 use crate::swarm_runtime::SwarmRuntime;
 
 // ── Provider factory ──
@@ -64,6 +65,7 @@ pub struct AgentBuilder {
     permission_hook:
         Option<Arc<dyn Fn(&str, &serde_json::Value) -> PermissionResult + Send + Sync>>,
     system_prompt: Option<String>,
+    mcp_servers: Vec<McpServerConfig>,
 }
 
 impl Default for AgentBuilder {
@@ -89,6 +91,7 @@ impl AgentBuilder {
             tools: Vec::new(),
             permission_hook: None,
             system_prompt: None,
+            mcp_servers: Vec::new(),
         }
     }
 
@@ -208,6 +211,30 @@ impl AgentBuilder {
         self
     }
 
+    /// Add an MCP server configuration.
+    ///
+    /// The server will be connected at build time and its tools
+    /// automatically registered with the agent.
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// AgentBuilder::new()
+    ///     .provider_config(ProviderConfig::deepseek(key))
+    ///     .with_mcp_server(McpServerConfig {
+    ///         name: "filesystem".into(),
+    ///         command: "npx".into(),
+    ///         args: vec!["-y".into(), "@modelcontextprotocol/server-filesystem".into(), "/tmp".into()],
+    ///         ..Default::default()
+    ///     })
+    ///     .build()
+    ///     .await?;
+    /// ```
+    pub fn with_mcp_server(mut self, config: McpServerConfig) -> Self {
+        self.mcp_servers.push(config);
+        self
+    }
+
     // ── build ──
 
     /// Assemble an [`Agent`] from the accumulated config.
@@ -252,7 +279,7 @@ impl AgentBuilder {
             harness.prompt_builder = harness.prompt_builder.with_system_template(template);
         }
 
-        let agent = Agent::new(model, harness);
+        let mut agent = Agent::new(model, harness);
 
         if self.default_tools {
             agent.harness().register_default_tools().await;
@@ -260,6 +287,21 @@ impl AgentBuilder {
 
         for tool in self.tools {
             agent.harness().register_tool(tool).await;
+        }
+
+        // Connect MCP servers and register their tools
+        if !self.mcp_servers.is_empty() {
+            match connect_and_discover_tools(&self.mcp_servers).await {
+                Ok((mcp_tools, mcp_client)) => {
+                    for tool in mcp_tools {
+                        agent.harness().register_tool(tool).await;
+                    }
+                    agent.mcp_client = Some(mcp_client);
+                }
+                Err(e) => {
+                    tracing::warn!(error = %e, "Failed to connect MCP servers — continuing without MCP tools");
+                }
+            }
         }
 
         if let Some(sandbox) = self.sandbox {
