@@ -13,6 +13,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use crate::agent::Agent;
+use crate::governance::GovernanceGuard;
 use crate::harness::Harness;
 use crate::mcp::{McpServerConfig, connect_and_discover_tools};
 use crate::swarm_runtime::SwarmRuntime;
@@ -239,9 +240,13 @@ impl AgentBuilder {
 
     /// Assemble an [`Agent`] from the accumulated config.
     pub async fn build(self) -> Result<Agent, String> {
+        let sdk_config = self.sdk_config.unwrap_or_default();
+        let budget_timeout = sdk_config.budget.provider_timeout_secs;
+
         let provider = if let Some(p) = self.provider {
             p
-        } else if let Some(cfg) = self.provider_config {
+        } else if let Some(mut cfg) = self.provider_config {
+            cfg.timeout_secs = budget_timeout;
             build_provider(cfg)
         } else {
             return Err("provider or provider_config is required".to_string());
@@ -252,8 +257,6 @@ impl AgentBuilder {
             .unwrap_or_else(|| "gpt-4o".to_string());
 
         let model: Arc<dyn Model> = Arc::new(fox_agent_core::DefaultModel::new(provider, model_id));
-
-        let sdk_config = self.sdk_config.unwrap_or_default();
 
         let mut harness = if let Some(hook) = self.permission_hook {
             Harness::with_permission_hook(
@@ -307,6 +310,9 @@ impl AgentBuilder {
         if let Some(sandbox) = self.sandbox {
             agent.harness().set_sandbox(sandbox).await;
         }
+
+        // Unified resource governance — timeout, retries, concurrency, budgets
+        agent.set_governance(GovernanceGuard::new(sdk_config.budget));
 
         Ok(agent)
     }

@@ -1,7 +1,7 @@
 use fox_agent_core::{
     AgentError, AgentEvent, AgentEventTx, ContentBlock, Message, Model, PermissionDecision,
     PermissionRequest, PermissionResult, PendingToolCallSnapshot, ProviderError, Role,
-    SessionSnapshot, StreamEvent, ToolContext, TurnOutcome, ToolExecutionMode, now_secs,
+    SessionSnapshot, StreamEvent, ToolContext, ToolError, ToolExecutionMode, TurnOutcome, now_secs,
 };
 use fox_agent_mcp::McpClient;
 use futures::StreamExt;
@@ -278,20 +278,54 @@ impl Agent {
                 };
 
                 let start = Instant::now();
-                let output = match self.harness.execute_tool(&pending.name, pending.input, ctx).await {
-                    Ok(output) => {
+
+                // Concurrency control — respect tool_concurrency_limit
+                let _permit = if let Some(ref guard) = self.governance {
+                    let slots = guard.tool_slots();
+                    match slots.acquire_owned().await {
+                        Ok(permit) => Some(permit),
+                        Err(_) => {
+                            error!(tool = %pending.name, "Tool concurrency semaphore closed unexpectedly");
+                            return Err(AgentError::Internal {
+                                message: "tool execution aborted: concurrency semaphore closed".into(),
+                            });
+                        }
+                    }
+                } else {
+                    None
+                };
+
+                // Timeout enforcement
+                let timeout_dur = self.governance.as_ref()
+                    .map(|g| std::time::Duration::from_secs(g.budget().tool_timeout_secs))
+                    .unwrap_or(std::time::Duration::from_secs(60));
+
+                let output = match tokio::time::timeout(
+                    timeout_dur,
+                    self.harness.execute_tool(&pending.name, pending.input, ctx),
+                ).await {
+                    Ok(Ok(output)) => {
                         if let Some(ref guard) = self.governance {
                             guard.record_tool_success().await;
                         }
                         output
                     }
-                    Err(err) => {
+                    Ok(Err(err)) => {
                         error!(tool = %pending.name, error = %err, "Tool execution failed");
                         if let Some(ref guard) = self.governance {
                             guard.record_tool_error().await;
                         }
                         self.emit_error_event(event_tx, AgentError::Tool(err.clone())).await;
                         return Err(AgentError::Tool(err));
+                    }
+                    Err(_elapsed) => {
+                        error!(tool = %pending.name, timeout_secs = timeout_dur.as_secs(), "Tool timed out");
+                        let timeout_err = ToolError::Timeout { timeout_secs: timeout_dur.as_secs() };
+                        if let Some(ref guard) = self.governance {
+                            guard.record_tool_error().await;
+                        }
+                        self.emit_error_event(event_tx, AgentError::Tool(timeout_err.clone())).await;
+                        return Err(AgentError::Tool(timeout_err));
                     }
                 };
                 let elapsed_ms = start.elapsed().as_millis() as u64;
@@ -334,6 +368,7 @@ impl Agent {
         let mut context_limit_retries = 0u32;
         let mut incomplete_continuations = 0u32;
         let mut tool_loop_iterations = 0u32;
+        let mut provider_retry_count = 0u32;
 
         loop {
             let turn_id = self.next_turn_id;
@@ -444,6 +479,7 @@ impl Agent {
             ).await {
                 Ok(stream) => {
                     context_limit_retries = 0;
+                    provider_retry_count = 0;
                     stream
                 }
                 Err(err) => {
@@ -465,6 +501,22 @@ impl Agent {
                                 .send(AgentEvent::Compaction { event: compaction })
                                 .await;
                         }
+                        continue;
+                    }
+                    // Provider transient error retry (network, 5xx, etc.)
+                    let max_retries = self.governance.as_ref()
+                        .map(|g| g.budget().provider_retries)
+                        .unwrap_or(0);
+                    if provider_retry_count < max_retries {
+                        provider_retry_count += 1;
+                        let backoff_ms = (250u64 * (1u64 << provider_retry_count.min(4))).min(5000);
+                        warn!(
+                            retry = provider_retry_count,
+                            backoff_ms = backoff_ms,
+                            error = %err_str,
+                            "Provider error, retrying"
+                        );
+                        tokio::time::sleep(std::time::Duration::from_millis(backoff_ms)).await;
                         continue;
                     }
                     return Err(self.handle_error(event_tx, turn_id, AgentError::Provider(err)));
@@ -615,6 +667,12 @@ impl Agent {
                     self.model.clone(),
                     event_tx.clone(),
                 );
+                // Governance: record turn completion (enforces max_turns)
+                if let Some(ref guard) = self.governance {
+                    if let Err(msg) = guard.turn_end().await {
+                        return Err(AgentError::BudgetExceeded { message: msg });
+                    }
+                }
                 info!(final_chars = final_text.len(), thinking_chars = thinking_text.len(), "Turn completed");
                 let outcome = TurnOutcome::Completed { text: final_text };
                 let _ = event_tx
@@ -697,11 +755,34 @@ impl Agent {
                     return self.finish_cancelled_turn(turn_id, event_tx, Some(String::new())).await;
                 }
 
-                // P2: Track tool duration
+                // Concurrency + timeout enforcement
                 let start = Instant::now();
+
+                let _permit = if let Some(ref guard) = self.governance {
+                    let slots = guard.tool_slots();
+                    match slots.acquire_owned().await {
+                        Ok(permit) => Some(permit),
+                        Err(_) => {
+                            error!(tool = %name, "Tool concurrency semaphore closed unexpectedly");
+                            return Err(self.handle_error(event_tx, turn_id, AgentError::Internal {
+                                message: "tool execution aborted: concurrency semaphore closed".into(),
+                            }));
+                        }
+                    }
+                } else {
+                    None
+                };
+
+                let timeout_dur = self.governance.as_ref()
+                    .map(|g| std::time::Duration::from_secs(g.budget().tool_timeout_secs))
+                    .unwrap_or(std::time::Duration::from_secs(60));
+
                 debug!(tool = %name, "Executing tool");
-                let output = match self.harness.execute_tool(&name, input, ctx).await {
-                    Ok(output) => {
+                let output = match tokio::time::timeout(
+                    timeout_dur,
+                    self.harness.execute_tool(&name, input, ctx),
+                ).await {
+                    Ok(Ok(output)) => {
                         if let Some(ref guard) = self.governance {
                             guard.record_tool_success().await;
                         }
@@ -713,12 +794,20 @@ impl Agent {
                         );
                         output
                     }
-                    Err(err) => {
+                    Ok(Err(err)) => {
                         error!(tool = %name, error = %err, "Tool execution failed");
                         if let Some(ref guard) = self.governance {
                             guard.record_tool_error().await;
                         }
                         return Err(self.handle_error(event_tx, turn_id, AgentError::Tool(err)));
+                    }
+                    Err(_elapsed) => {
+                        error!(tool = %name, timeout_secs = timeout_dur.as_secs(), "Tool timed out");
+                        let timeout_err = ToolError::Timeout { timeout_secs: timeout_dur.as_secs() };
+                        if let Some(ref guard) = self.governance {
+                            guard.record_tool_error().await;
+                        }
+                        return Err(self.handle_error(event_tx, turn_id, AgentError::Tool(timeout_err)));
                     }
                 };
                 let elapsed_ms = start.elapsed().as_millis() as u64;

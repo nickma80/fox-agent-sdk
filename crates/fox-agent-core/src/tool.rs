@@ -78,4 +78,6 @@ pub trait Tool: Send + Sync {
 pub enum ToolError {
     #[error("tool error: {message}")]
     Message { message: String },
+    #[error("tool timed out after {timeout_secs}s")]
+    Timeout { timeout_secs: u64 },
 }

@@ -6,7 +6,7 @@
 use fox_agent_core::{BudgetConfig, MetricsSnapshot, TokenUsage};
 use std::sync::Arc;
 use std::time::Instant;
-use tokio::sync::RwLock;
+use tokio::sync::{RwLock, Semaphore};
 
 /// Runtime governor that enforces budget limits and collects metrics.
 #[derive(Clone)]
@@ -19,17 +19,25 @@ pub struct GovernanceGuard {
     turns: Arc<RwLock<u64>>,
     /// Latency tracker for a single turn.
     turn_start: Arc<RwLock<Option<Instant>>>,
+    /// Semaphore to limit concurrent tool executions.
+    tool_slots: Arc<Semaphore>,
 }
 
 impl GovernanceGuard {
     /// Create a new guard with the given budget config.
     pub fn new(config: BudgetConfig) -> Self {
+        let concurrency = if config.tool_concurrency_limit > 0 {
+            config.tool_concurrency_limit
+        } else {
+            32 // reasonable default when unlimited
+        };
         Self {
             config,
             metrics: Arc::new(RwLock::new(MetricsSnapshot::default())),
             metrics_hooks: Arc::new(RwLock::new(Vec::new())),
             turns: Arc::new(RwLock::new(0)),
             turn_start: Arc::new(RwLock::new(None)),
+            tool_slots: Arc::new(Semaphore::new(concurrency)),
         }
     }
 
@@ -117,6 +125,13 @@ impl GovernanceGuard {
     /// Get the budget config.
     pub fn budget(&self) -> &BudgetConfig {
         &self.config
+    }
+
+    /// Acquire a tool execution permit, respecting `tool_concurrency_limit`.
+    ///
+    /// Returns a guard that releases the slot on drop.
+    pub fn tool_slots(&self) -> Arc<Semaphore> {
+        self.tool_slots.clone()
     }
 
     /// Check whether a turn is currently active.
