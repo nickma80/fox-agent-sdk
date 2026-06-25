@@ -45,6 +45,10 @@ path = "examples/general_agent.rs"
 name = "mcp_integration"
 path = "examples/mcp_integration.rs"
 
+[[example]]
+name = "langchain_users"
+path = "examples/langchain_users.rs"
+
 [dependencies]
 fox-agent-sdk = { path = "crates/fox-agent-sdk" }
 fox-agent-mcp = { path = "crates/fox-agent-mcp" }
