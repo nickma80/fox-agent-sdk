@@ -16,6 +16,7 @@ mod invalid;
 mod context;
 mod agentgrep;
 mod memory;
+mod skills;
 
 pub use agentgrep::*;
 pub use memory::*;
@@ -35,6 +36,7 @@ pub use todos::*;
 pub use webfetch::*;
 pub use websearch::*;
 pub use write::*;
+pub use skills::*;
 
 #[cfg(test)]
 mod tests;

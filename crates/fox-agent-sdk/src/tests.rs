@@ -43,7 +43,7 @@ mod sdk_tests {
         let model: Arc<dyn Model> = Arc::new(DefaultModel::new(Arc::new(provider), "mock-1"));
         let harness = Harness::new(FoxAgentSdkConfig::default(), None);
         harness.register_tool(Arc::new(EchoTool)).await;
-        let mut agent = Agent::new(model, harness);
+        let mut agent = Agent::new(model, harness, Arc::new(tokio::sync::RwLock::new(None)));
 
         let (tx, mut rx) = tokio::sync::mpsc::channel(32);
         let outcome = agent.run_once_streaming("go", &tx).await.unwrap();
@@ -93,7 +93,7 @@ mod sdk_tests {
         );
         harness.register_tool(Arc::new(EchoTool)).await;
 
-        let mut agent = Agent::new(model, harness);
+        let mut agent = Agent::new(model, harness, Arc::new(tokio::sync::RwLock::new(None)));
         let (tx, mut rx) = tokio::sync::mpsc::channel(32);
         let outcome = agent.run_once_streaming("go", &tx).await.unwrap();
         let req = match outcome {
@@ -131,7 +131,7 @@ mod sdk_tests {
             Message::assistant("this is a very long assistant answer"),
             Message::user("keep me"),
         ]);
-        let mut agent = Agent::new(model, harness);
+        let mut agent = Agent::new(model, harness, Arc::new(tokio::sync::RwLock::new(None)));
 
         let (tx, mut rx) = tokio::sync::mpsc::channel(32);
         let outcome = agent.run_once_streaming("go", &tx).await.unwrap();
@@ -170,7 +170,7 @@ mod sdk_tests {
 
         let model: Arc<dyn Model> = Arc::new(DefaultModel::new(Arc::new(provider), "mock-1"));
         let harness = Harness::new(FoxAgentSdkConfig::default(), None);
-        let mut agent = Agent::new(model, harness);
+        let mut agent = Agent::new(model, harness, Arc::new(tokio::sync::RwLock::new(None)));
         agent.harness().queue_soft_interrupt("please reconsider", true).await;
 
         let (tx, mut rx) = tokio::sync::mpsc::channel(32);
@@ -199,7 +199,7 @@ mod sdk_tests {
             ..Default::default()
         }, None);
         harness.memory_manager.add_memory("user likes rust").await;
-        let mut agent = Agent::new(model, harness);
+        let mut agent = Agent::new(model, harness, Arc::new(tokio::sync::RwLock::new(None)));
 
         let (tx, mut rx) = tokio::sync::mpsc::channel(32);
         let _ = agent.run_once_streaming("rust", &tx).await.unwrap();
@@ -251,7 +251,7 @@ mod sdk_tests {
             },
             ..Default::default()
         }, None);
-        let mut agent = Agent::new(model, harness);
+        let mut agent = Agent::new(model, harness, Arc::new(tokio::sync::RwLock::new(None)));
 
         let (tx, mut rx) = tokio::sync::mpsc::channel(32);
         let _ = agent.run_once_streaming("Please keep rust answers concise", &tx).await.unwrap();
@@ -334,7 +334,7 @@ mod sdk_tests {
             },
             Some(working_dir.clone()),
         );
-        let mut agent = Agent::new(model.clone(), harness);
+        let mut agent = Agent::new(model.clone(), harness, Arc::new(tokio::sync::RwLock::new(None)));
         let session_id = agent.harness().session_state.id.clone();
 
         let (tx, _rx) = tokio::sync::mpsc::channel(8);
@@ -379,7 +379,7 @@ mod sdk_tests {
 
         let model: Arc<dyn Model> = Arc::new(DefaultModel::new(Arc::new(provider), "mock-1"));
         let harness = Harness::new(FoxAgentSdkConfig::default(), None);
-        let mut agent = Agent::new(model, harness);
+        let mut agent = Agent::new(model, harness, Arc::new(tokio::sync::RwLock::new(None)));
 
         let (tx, mut rx) = tokio::sync::mpsc::channel(16);
         let outcome = agent.run_once_streaming("go", &tx).await.unwrap();
@@ -409,7 +409,7 @@ mod sdk_tests {
         let provider = MockProvider::new("mock");
         let model: Arc<dyn Model> = Arc::new(DefaultModel::new(Arc::new(provider), "mock-1"));
         let harness = Harness::new(FoxAgentSdkConfig::default(), None);
-        let mut agent = Agent::new(model, harness);
+        let mut agent = Agent::new(model, harness, Arc::new(tokio::sync::RwLock::new(None)));
         agent.harness().request_graceful_shutdown().await;
 
         let (tx, mut rx) = tokio::sync::mpsc::channel(16);
@@ -437,7 +437,7 @@ mod sdk_tests {
 
         let model: Arc<dyn Model> = Arc::new(DefaultModel::new(Arc::new(provider), "mock-1"));
         let harness = Harness::new(FoxAgentSdkConfig::default(), None);
-        let mut agent = Agent::new(model, harness);
+        let mut agent = Agent::new(model, harness, Arc::new(tokio::sync::RwLock::new(None)));
 
         let (tx, mut rx) = tokio::sync::mpsc::channel(16);
         let err = agent.run_once_streaming("go", &tx).await.unwrap_err();

@@ -5,12 +5,14 @@
 
 use fox_agent_core::{
     FoxAgentSdkConfig, Model, PermissionResult, PlanningStore, SafetyConfig, SessionStore,
-    WorkspaceSandbox, Tool,
+    WorkspaceSandbox, Tool, Skill,
 };
 use fox_agent_providers::{AnthropicCompatibleProvider, DeepSeekProvider, OpenAiCompatibleProvider, ProviderConfig};
 use fox_agent_swarm::SwarmCoordinator;
+use fox_agent_tools::register_default_tools_with_planning_store_and_skill_registry;
 use std::path::PathBuf;
 use std::sync::Arc;
+use tokio::sync::RwLock;
 
 use crate::agent::Agent;
 use crate::governance::GovernanceGuard;
@@ -67,6 +69,7 @@ pub struct AgentBuilder {
         Option<Arc<dyn Fn(&str, &serde_json::Value) -> PermissionResult + Send + Sync>>,
     system_prompt: Option<String>,
     mcp_servers: Vec<McpServerConfig>,
+    active_skill: Arc<RwLock<Option<Skill>>>,
 }
 
 impl Default for AgentBuilder {
@@ -93,6 +96,7 @@ impl AgentBuilder {
             permission_hook: None,
             system_prompt: None,
             mcp_servers: Vec::new(),
+            active_skill: Arc::new(RwLock::new(None)),
         }
     }
 
@@ -282,10 +286,25 @@ impl AgentBuilder {
             harness.prompt_builder = harness.prompt_builder.with_system_template(template);
         }
 
-        let mut agent = Agent::new(model, harness);
+        let mut agent = Agent::new(model, harness, self.active_skill.clone());
 
         if self.default_tools {
-            agent.harness().register_default_tools().await;
+            // Load skills from working directory (Claude Code compat: .claude/skills/)
+            let working_dir = agent.harness().session_state.working_dir.clone();
+            {
+                let mut reg = agent.harness().skill_registry.write().await;
+                let _ = reg.load_from_working_dir(working_dir.as_deref());
+            }
+            // Register default tools including skill tool for on-demand activation
+            let planning_store = agent.harness().planning_store.clone();
+            let skill_registry = agent.harness().skill_registry.clone();
+            let active_skill = agent.active_skill.clone();
+            register_default_tools_with_planning_store_and_skill_registry(
+                &*agent.harness().tool_executor(),
+                planning_store,
+                Some(skill_registry),
+                Some(active_skill),
+            ).await;
         }
 
         for tool in self.tools {

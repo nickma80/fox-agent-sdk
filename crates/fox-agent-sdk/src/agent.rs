@@ -1,14 +1,15 @@
 use fox_agent_core::{
     AgentError, AgentEvent, AgentEventTx, ContentBlock, GoalCheckpoint, GoalScope, GoalStatus,
     Message, Model, PermissionDecision, PermissionRequest, PermissionResult,
-    PendingToolCallSnapshot, ProviderError, Role, SessionSnapshot, StreamEvent, ToolContext,
-    ToolError, ToolExecutionMode, TurnOutcome, load_goals_with_store, now_secs,
+    PendingToolCallSnapshot, ProviderError, Role, SessionSnapshot, Skill, StreamEvent,
+    ToolContext, ToolError, ToolExecutionMode, TurnOutcome, load_goals_with_store, now_secs,
     save_goals_with_store,
 };
 use fox_agent_mcp::McpClient;
 use futures::StreamExt;
 use std::sync::Arc;
 use std::time::Instant;
+use tokio::sync::RwLock;
 use tracing::{debug, error, info, span, trace, warn, Level};
 
 use crate::harness::Harness;
@@ -77,10 +78,12 @@ pub struct Agent {
     governance: Option<GovernanceGuard>,
     /// MCP client for external tool servers.
     pub mcp_client: Option<McpClient>,
+    /// Currently active skill (loaded on-demand by Agent via `skill` tool).
+    pub active_skill: Arc<RwLock<Option<Skill>>>,
 }
 
 impl Agent {
-    pub fn new(model: Arc<dyn Model>, harness: Harness) -> Self {
+    pub fn new(model: Arc<dyn Model>, harness: Harness, active_skill: Arc<RwLock<Option<Skill>>>) -> Self {
         debug!(session_id = %harness.session_state.id, "Agent created");
         Self {
             model,
@@ -90,6 +93,7 @@ impl Agent {
             next_turn_id: 1,
             governance: None,
             mcp_client: None,
+            active_skill,
         }
     }
 
@@ -163,6 +167,7 @@ impl Agent {
             next_turn_id: snapshot.next_turn_id.max(1),
             governance: None,
             mcp_client: None,
+            active_skill: Arc::new(RwLock::new(None)),
         }
     }
 
@@ -447,9 +452,16 @@ impl Agent {
                     .await;
             }
 
+            let active_skill_prompt = self
+                .active_skill
+                .read()
+                .await
+                .as_ref()
+                .map(|s| s.prompt.clone());
+
             let (split, _context_info) = self
                 .harness
-                .build_system_prompt_split(memory_prompt.as_deref(), None)
+                .build_system_prompt_split(memory_prompt.as_deref(), active_skill_prompt.as_deref())
                 .await;
             let tools = self.harness.tool_definitions().await;
             let messages = self.harness.session_state.messages.clone();

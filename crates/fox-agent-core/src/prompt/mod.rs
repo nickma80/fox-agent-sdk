@@ -208,11 +208,14 @@ impl PromptBuilder {
 
         // Skills list
         if !skills.is_empty() {
-            let mut section = "# Available Skills\n\nYou have access to the following skills that the user can invoke with `/skillname`:\n".to_string();
+            let mut section = "# Available Skills\n\n\
+                The following skills are available. Use `skill(action=\"list\")` to see them again, \
+                `skill(action=\"activate\", name=\"<name>\")` to load one, and \
+                `skill(action=\"deactivate\")` to unload.\n"
+                .to_string();
             for skill in skills {
-                section.push_str(&format!("\n- `/{} ` - {}", skill.name, skill.description));
+                section.push_str(&format!("\n- `{}` — {}", skill.name, skill.description));
             }
-            section.push_str("\n\nWhen a user asks about available skills or capabilities, mention these skills.");
             info.skills_chars = section.len();
             parts.push(section);
         }

@@ -65,7 +65,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 | `AgentBuilder::new()` | Starts the builder with sensible defaults |
 | `.provider_config(...)` | Sets up the LLM provider (DeepSeek / OpenAI / Anthropic) |
 | `.model_id(...)` | Chooses which model to use |
-| `.with_default_tools()` | Registers `read`, `write`, `bash`, `grep`, `todo`, `plan`, `memory` |
+| `.with_default_tools()` | Registers `read`, `write`, `bash`, `grep`, `todo`, `plan`, `memory`, `skill` |
 | `.build().await` | Assembles `Provider → Model → Harness → Agent` |
 | `.run_once_streaming(...)` | Runs one turn, emitting events to the channel |
 
@@ -89,6 +89,7 @@ When you call `.with_default_tools()`, these tools are available to the agent:
 | `plan` | Manage a shared plan | — |
 | `goal` | Track goals with checkpoints | — |
 | `memory` | Cross-session learning | — |
+| `skill` | On-demand domain expertise | — |
 
 ### 2.2 Registering Custom Tools
 
@@ -149,9 +150,122 @@ The agent now sees `get_weather` in its tool list and can call it naturally:
 
 ---
 
-## 3. Permission & Approval System
+## 3. Working with Skills
 
-### 3.1 Default Policy
+Skills are domain expertise modules your agent loads **on demand** — they are
+not pre-loaded into the system prompt. Fox Agent SDK skills use the
+**Claude Code skill format** (YAML frontmatter + Markdown body), so you can
+reuse skills from Claude Code projects directly.
+
+### 3.1 Creating a Skill
+
+Create a `.md` file in `.claude/skills/`:
+
+```markdown
+---
+name: sql-analyst
+description: SQL query analysis and optimization
+allowed-tools: [read, grep, glob]
+---
+
+You are a SQL analyst. When asked to review or write queries:
+
+## Instructions
+1. First read the schema files in `migrations/` using grep or glob.
+2. Validate syntax against the target dialect.
+3. Suggest indexes for any query touching >10k rows.
+4. Flag N+1 query patterns.
+```
+
+**Frontmatter fields**:
+
+| Field | Required | Description |
+|-------|----------|-------------|
+| `name` | No | Unique name. Defaults to filename (without `.md`). Frontmatter overrides filename. |
+| `description` | No | Human-readable description. Defaults to `name`. |
+| `allowed-tools` | No | Tools the skill may use, e.g. `[read, grep, bash]`. Empty = no restriction. |
+| `model` | No | Preferred model. Fox Agent SDK preserves this field but does not enforce it. |
+
+### 3.2 How Skills Are Loaded
+
+Skills are loaded automatically when you call `with_default_tools()`:
+
+```rust
+let agent = AgentBuilder::new()
+    .provider_config(ProviderConfig::deepseek(key))
+    .model_id("deepseek-v4-flash")
+    .working_dir(".")             // .claude/skills/*.md scanned here
+    .with_default_tools()         // loads skills + registers SkillTool
+    .build()
+    .await?;
+
+// Skills are loaded from <.working_dir>/.claude/skills/*.md.
+// Only .md files are loaded. Other files are ignored.
+
+### 3.3 How the Agent Uses Skills
+
+Skills are activated on demand via the built-in `skill` tool. The agent
+sees the skill list in its system prompt and can activate skills when needed:
+
+```
+Agent: skill(action="list")
+  → Available skills:
+       /sql-analyst  — SQL query analysis and optimization
+     ★ /pdf          — PDF manipulation expert
+    Use action="activate" with name to load a skill.
+
+Agent: skill(action="activate", name="sql-analyst")
+  → Skill `/sql-analyst` activated (856 chars of expertise loaded).
+
+[Next turn: the agent's system prompt includes the SQL analyst instructions]
+```
+
+The agent can deactivate a skill when it's no longer needed:
+
+```
+Agent: skill(action="deactivate")
+  → Skill `/sql-analyst` deactivated.
+```
+
+### 3.4 Design Rationale
+
+Why on-demand activation instead of pre-loading all skills into the system
+prompt?
+
+| Approach | Prompt Size | Context Efficiency | Claude Code Compat |
+|----------|------------|-------------------|--------------------|
+| Pre-load all skills | O(N) grows with each skill | Wastes context on unused skills | No |
+| On-demand activation (this SDK) | O(1) independent of skill count | Only active skill uses context | Yes |
+
+With 20 skills averaging 2000 chars each, pre-loading wastes ~40K chars of
+context. On-demand activation keeps the prompt lean and only pays the context
+cost for skills the agent actually uses.
+
+### 3.5 Programmatic Access
+
+```rust
+use fox_agent_core::{Skill, SkillRegistry};
+
+// Manual skill loading
+let mut registry = SkillRegistry::default();
+registry.load_from_working_dir(Some(std::path::Path::new(".")))?;
+
+// Check what's available
+for skill in registry.list() {
+    println!("  {} — {}", skill.name, skill.description);
+}
+
+// Activate a skill
+let pdf = registry.get("pdf").unwrap();
+println!("Prompt: {} chars", pdf.prompt.len());
+println!("Allowed tools: {:?}", pdf.allowed_tools);
+```
+
+---
+
+## 4. Permission & Approval System
+
+### 4.1 Default Policy
 
 Choose how the agent handles untrusted tool calls:
 
@@ -178,7 +292,7 @@ SafetyConfig {
 }
 ```
 
-### 3.2 Denylist & Allowlist
+### 4.2 Denylist & Allowlist
 
 ```rust
 SafetyConfig {
@@ -189,7 +303,7 @@ SafetyConfig {
 }
 ```
 
-### 3.3 Handling Permission Requests
+### 4.3 Handling Permission Requests
 
 When the agent hits a tool that needs user approval, it returns
 `TurnOutcome::RequiresUserDecision`:
@@ -227,7 +341,7 @@ loop {
 }
 ```
 
-### 3.4 Approval Caching (Skip re-prompting)
+### 4.4 Approval Caching (Skip re-prompting)
 
 ```rust
 use fox_agent_sdk::{ApprovalManager, ApprovalScope};
@@ -252,7 +366,7 @@ Cache scopes:
 | `ThisSession` | Persists across turns within the session |
 | `ThisWorkspace` | Persists across session restarts |
 
-### 3.5 Audit Trail
+### 4.5 Audit Trail
 
 ```rust
 let request = PermissionRequest::new("bash", "Execute: rm -rf /tmp/cache");
@@ -269,9 +383,9 @@ for entry in trail {
 
 ---
 
-## 4. Session & Planning State Persistence
+## 5. Session & Planning State Persistence
 
-### 4.1 Auto-Snapshot
+### 5.1 Auto-Snapshot
 
 Enable automatic persistence of session state (messages, model state, pending
 interrupts) after each turn:
@@ -293,7 +407,7 @@ let agent = AgentBuilder::new()
     .await?;
 ```
 
-### 4.2 Manual Save/Load
+### 5.2 Manual Save/Load
 
 ```rust
 use fox_agent_sdk::{FileSessionStore, SessionStore};
@@ -310,7 +424,7 @@ let restored = store.load_snapshot(&session_ids[0]).unwrap();
 agent.restore_from_complete_snapshot(restored);
 ```
 
-### 4.3 Planning Store
+### 5.3 Planning Store
 
 ```rust
 use fox_agent_sdk::FilePlanningStore;
@@ -324,9 +438,9 @@ let plan = planning.load_plan("session-001", PlanningScope::Session).unwrap();
 
 ---
 
-## 5. Event Recording & Replay
+## 6. Event Recording & Replay
 
-### 5.1 Recording to JSONL
+### 6.1 Recording to JSONL
 
 ```rust
 use fox_agent_sdk::EventRecorder;
@@ -346,7 +460,7 @@ agent.run_once_streaming("Hello", &tx).await?;
 // parent_event_id, source, and the event payload.
 ```
 
-### 5.2 Replay for Testing
+### 6.2 Replay for Testing
 
 ```rust
 use fox_agent_sdk::ReplayRunner;
@@ -369,7 +483,7 @@ let report = runner.verify(&transcript);
 assert!(report.all_passed());
 ```
 
-### 5.3 Secret Scrubbing
+### 6.3 Secret Scrubbing
 
 Export files are automatically scrubbed. You can also scrub manually:
 
@@ -387,9 +501,9 @@ Detected patterns: API keys (`sk-...`), JWT tokens, `Authorization:` headers,
 
 ---
 
-## 6. Governance & Observability
+## 7. Governance & Observability
 
-### 6.1 Budget Enforcement
+### 7.1 Budget Enforcement
 
 Prevent runaway costs:
 
@@ -412,7 +526,7 @@ agent.set_governance(Some(guard.clone()));
 
 The agent will return `AgentError::BudgetExceeded` when limits are hit.
 
-### 6.2 Metrics Hooks
+### 7.2 Metrics Hooks
 
 ```rust
 guard.add_metrics_hook(|snap: &MetricsSnapshot| {
@@ -427,7 +541,7 @@ guard.add_metrics_hook(|snap: &MetricsSnapshot| {
 }).await;
 ```
 
-### 6.3 Metrics Snapshot
+### 7.3 Metrics Snapshot
 
 ```rust
 let snap = guard.snapshot().await;
@@ -448,9 +562,9 @@ println!("{snap:#?}");
 
 ---
 
-## 7. Multi-Agent (Swarm)
+## 8. Multi-Agent (Swarm)
 
-### 7.1 Setting Up a Swarm
+### 8.1 Setting Up a Swarm
 
 ```rust
 use fox_agent_sdk::{
@@ -496,7 +610,7 @@ coordinator.upsert_plan(vec![
 ]);
 ```
 
-### 7.2 Task Lifecycle
+### 8.2 Task Lifecycle
 
 Each task flows through these states:
 
@@ -508,7 +622,7 @@ Pending → Assigned → Running → Completed
                     Blocked (waiting for dependency)
 ```
 
-### 7.3 Supervisor
+### 8.3 Supervisor
 
 The [`SwarmSupervisor`] provides:
 
@@ -547,9 +661,9 @@ for (id, status) in report.worker_statuses {
 
 ---
 
-## 8. Testing Your Agent
+## 9. Testing Your Agent
 
-### 8.1 Using MockProvider
+### 9.1 Using MockProvider
 
 ```rust
 use fox_agent_sdk::{AgentBuilder, MockProvider, StreamEvent};
@@ -588,7 +702,7 @@ match outcome {
 }
 ```
 
-### 8.2 Golden Transcript Testing
+### 9.2 Golden Transcript Testing
 
 ```rust
 use fox_agent_sdk::{EventRecorder, ReplayRunner};
@@ -610,7 +724,7 @@ assert!(passes, "Event sequence changed from golden transcript");
 
 ---
 
-## 9. Provider Configuration Reference
+## 10. Provider Configuration Reference
 
 ### DeepSeek
 
@@ -650,7 +764,7 @@ ProviderConfig {
 
 ---
 
-## 10. Configuration Cheat Sheet
+## 11. Configuration Cheat Sheet
 
 ```rust
 FoxAgentSdkConfig {
@@ -699,13 +813,13 @@ FoxAgentSdkConfig {
 
 ---
 
-## 11. Domain Adaptation — Making Your Agent Work in Any Domain
+## 12. Domain Adaptation — Making Your Agent Work in Any Domain
 
 Fox Agent SDK is a **general-purpose agent runtime**. The same binary can work
 in coding, quantitative trading, data analysis, SRE, or document writing —
 without changing SDK code. The Agent adapts through three layered mechanisms.
 
-### 11.1 How It Works
+### 12.1 How It Works
 
 ```
 ┌───────────────────────────────────────────────────────┐
@@ -727,7 +841,7 @@ without changing SDK code. The Agent adapts through three layered mechanisms.
 └───────────────────────────────────────────────────────┘
 ```
 
-### 11.2 Step-by-step: From Coding Agent to Trading Agent
+### 12.2 Step-by-step: From Coding Agent to Trading Agent
 
 **Start with a coding project** (the default case):
 
@@ -765,7 +879,7 @@ let agent = AgentBuilder::new()
 
 That's it. The same `AgentBuilder` code, same tools — different domain behavior driven entirely by `AGENTS.md`.
 
-### 11.3 Best Practices
+### 12.3 Best Practices
 
 | Practice | Why |
 |----------|-----|
@@ -775,18 +889,18 @@ That's it. The same `AgentBuilder` code, same tools — different domain behavio
 | **Global AGENTS.md for personal preferences** | Put language preferences, code style, and toolchain choices in `~/.fox-agent/AGENTS.md`. They apply to all projects. |
 | **Planning tiers are domain-agnostic** | `goal`/`plan`/`todo` work the same way whether the goal is "ship a feature" or "find an alpha signal". |
 
-### 11.4 Domain Examples
+### 12.4 Domain Examples
 
-| Domain | AGENTS.md key content |
-|--------|----------------------|
-| **Coding** | Language, framework, testing conventions, linting rules |
-| **Quant Trading** | Data sources, backtesting engine, risk limits, execution rules |
-| **Data Analysis** | Tools (pandas, matplotlib), data locations, report format, citation rules |
-| **SRE / Operations** | Cluster endpoints, read-only constraints, alert thresholds, runbook locations |
-| **Documentation** | Style guide, target audience, output format, review checklist |
-| **Research** | Literature sources, experiment methodology, note-taking conventions |
+| Domain | AGENTS.md key content | Example skills |
+|--------|----------------------|----------------|
+| **Coding** | Language, framework, testing conventions, linting rules | `code-review`, `refactoring`, `api-design` |
+| **Quant Trading** | Data sources, backtesting engine, risk limits, execution rules | `portfolio-optimization`, `market-microstructure` |
+| **Data Analysis** | Tools (pandas, matplotlib), data locations, report format, citation rules | `sql-analyst`, `statistical-modeling` |
+| **SRE / Operations** | Cluster endpoints, read-only constraints, alert thresholds, runbook locations | `incident-response`, `capacity-planning` |
+| **Documentation** | Style guide, target audience, output format, review checklist | `api-docs`, `release-notes` |
+| **Research** | Literature sources, experiment methodology, note-taking conventions | `literature-review`, `experiment-design` |
 
-### 11.5 How the Agent Reads AGENTS.md
+### 12.5 How the Agent Reads AGENTS.md
 
 The system prompt tells the Agent explicitly:
 
@@ -805,7 +919,7 @@ entire session.
 
 ---
 
-## 12. Troubleshooting
+## 13. Troubleshooting
 
 | Problem | Likely cause | Solution |
 |---------|-------------|----------|

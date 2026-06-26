@@ -1,6 +1,6 @@
 use fox_agent_core::{
     ContextInfo, FoxAgentSdkConfig, InterruptManager, InjectedInterrupt, MemoryStateEvent,
-    PermissionResult, PlanningStore, SessionStore, SkillRegistry, SplitPrompt, Tool, ToolContext,
+    PermissionResult, PlanningStore, SessionStore, SkillInfo, SkillRegistry, SplitPrompt, Tool, ToolContext,
     ToolDefinition, ToolError, ToolOutput, WorkspaceSandbox, FilePlanningStore, FileSessionStore,
     InMemoryPlanningStore, InMemorySessionStore, set_default_planning_store,
 };
@@ -140,11 +140,16 @@ impl Harness {
     }
 
     pub async fn build_system_prompt_split(&self, memory_prompt: Option<&str>, active_skill: Option<&str>) -> (SplitPrompt, ContextInfo) {
+        // Collect skill metadata for the static skills list
+        let skills = {
+            let reg = self.skill_registry.read().await;
+            reg.list().into_iter().map(|s| SkillInfo { name: s.name, description: s.description }).collect::<Vec<_>>()
+        };
         self.prompt_builder.build_split(
             &self.session_state.id,
             &self.planning_store,
             self.session_state.working_dir.as_deref(),
-            &[],  // skills — provided externally via Agent
+            &skills,
             memory_prompt,
             active_skill,
         )

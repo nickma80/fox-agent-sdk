@@ -4,7 +4,7 @@
 //! - Project (per working directory)
 //! - Global (user-level preferences)
 //!
-//! Storage uses MemoryGraph v2 format with JSON files,
+//! Storage uses MemoryGraph format with JSON files,
 //! LRU caching, and automatic backup recovery.
 
 pub mod embedding;

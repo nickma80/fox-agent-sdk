@@ -88,6 +88,7 @@ AgentBuilder::new()
 - `grep` / `glob` — code search
 - `todo` / `plan` / `goal` — planning and task tracking
 - `memory` — cross-session learning
+- `skill` — on-demand domain expertise (Claude Code skill format)
 
 **Custom tools** via the `Tool` trait:
 
@@ -118,6 +119,48 @@ impl Tool for MyTool {
 // Register
 builder.with_tool(Arc::new(MyTool));
 ```
+
+### Skills (Claude Code Compatible)
+
+On-demand domain expertise via Claude Code-compatible skill files. Skills are
+**not** pre-loaded into the system prompt — the agent activates them only when
+needed, avoiding prompt bloat.
+
+**Skill file format** (`.md` in `.claude/skills/`):
+
+```markdown
+---
+name: pdf
+description: PDF manipulation expert
+allowed-tools: [read, write, bash]
+model: claude-sonnet-4-20250514
+---
+
+You are a PDF expert. When asked about PDF files:
+
+## Instructions
+1. First read the file to understand its structure.
+2. Plan the changes before writing.
+```
+
+The agent discovers and activates skills via the built-in `skill` tool:
+
+- `skill(action="list")` — see all available skills
+- `skill(action="activate", name="pdf")` — load a skill's expertise
+- `skill(action="deactivate")` — unload the current skill
+
+```rust
+// Skills are loaded automatically with with_default_tools():
+AgentBuilder::new()
+    .provider_config(ProviderConfig::deepseek(key))
+    .model_id("deepseek-v4-flash")
+    .working_dir(".")             // scans .claude/skills/*.md
+    .with_default_tools()         // registers SkillTool automatically
+    .build()
+    .await?;
+```
+
+Skills from Claude Code projects work directly — no conversion needed.
 
 ### Permission & Approval
 
@@ -246,4 +289,4 @@ cargo run --example custom_tool
 
 ## License
 
-MIT OR Apache-2.0
+MIT License

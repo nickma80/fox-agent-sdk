@@ -56,7 +56,7 @@ impl SwarmRuntime {
     /// Fork a new agent that shares the same tools, skills, and config.
     pub fn fork_agent(&self) -> Agent {
         let forked_model = self.model.fork();
-        Agent::new(forked_model, self.base_harness.clone())
+        Agent::new(forked_model, self.base_harness.clone(), Arc::new(tokio::sync::RwLock::new(None)))
     }
 
     pub async fn spawn_worker(&self, worker_id: impl Into<String>, prompt: impl Into<String>) -> WorkerHandle {

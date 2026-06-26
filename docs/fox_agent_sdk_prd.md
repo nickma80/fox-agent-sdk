@@ -433,9 +433,12 @@ pub trait Tool: Send + Sync {
 
 ```
 SplitPrompt
-├── static_part: String   (可缓存: 模板 + skill + AGENTS.md)
-└── dynamic_part: String  (每轮: 环境 + memory injection + planning context)
+├── static_part: String   (可缓存: 模板 + skills 列表 + AGENTS.md)
+├── dynamic_part: String  (每轮: 环境 + memory injection + planning context)
+└── active_skill: String  (按需: 激活的 skill prompt，注入 dynamic_part)
 ```
+
+> **注意**：skills 列表（名称+描述）注入 `static_part` 供 Agent 参考；skill 正文（prompt）仅在 Agent 通过 `skill(action="activate")` 激活后注入，不在启动时全量预加载。
 
 `dynamic_part` 自动注入 planning context（todos、plan items、goals），由 `PlanningStore` 驱动。
 
@@ -465,6 +468,12 @@ Fox Agent SDK 是**通用 Agent 运行时**，同一个 Agent 二进制可以在
 │       → 显式要求 Agent "Read project instructions      │
 │         (AGENTS.md, prompt-overlay.md) to understand the   │
 │         current domain's conventions"                  │
+│                                                       │
+│  Layer 4: Skills (按需领域专业知识)                    │
+│  └── .claude/skills/*.md   (Claude Code 兼容格式)      │
+│       → Agent 通过 skill tool 按需激活                 │
+│       → 激活后 prompt 注入 dynamic_part                │
+│       → 详见 §4.9 Skills                               │
 └─────────────────────────────────────────────────────┘
 ```
 
@@ -727,6 +736,146 @@ fox-agent-mcp/
 ```
 
 依赖：`serde_json`, `tokio`, `reqwest` (SSE), `serde`。不依赖 `fox-agent-core`（通过 `fox-agent-sdk` 适配层桥接）。
+
+### 4.9 Skills — 按需技能注入
+
+Skill 是 Agent 按需加载的领域专家知识模块，**完全兼容 Claude Code skill 格式**。与旧版"全部预加载到 system prompt"不同，新版采用**按需激活**机制：Agent 先看到可用 skills 列表，在需要时通过 tool call 激活特定 skill，避免 prompt 膨胀。
+
+#### 4.9.1 设计原则
+
+| 原则 | 说明 |
+|------|------|
+| **格式兼容 Claude Code** | YAML frontmatter + markdown body，拿来直接可用 |
+| **按需激活** | Skill 不预注入 system prompt，由 Agent 通过 `skill` tool 按需激活 |
+| **共享状态** | Skill 激活状态通过 `Arc<RwLock<Option<Skill>>>` 在 Agent / Builder / Tool / PromptBuilder 间共享 |
+
+#### 4.9.2 文件格式（Claude Code 兼容）
+
+```markdown
+---
+name: pdf
+description: PDF manipulation expert
+allowed-tools: [read, write, bash]
+model: claude-sonnet-4-20250514
+---
+
+You are a PDF expert. When asked about PDF files:
+
+## Instructions
+1. First **read** the file to understand its structure.
+2. Plan the changes before writing.
+3. **validate** the output after writing.
+```
+
+**YAML Frontmatter 字段**：
+
+| 字段 | 必需 | 说明 |
+|------|------|------|
+| `name` | 否 | 唯一名称。缺省使用文件名（不含 .md）。frontmatter 存在时优先于文件名 |
+| `description` | 否 | 可读描述。缺省使用 `name` |
+| `allowed-tools` | 否 | 允许使用的工具列表，如 `[read, write, bash]`。为空则无限制 |
+| `model` | 否 | 要求使用的模型。Fox Agent SDK 保留该字段，不强制校验 |
+
+#### 4.9.3 核心类型
+
+```rust
+/// Skill — 完全兼容 Claude Code skill 格式。
+pub struct Skill {
+    pub name: String,                    // 唯一标识
+    pub description: String,             // 可读描述
+    pub prompt: String,                  // 激活后注入的 prompt 片段
+    pub allowed_tools: Vec<String>,      // 允许的工具列表
+    pub model: Option<String>,           // 要求的模型（保留，不校验）
+    pub base_directory: Option<String>,  // 加载目录
+}
+
+impl Skill {
+    /// 从文件内容解析（支持 YAML frontmatter 和旧版格式）
+    pub fn parse(name: impl Into<String>, content: &str) -> Result<Self, String>;
+
+    /// 从 .md 文件加载
+    pub fn from_file(name: impl Into<String>, path: &Path) -> Result<Self, String>;
+}
+
+/// 轻量级 YAML frontmatter 解析器（无外部依赖）
+fn parse_frontmatter(text: &str) -> HashMap<String, String>;
+
+/// Skill 注册表 — 按名称索引
+pub struct SkillRegistry {
+    skills: HashMap<String, Skill>,
+}
+
+impl SkillRegistry {
+    pub fn load_from_dir(&mut self, dir: &Path) -> Result<usize, String>;
+    pub fn load_from_working_dir(&mut self, working_dir: Option<&Path>) -> Result<usize, String>;
+    pub fn list(&self) -> Vec<Skill>;
+    pub fn get(&self, name: &str) -> Option<&Skill>;
+}
+```
+
+#### 4.9.4 SkillTool — 按需激活机制
+
+Skill 通过内置的 `skill` 工具实现按需激活：
+
+```rust
+/// Tool that lets the Agent manage skills on-demand.
+pub struct SkillTool {
+    registry: Arc<RwLock<SkillRegistry>>,
+    active: Arc<RwLock<Option<Skill>>>,  // 共享激活状态
+}
+```
+
+**Tool 接口**：
+
+| action | 参数 | 行为 |
+|--------|------|------|
+| `list` | 无 | 列出所有可用 skills，激活的用 ★ 标记 |
+| `activate` | `name: String` | 将指定 skill 的 prompt 写入共享状态，注入到后续 system prompt |
+| `deactivate` | 无 | 清除当前激活的 skill |
+
+**Agent 交互示例**：
+
+```
+Agent: skill(action="list")
+  →   /pdf          — PDF manipulation expert
+     ★ /trading     — Quantitative trading analyst
+
+Agent: skill(action="activate", name="pdf")
+  → Skill `/pdf` activated (1234 chars of expertise loaded).
+
+[Next turn: agent's system prompt now includes skill prompt]
+```
+
+#### 4.9.5 Prompt 注入流程
+
+```
+Agent::turn_loop()
+  │
+  ├─ self.active_skill.read().await ───── 读取激活的 Skill
+  │
+  ├─ harness.build_system_prompt_split(memory, active_skill) ─────
+  │     │
+  │     ├─ static_part:  模板 + AGENTS.md + skills 列表*
+  │     ├─ dynamic_part: memory + plan context
+  │     └─ active_skill:  prompt 片段注入 dynamic_part（每轮可变）
+  │
+  └─ model.complete(prompt) ───── 发送给 LLM
+```
+
+\* `skills 列表` 是 skills 的名称/描述信息（轻量），不是 prompt 正文。只有激活的 skill 的 prompt 正文才注入。
+
+#### 4.9.6 Builder 装配
+
+```rust
+AgentBuilder::new()
+    .with_default_tools()    // 自动：
+    .build()                 // ① 从 .claude/skills/ 加载 skills
+    .await?;                 // ② 注册 SkillTool（共享 registry + active handle）
+                             // ③ Agent::new() 接收 active_skill handle
+```
+
+- 加载路径：`<working_dir>/.claude/skills/*.md`
+- 使用 `with_default_tools()` 时自动启用
 
 ---
 

@@ -1,4 +1,4 @@
-use fox_agent_core::{PlanningStore, SandboxError, SandboxOperation, Tool, ToolContext, ToolDefinition, ToolError, ToolOutput, WorkspaceSandbox};
+use fox_agent_core::{PlanningStore, SandboxError, SandboxOperation, Skill, SkillRegistry, Tool, ToolContext, ToolDefinition, ToolError, ToolOutput, WorkspaceSandbox};
 use std::collections::HashMap;
 use std::path::Path;
 use std::sync::Arc;
@@ -17,6 +17,7 @@ use crate::ls::LsTool;
 use crate::lsp::LspTool;
 use crate::plans::PlanTool;
 use crate::read::ReadTool;
+use crate::skills::SkillTool;
 use crate::todos::TodoTool;
 use crate::webfetch::WebFetchTool;
 use crate::websearch::WebSearchTool;
@@ -178,6 +179,21 @@ pub async fn register_default_tools_with_planning_store(
     executor: &ToolExecutor,
     planning_store: Arc<dyn PlanningStore>,
 ) {
+    register_default_tools_with_planning_store_and_skill_registry(
+        executor, planning_store, None, None,
+    ).await;
+}
+
+/// Register default tools with optional skill support.
+///
+/// If `skill_registry` and `active_skill` are provided, a `SkillTool` is
+/// registered that lets the Agent activate/deactivate skills on demand.
+pub async fn register_default_tools_with_planning_store_and_skill_registry(
+    executor: &ToolExecutor,
+    planning_store: Arc<dyn PlanningStore>,
+    skill_registry: Option<Arc<RwLock<SkillRegistry>>>,
+    active_skill: Option<Arc<RwLock<Option<Skill>>>>,
+) {
     executor.register_tool(Arc::new(ReadTool)).await;
     executor.register_tool(Arc::new(WriteTool)).await;
     executor.register_tool(Arc::new(EditTool)).await;
@@ -190,6 +206,9 @@ pub async fn register_default_tools_with_planning_store(
     executor.register_tool(Arc::new(TodoTool::new(planning_store.clone()))).await;
     executor.register_tool(Arc::new(PlanTool::new(planning_store.clone()))).await;
     executor.register_tool(Arc::new(GoalTool::new(planning_store))).await;
+    if let (Some(reg), Some(active)) = (skill_registry, active_skill) {
+        executor.register_tool(Arc::new(SkillTool::new(reg, active))).await;
+    }
     executor.register_tool(Arc::new(LspTool)).await;
     executor.register_tool(Arc::new(InvalidTool)).await;
     executor.register_tool(Arc::new(AgentGrepTool)).await;
