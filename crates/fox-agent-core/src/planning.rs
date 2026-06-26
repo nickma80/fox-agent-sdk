@@ -481,10 +481,11 @@ pub fn save_goals(
     session_id: &str,
     scope: GoalScope,
     goals: Vec<Goal>,
+    merge: bool,
     source: Option<&str>,
 ) -> Vec<Goal> {
     let store = default_planning_store();
-    save_goals_with_store(store.as_ref(), session_id, scope, goals, source)
+    save_goals_with_store(store.as_ref(), session_id, scope, goals, merge, source)
 }
 
 pub fn save_goals_with_store(
@@ -492,10 +493,21 @@ pub fn save_goals_with_store(
     session_id: &str,
     scope: GoalScope,
     goals: Vec<Goal>,
+    merge: bool,
     source: Option<&str>,
 ) -> Vec<Goal> {
     update_snapshot(store, snapshot_session_id(session_id, scope.clone()), scope.into(), source, |snapshot| {
-        snapshot.goals = goals;
+        if merge {
+            for incoming in goals {
+                if let Some(existing) = snapshot.goals.iter_mut().find(|g| g.id == incoming.id) {
+                    *existing = incoming;
+                } else {
+                    snapshot.goals.push(incoming);
+                }
+            }
+        } else {
+            snapshot.goals = goals;
+        }
     })
     .map(|snapshot| snapshot.goals)
     .unwrap_or_default()

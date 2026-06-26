@@ -130,6 +130,7 @@ graph TD
 - **Swarm**：`SwarmSupervisor`（health check、retry、任务重分配、汇总报告）+ coordinator
 - **MCP 集成**：`McpClient`（stdio / SSE 传输）、动态工具发现、资源/提示接入、权限集成
 - **回放测试**：`ReplayRunner` golden transcript 验证、`MockProvider` 确定性测试
+- **域自适应（Domain Adaptation）**：通过 AGENTS.md / Prompt Overlay / Planning Guidance 三层机制，让 Agent 自动适配不同业务领域（coding、量化交易、数据分析、运维等），无需修改 SDK 代码
 
 #### SDK 不做
 
@@ -437,6 +438,46 @@ SplitPrompt
 ```
 
 `dynamic_part` 自动注入 planning context（todos、plan items、goals），由 `PlanningStore` 驱动。
+
+### 4.7.1 Domain Adaptation — 域自适应机制
+
+Fox Agent SDK 是**通用 Agent 运行时**，同一个 Agent 二进制可以在 coding、量化交易、数据分析、运维、文档写作等截然不同的领域工作。域自适应通过三层递进机制实现：
+
+```text
+┌─────────────────────────────────────────────────────┐
+│                   Domain Adaptation                   │
+│                                                       │
+│  Layer 1: AGENTS.md (领域指令)                        │
+│  ├── <work_dir>/AGENTS.md        (项目级领域规则)      │
+│  └── ~/.fox-agent/AGENTS.md      (全局个人偏好)        │
+│       → 注入到 static_part，可被 provider prefix-cache │
+│       → 定义：角色、领域术语、数据源、策略、禁止项      │
+│                                                       │
+│  Layer 2: Prompt Overlay (覆盖层)                     │
+│  ├── <work_dir>/.fox/prompt-overlay.md                │
+│  └── ~/.fox-agent/prompt-overlay.md                   │
+│       → 追加到 static_part 末尾，最高优先级            │
+│       → 覆盖 system.md 中不适用于当前领域的指令         │
+│                                                       │
+│  Layer 3: Planning Guidance (system.md 内置)          │
+│  └── system.md §Planning 段落 + §Domain Adaptation    │
+│       → 指导 Agent 阅读 AGENTS.md 并自适应行为          │
+│       → 显式要求 Agent "Read project instructions      │
+│         (AGENTS.md, prompt-overlay.md) to understand the   │
+│         current domain's conventions"                  │
+└─────────────────────────────────────────────────────┘
+```
+
+**不同领域的 AGENTS.md 示例**：
+
+| 领域 | AGENTS.md 核心内容 |
+|------|-------------------|
+| **Coding** | "Use Rust. Follow idiomatic patterns. Write tests. Cache build artifacts." |
+| **量化交易** | "You are a quantitative analyst. Data sources: CSV in ./data/. Use backtrader for backtesting. Never execute live trades without user confirmation." |
+| **数据分析** | "Use Python + pandas. Data in ./datasets/. Output charts to ./reports/. Cite data sources." |
+| **运维/SRE** | "Target cluster: k8s-prod. Read-only tools only. Alert on anomaly thresholds in ./config/alerts.yaml." |
+
+**设计原则**：Agent 身份由领域定义，不由 SDK 硬编码。工具、Memory、规划体系都跨领域通用——唯一变化的是 `static_part` 中的领域指令和 `dynamic_part` 中的业务上下文。
 
 ### 4.8 MCP Protocol Support
 

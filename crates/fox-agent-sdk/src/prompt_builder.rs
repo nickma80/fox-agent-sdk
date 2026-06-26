@@ -43,7 +43,9 @@ impl PromptBuilder {
         let mut dynamic_sections: Vec<String> = Vec::new();
 
         let planning_context = render_planning_context_with_store(planning_store.as_ref(), session_id);
-        if !planning_context.is_empty() {
+        let has_planning_state = !planning_context.is_empty();
+
+        if has_planning_state {
             dynamic_sections.push(format!("# Planning Context\n\n{}", planning_context));
         }
 

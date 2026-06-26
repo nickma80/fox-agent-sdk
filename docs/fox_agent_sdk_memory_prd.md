@@ -10,6 +10,7 @@ Fox Agent SDK 的 Memory 模块是一个完整的**语义长期记忆系统**，
 - **图结构记忆**：以 MemoryGraph 组织记忆节点、标签、聚类、关系边，支持级联扩展召回
 - **自动生命周期**：从对话转录到记忆写入、去重、冲突检测、embedding 生成全自动
 - **治理与运维**：保留策略、大小限制、导入导出、重建索引、审计日志
+- **域自适应兼容**：Memory 是领域无关的基础设施——coding 项目的代码习惯和量化项目的策略偏好共用同一套存储与召回体系。领域上下文通过 AGENTS.md 注入 system prompt（详见 Fox Agent SDK PRD §4.7.1 Domain Adaptation），Memory 层不感知具体领域
 
 ### 1.2 非目标
 
@@ -590,6 +591,10 @@ pub struct MemoryConfig {
 - `disable_memory` 标记 inactive 但不删除
 - `forget` 永久删除（不可逆）
 - 无敏感信息主动进入记忆的检查机制（依赖上层脱敏）
+
+### 12.4 域自适应（Domain Adaptation）
+
+Memory 层是**完全领域无关**的基础设施。无论 Agent 在 coding、量化交易、数据分析还是运维场景下运行，Memory 都使用同一套存储、召回、去重、冲突检测逻辑。领域的语义差异由 system prompt 中的 AGENTS.md 注入处理（详见 Fox Agent SDK PRD §4.7.1），Memory 返回的结果被注入到 `dynamic_part`，与领域指令共同作用于 Agent 决策。
 
 ---
 

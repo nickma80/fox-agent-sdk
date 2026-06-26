@@ -1,7 +1,9 @@
 use fox_agent_core::{
-    AgentError, AgentEvent, AgentEventTx, ContentBlock, Message, Model, PermissionDecision,
-    PermissionRequest, PermissionResult, PendingToolCallSnapshot, ProviderError, Role,
-    SessionSnapshot, StreamEvent, ToolContext, ToolError, ToolExecutionMode, TurnOutcome, now_secs,
+    AgentError, AgentEvent, AgentEventTx, ContentBlock, GoalCheckpoint, GoalScope, GoalStatus,
+    Message, Model, PermissionDecision, PermissionRequest, PermissionResult,
+    PendingToolCallSnapshot, ProviderError, Role, SessionSnapshot, StreamEvent, ToolContext,
+    ToolError, ToolExecutionMode, TurnOutcome, load_goals_with_store, now_secs,
+    save_goals_with_store,
 };
 use fox_agent_mcp::McpClient;
 use futures::StreamExt;
@@ -673,6 +675,8 @@ impl Agent {
                         return Err(AgentError::BudgetExceeded { message: msg });
                     }
                 }
+                // Auto-checkpoint: record progress on focused goals
+                self.auto_checkpoint_focused_goals().await;
                 info!(final_chars = final_text.len(), thinking_chars = thinking_text.len(), "Turn completed");
                 let outcome = TurnOutcome::Completed { text: final_text };
                 let _ = event_tx
@@ -865,6 +869,49 @@ impl Agent {
         self.harness.session_state.messages.push(
             Message { role: Role::Assistant, content },
         );
+    }
+
+    /// Record a progress checkpoint on any focused goal.
+    ///
+    /// Called automatically after each turn completes. If a goal has
+    /// `focused: true` and is `Active`, we append a `GoalCheckpoint`
+    /// with the current timestamp. The goal's `progress` and `status`
+    /// are **not** modified — the Agent (or user via goal tool) is
+    /// responsible for explicit progress updates.
+    async fn auto_checkpoint_focused_goals(&self) {
+        let session_id = &self.harness.session_state.id;
+        let store = &self.harness.planning_store;
+
+        for scope in [GoalScope::Session, GoalScope::Global] {
+            let goals = load_goals_with_store(store.as_ref(), session_id, scope.clone());
+            let has_focused = goals.iter().any(|g| g.focused && g.status == GoalStatus::Active);
+            if !has_focused {
+                continue;
+            }
+
+            let mut goals = goals;
+            for goal in &mut goals {
+                if goal.focused && goal.status == GoalStatus::Active {
+                    goal.checkpoints.push(GoalCheckpoint {
+                        at_secs: now_secs(),
+                        summary: "auto-checkpoint after turn".into(),
+                        progress: Some(goal.progress),
+                    });
+                    // Cap checkpoints to avoid unbounded growth
+                    if goal.checkpoints.len() > 32 {
+                        goal.checkpoints = goal.checkpoints
+                            .split_at(goal.checkpoints.len() - 16).1.to_vec();
+                    }
+                }
+            }
+            let scope_str = match &scope {
+                GoalScope::Session => "session",
+                GoalScope::Global => "global",
+            };
+            let _ = save_goals_with_store(
+                store.as_ref(), session_id, scope, goals, false, Some(scope_str),
+            );
+        }
     }
 
     fn handle_error(&self, event_tx: &AgentEventTx, turn_id: u64, error: AgentError) -> AgentError {

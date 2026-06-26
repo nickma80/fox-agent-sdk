@@ -130,7 +130,7 @@ fn handle_goal_create(
     } else {
         goals.push(created.clone());
     }
-    let _ = save_goals_with_store(store, &ctx.session_id, scope, goals, Some("goal_create"));
+    let _ = save_goals_with_store(store, &ctx.session_id, scope, goals, false, Some("goal_create"));
     Ok(json!({ "goal": created }))
 }
 
@@ -176,7 +176,7 @@ fn handle_goal_resume(
             updated = Some(goal.clone());
         }
     }
-    let _ = save_goals_with_store(store, &ctx.session_id, scope, goals, Some("goal_resume"));
+    let _ = save_goals_with_store(store, &ctx.session_id, scope, goals, false, Some("goal_resume"));
     updated.ok_or_else(|| ToolError::Message {
         message: "goal not found".to_string(),
     }).map(|goal| json!({ "goal": goal }))
@@ -201,7 +201,7 @@ fn handle_goal_update(
         if let Some(milestones) = params.milestones { goal.milestones = milestones; }
         updated = Some(goal.clone());
     }
-    let _ = save_goals_with_store(store, &ctx.session_id, scope, goals, Some("goal_update"));
+    let _ = save_goals_with_store(store, &ctx.session_id, scope, goals, false, Some("goal_update"));
     updated.ok_or_else(|| ToolError::Message {
         message: "goal not found".to_string(),
     }).map(|goal| json!({ "goal": goal }))
@@ -213,14 +213,20 @@ fn handle_goal_checkpoint(
     ctx: &ToolContext,
     scope: GoalScope,
 ) -> Result<Value, ToolError> {
-    let id = params.id.ok_or_else(|| ToolError::Message {
-        message: "missing required field `id` for action=checkpoint".to_string(),
+    // If no explicit `id`, fall back to the first focused active goal.
+    let goals = load_goals_with_store(store, &ctx.session_id, scope.clone());
+    let id = params.id.or_else(|| {
+        goals.iter()
+            .find(|g| g.focused && matches!(g.status, GoalStatus::Active))
+            .map(|g| g.id.clone())
+    }).ok_or_else(|| ToolError::Message {
+        message: "missing required field `id` for action=checkpoint (and no focused active goal to default to)".to_string(),
     })?;
     let summary = params.checkpoint_summary.ok_or_else(|| ToolError::Message {
         message: "missing required field `checkpoint_summary` for action=checkpoint".to_string(),
     })?;
     let now_secs = SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
-    let mut goals = load_goals_with_store(store, &ctx.session_id, scope.clone());
+    let mut goals = goals;
     let mut updated: Option<Goal> = None;
     if let Some(goal) = goals.iter_mut().find(|goal| goal.id == id) {
         let checkpoint = GoalCheckpoint {
@@ -231,7 +237,7 @@ fn handle_goal_checkpoint(
         goal.checkpoints.push(checkpoint);
         updated = Some(goal.clone());
     }
-    let _ = save_goals_with_store(store, &ctx.session_id, scope, goals, Some("goal_checkpoint"));
+    let _ = save_goals_with_store(store, &ctx.session_id, scope, goals, false, Some("goal_checkpoint"));
     updated.ok_or_else(|| ToolError::Message {
         message: "goal not found".to_string(),
     }).map(|goal| json!({ "goal": goal }))
@@ -254,7 +260,7 @@ fn handle_goal_focus(
             updated = Some(goal.clone());
         }
     }
-    let _ = save_goals_with_store(store, &ctx.session_id, scope, goals, Some("goal_focus"));
+    let _ = save_goals_with_store(store, &ctx.session_id, scope, goals, false, Some("goal_focus"));
     updated.ok_or_else(|| ToolError::Message {
         message: "goal not found".to_string(),
     }).map(|goal| json!({ "goal": goal }))

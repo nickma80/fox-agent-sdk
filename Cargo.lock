@@ -1641,6 +1641,8 @@ name = "fox-agent-sdk-workspace"
 version = "0.1.0"
 dependencies = [
  "async-trait",
+ "chrono",
+ "fox-agent-core",
  "fox-agent-mcp",
  "fox-agent-sdk",
  "serde_json",

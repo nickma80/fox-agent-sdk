@@ -1,4 +1,4 @@
-use fox_agent_tools::{PlanItem, PlanStatus, VersionedPlan};
+use fox_agent_tools::{PlanItem, PlanStatus, VersionedPlan, PlanningStore, save_plan_with_store};
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -19,6 +19,10 @@ pub struct SwarmCoordinator {
     pub inboxes: Arc<RwLock<HashMap<String, Vec<SwarmMessage>>>>,
     /// Notification signal for waiters (e.g. await_members)
     notify: Arc<Notify>,
+    /// Optional planning store for persisting plan changes.
+    planning_store: Arc<RwLock<Option<Arc<dyn PlanningStore>>>>,
+    /// Session id for planning store key.
+    session_id: Arc<RwLock<Option<String>>>,
 }
 
 impl Default for SwarmCoordinator {
@@ -34,6 +38,42 @@ impl SwarmCoordinator {
             reports: Arc::new(RwLock::new(Vec::new())),
             inboxes: Arc::new(RwLock::new(HashMap::new())),
             notify: Arc::new(Notify::new()),
+            planning_store: Arc::new(RwLock::new(None)),
+            session_id: Arc::new(RwLock::new(None)),
+        }
+    }
+
+    /// Wire the coordinator to a planning store for persistence.
+    ///
+    /// After this call, every plan mutation (`upsert_plan`, `assign_next_*`,
+    /// `report_completion`) is automatically persisted via the store.
+    pub async fn set_planning_store(&self, store: Arc<dyn PlanningStore>, session_id: String) {
+        *self.planning_store.write().await = Some(store);
+        *self.session_id.write().await = Some(session_id);
+    }
+
+    /// Persist the current in-memory plan to the configured store (if any).
+    ///
+    /// Offloaded to `spawn_blocking` because `FilePlanningStore` performs
+    /// blocking filesystem I/O which would starve the async executor.
+    async fn persist_plan(&self) {
+        let store = self.planning_store.read().await;
+        if let Some(ref store) = *store {
+            let sid = self.session_id.read().await;
+            if let Some(ref sid) = *sid {
+                let items = {
+                    let plan = self.shared_plan.read().await;
+                    plan.items.clone()
+                };
+                // Clone Arcs + owned data for the blocking closure
+                let store_arc = Arc::clone(store);
+                let sid = sid.clone();
+                // Save full replace — the coordinator owns the authoritative copy
+                let _ = tokio::task::spawn_blocking(move || {
+                    save_plan_with_store(store_arc.as_ref(), &sid, items, false);
+                })
+                .await;
+            }
         }
     }
 
@@ -57,7 +97,10 @@ impl SwarmCoordinator {
         plan.version += 1;
         plan.items = items;
         self.notify.notify_waiters();
-        plan.clone()
+        let result = plan.clone();
+        drop(plan);
+        self.persist_plan().await;
+        result
     }
 
     /// Assign the next runnable (unblocked) task to a worker.
@@ -72,6 +115,7 @@ impl SwarmCoordinator {
         item.status = PlanStatus::InProgress;
         item.assigned_to = Some(worker_id.to_string());
         let assigned = item.clone();
+        drop(plan);
         if let Some(worker) = self.workers.write().await.get_mut(worker_id) {
             worker.status = WorkerStatus::Running;
             worker.started_at_secs = Some(
@@ -82,6 +126,7 @@ impl SwarmCoordinator {
             );
         }
         self.notify.notify_waiters();
+        self.persist_plan().await;
         Some(assigned)
     }
 
@@ -90,6 +135,7 @@ impl SwarmCoordinator {
         let mut plan = self.shared_plan.write().await;
         let item = plan.items.iter_mut().find(|i| i.id == task_id)?;
         item.status = PlanStatus::Completed;
+        drop(plan);
         if let Some(worker) = self.workers.write().await.get_mut(worker_id) {
             worker.status = WorkerStatus::Completed;
             worker.started_at_secs = None;
@@ -97,6 +143,7 @@ impl SwarmCoordinator {
         let report = AgentReport { worker_id: worker_id.to_string(), task_id: Some(task_id.to_string()), status: WorkerStatus::Completed, summary: summary.into() };
         self.reports.write().await.push(report.clone());
         self.notify.notify_waiters();
+        self.persist_plan().await;
         Some(report)
     }
 

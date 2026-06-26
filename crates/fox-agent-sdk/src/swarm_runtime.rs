@@ -20,11 +20,19 @@ impl SwarmRuntime {
     ///
     /// The seed harness provides the tool registry, skill registry, and other
     /// configuration that will be shared (via cloning) across all forked agents.
-    pub fn new(
+    /// The coordinator is wired to the harness' planning store synchronously
+    /// during construction — once `new` returns, all plan mutations are
+    /// guaranteed to be persisted.
+    pub async fn new(
         coordinator: Arc<SwarmCoordinator>,
         model: Arc<dyn Model>,
         base_harness: Harness,
     ) -> Self {
+        // Wire coordinator persist to the harness' planning store before
+        // returning — no race condition.
+        let session_id = base_harness.session_state.id.clone();
+        let store = base_harness.planning_store.clone();
+        coordinator.set_planning_store(store, session_id).await;
         Self { coordinator, model, base_harness }
     }
 

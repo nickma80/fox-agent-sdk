@@ -328,7 +328,7 @@ impl AgentBuilder {
             coordinator,
             agent.model.clone(),
             agent.harness.clone(),
-        ))
+        ).await)
     }
 }
 
@@ -442,6 +442,6 @@ impl SwarmRuntimeBuilder {
             coordinator,
             agent.model.clone(),
             agent.harness.clone(),
-        ))
+        ).await)
     }
 }

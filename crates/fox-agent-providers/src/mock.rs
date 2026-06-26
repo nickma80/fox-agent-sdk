@@ -19,8 +19,17 @@ impl MockProvider {
         }
     }
 
+    /// Enqueue a pre-recorded response script.
+    ///
+    /// Each script is a sequence of [`StreamEvent`]s to replay in order when
+    /// [`complete()`] is called. Scripts are consumed FIFO: the first pushed
+    /// script is the first one replayed.
     pub fn push_script(&self, events: Vec<StreamEvent>) {
+        // Acquire the shared script queue lock. If poisoned (e.g. a previous
+        // panic in `complete()`), silently return — no more scripts needed
+        // since the consumer side is already broken.
         let Ok(mut guard) = self.scripts.lock() else { return };
+        // Append this script to the end of the FIFO queue.
         guard.push_back(events);
     }
 }

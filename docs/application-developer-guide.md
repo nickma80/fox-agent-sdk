@@ -699,7 +699,113 @@ FoxAgentSdkConfig {
 
 ---
 
-## 11. Troubleshooting
+## 11. Domain Adaptation — Making Your Agent Work in Any Domain
+
+Fox Agent SDK is a **general-purpose agent runtime**. The same binary can work
+in coding, quantitative trading, data analysis, SRE, or document writing —
+without changing SDK code. The Agent adapts through three layered mechanisms.
+
+### 11.1 How It Works
+
+```
+┌───────────────────────────────────────────────────────┐
+│              Domain Adaptation Layers                   │
+│                                                         │
+│ Layer 1: AGENTS.md    (Domain instructions)             │
+│   project/AGENTS.md        Project-level conventions    │
+│   ~/.fox-agent/AGENTS.md   Personal global preferences  │
+│   → Injected into static_part, prefix-cacheable         │
+│                                                         │
+│ Layer 2: Prompt Overlay  (Override directives)          │
+│   project/.fox/prompt-overlay.md                        │
+│   ~/.fox-agent/prompt-overlay.md                        │
+│   → Appended to static_part with highest priority       │
+│                                                         │
+│ Layer 3: Planning Guidance  (system.md built-in)        │
+│   system.md §Planning + §Domain Adaptation              │
+│   → Tells Agent to read AGENTS.md and self-adapt        │
+└───────────────────────────────────────────────────────┘
+```
+
+### 11.2 Step-by-step: From Coding Agent to Trading Agent
+
+**Start with a coding project** (the default case):
+
+```
+project/
+├── AGENTS.md          ← "Use Rust. Follow idiomatic patterns."
+├── Cargo.toml
+└── src/
+```
+
+The Agent reads `AGENTS.md` and acts as a Rust developer. No configuration needed.
+
+**Switch to quantitative trading** — just replace `AGENTS.md`:
+
+```markdown
+# AGENTS.md (quantitative trading project)
+
+You are a quantitative trading strategy analyst.
+- Data sources: CSV files in ./data/ (OHLCV daily bars)
+- Backtesting engine: use `backtrader` Python library
+- Performance metrics: Sharpe ratio, max drawdown, win rate
+- NEVER execute live trades without explicit user confirmation
+- Output strategy reports to ./reports/ as markdown
+- Reference: strategy parameters are defined in ./config/strategy.yaml
+```
+
+```rust
+let agent = AgentBuilder::new()
+    .provider_config(ProviderConfig::deepseek(api_key))
+    .working_dir("./trading-project")  // ← point to trading project
+    .with_default_tools()
+    .build()
+    .await?;
+```
+
+That's it. The same `AgentBuilder` code, same tools — different domain behavior driven entirely by `AGENTS.md`.
+
+### 11.3 Best Practices
+
+| Practice | Why |
+|----------|-----|
+| **Keep AGENTS.md domain-focused** | Don't repeat tool instructions; system.md already covers those. Focus on domain rules, data sources, terminology, and constraints. |
+| **Use Prompt Overlay for system.md overrides** | If system.md says "Commit as you go" but your domain never uses git, add a `.fox/prompt-overlay.md` that overrides it. |
+| **One project, one domain** | Don't try to make one `AGENTS.md` cover multiple domains. Create separate project directories. |
+| **Global AGENTS.md for personal preferences** | Put language preferences, code style, and toolchain choices in `~/.fox-agent/AGENTS.md`. They apply to all projects. |
+| **Planning tiers are domain-agnostic** | `goal`/`plan`/`todo` work the same way whether the goal is "ship a feature" or "find an alpha signal". |
+
+### 11.4 Domain Examples
+
+| Domain | AGENTS.md key content |
+|--------|----------------------|
+| **Coding** | Language, framework, testing conventions, linting rules |
+| **Quant Trading** | Data sources, backtesting engine, risk limits, execution rules |
+| **Data Analysis** | Tools (pandas, matplotlib), data locations, report format, citation rules |
+| **SRE / Operations** | Cluster endpoints, read-only constraints, alert thresholds, runbook locations |
+| **Documentation** | Style guide, target audience, output format, review checklist |
+| **Research** | Literature sources, experiment methodology, note-taking conventions |
+
+### 11.5 How the Agent Reads AGENTS.md
+
+The system prompt tells the Agent explicitly:
+
+```
+## Domain Adaptation
+
+The domain (coding, trading, research, operations, etc.) is defined by the
+tools, skills, and project context available to you — not by your identity.
+Read project instructions (AGENTS.md, prompt overlay) to understand the
+current domain's conventions. Adapt your behavior accordingly.
+```
+
+This is in `static_part`, cached by the provider across turns — the Agent
+reads it once at session start and carries the domain knowledge through the
+entire session.
+
+---
+
+## 12. Troubleshooting
 
 | Problem | Likely cause | Solution |
 |---------|-------------|----------|

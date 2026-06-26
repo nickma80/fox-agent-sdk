@@ -49,12 +49,18 @@ path = "examples/mcp_integration.rs"
 name = "langchain_users"
 path = "examples/langchain_users.rs"
 
+[[example]]
+name = "planning_demo"
+path = "examples/planning_demo.rs"
+
 [dependencies]
 fox-agent-sdk = { path = "crates/fox-agent-sdk" }
+fox-agent-core = { path = "crates/fox-agent-core" }
 fox-agent-mcp = { path = "crates/fox-agent-mcp" }
 async-trait.workspace = true
 tokio.workspace = true
 serde_json.workspace = true
+chrono.workspace = true
 
 [workspace.package]
 version = "0.1.0"
