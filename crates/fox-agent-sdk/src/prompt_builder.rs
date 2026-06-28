@@ -7,6 +7,9 @@ use std::sync::Arc;
 #[derive(Clone)]
 pub struct PromptBuilder {
     core: CorePromptBuilder,
+    /// Optional path to the global/domain-level AGENTS.md.
+    /// When `None`, falls back to `$FOX_AGENT_DIR/AGENTS.md` or `~/.fox-agent/AGENTS.md`.
+    global_agents_md_path: Option<std::path::PathBuf>,
 }
 
 impl PromptBuilder {
@@ -14,7 +17,18 @@ impl PromptBuilder {
     pub fn new(version: impl Into<String>, git_hash: impl Into<String>) -> Self {
         Self {
             core: CorePromptBuilder::new(version, git_hash),
+            global_agents_md_path: None,
         }
+    }
+
+    /// Set the path to a global/domain-level AGENTS.md.
+    ///
+    /// Use this when embedding the SDK in a domain-specific application
+    /// (e.g. a coding agent) that ships with its own global domain instructions.
+    /// The file is loaded in addition to the per-project `<working_dir>/AGENTS.md`.
+    pub fn with_global_agents_md_path(mut self, path: impl Into<std::path::PathBuf>) -> Self {
+        self.global_agents_md_path = Some(path.into());
+        self
     }
 
     /// Build a split prompt from all available sections.
@@ -67,8 +81,8 @@ impl PromptBuilder {
         let session_ctx = self.core.build_session_context(working_dir);
         static_sections.push(session_ctx);
 
-        // AGENTS.md
-        if let (Some(content), _info) = CorePromptBuilder::load_agents_md(working_dir) {
+        // AGENTS.md (project + optional global/domain)
+        if let (Some(content), _info) = CorePromptBuilder::load_agents_md(working_dir, self.global_agents_md_path.as_deref()) {
             static_sections.push(content);
         }
 

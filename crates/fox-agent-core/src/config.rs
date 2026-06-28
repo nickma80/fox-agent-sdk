@@ -21,6 +21,18 @@ pub struct FoxAgentSdkConfig {
 
     /// MCP integration configuration.
     pub mcp: McpConfig,
+
+    /// Optional path to a global AGENTS.md file for domain-level instructions.
+    ///
+    /// When set, the SDK loads this file (in addition to the per-project
+    /// `<working_dir>/AGENTS.md`) and injects it into the static system prompt.
+    /// When `None` (default), the SDK falls back to `$FOX_AGENT_DIR/AGENTS.md` or
+    /// `~/.fox-agent/AGENTS.md`.
+    ///
+    /// Set this when embedding the SDK in a domain-specific application
+    /// (e.g. a coding agent, a trading agent) that ships with its own
+    /// global domain instructions.
+    pub global_agents_md_path: Option<std::path::PathBuf>,
 }
 
 impl Default for FoxAgentSdkConfig {
@@ -34,6 +46,7 @@ impl Default for FoxAgentSdkConfig {
             auto_snapshot: true,
             budget: BudgetConfig::default(),
             mcp: McpConfig::default(),
+            global_agents_md_path: None,
         }
     }
 }

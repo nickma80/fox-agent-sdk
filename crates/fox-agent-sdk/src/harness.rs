@@ -50,6 +50,10 @@ impl Harness {
         );
         let version = env!("CARGO_PKG_VERSION").to_string();
         let git_hash = std::env::var("FOX_AGENT_GIT_HASH").unwrap_or_else(|_| "unknown".to_string());
+        let mut prompt_builder = PromptBuilder::new(version, git_hash);
+        if let Some(ref path) = cfg.global_agents_md_path {
+            prompt_builder = prompt_builder.with_global_agents_md_path(path.clone());
+        }
         Self {
             cfg,
             session_state: session,
@@ -58,7 +62,7 @@ impl Harness {
             memory_manager: MemoryManager::new(memory_cfg),
             compaction_manager: Arc::new(RwLock::new(CompactionManager::new(compaction_cfg))),
             safety_system: SafetySystem::new(safety_cfg),
-            prompt_builder: PromptBuilder::new(version, git_hash),
+            prompt_builder,
             planning_store,
             session_store,
             skill_registry: Arc::new(RwLock::new(SkillRegistry::default())),
@@ -86,6 +90,10 @@ impl Harness {
         );
         let version = env!("CARGO_PKG_VERSION").to_string();
         let git_hash = std::env::var("FOX_AGENT_GIT_HASH").unwrap_or_else(|_| "unknown".to_string());
+        let mut prompt_builder = PromptBuilder::new(version, git_hash);
+        if let Some(ref path) = cfg.global_agents_md_path {
+            prompt_builder = prompt_builder.with_global_agents_md_path(path.clone());
+        }
         Self {
             cfg,
             session_state: session,

@@ -56,7 +56,7 @@ impl ProviderConfig {
     pub fn deepseek(api_key: impl Into<String>) -> Self {
         Self {
             provider_name: "deepseek".to_string(),
-            base_url: "https://api.deepseek.com/v1".to_string(),
+            base_url: "https://api.deepseek.com/".to_string(),
             auth: AuthConfig::BearerToken(api_key.into()),
             timeout_secs: 120,
             default_headers: Vec::new(),

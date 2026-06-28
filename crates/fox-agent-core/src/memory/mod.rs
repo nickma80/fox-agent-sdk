@@ -65,92 +65,150 @@ pub struct MemoryManager {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+/// How a memory was retrieved — used for diagnostics and scoring transparency.
 pub enum RetrievalSource {
+    /// Returned by recency-only scan (no query).
     Recent,
+    /// Matched via keyword term overlap on search_text.
     Keyword,
+    /// Matched via cosine similarity over embeddings (brute-force).
     Semantic,
+    /// Matched via cosine similarity over embeddings (ANN index).
     SemanticAnn,
+    /// Seed hit from semantic/keyword phase in a cascade search.
     CascadeSeed,
+    /// Surfaced by graph traversal from a seed hit in a cascade search.
     CascadeGraph,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
+/// Decomposed scoring for a single recall hit — enables explainable retrieval.
 pub struct ScoreBreakdown {
+    /// Cosine similarity to the query embedding (0.0–1.0). Only present in semantic mode.
     pub semantic_score: Option<f32>,
+    /// Keyword term-match ratio (0.0–1.0). Only present in keyword mode.
     pub keyword_score: Option<f32>,
+    /// Recency score, derived from `memory_score()` normalized to [0,1].
     pub recency_score: f32,
+    /// Graph-traversal relevance score from cascade expansion.
     pub graph_score: Option<f32>,
+    /// Trust-level weight (High=1.0, Medium=0.75, Low=0.5).
     pub trust_score: f32,
+    /// Weighted composite score used for ranking.
     pub final_score: f32,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+/// A single memory recall result with full scoring metadata.
 pub struct RecallHit {
+    /// The matched memory entry.
     pub entry: MemoryEntry,
+    /// Weighted composite score (higher = more relevant).
     pub score: f32,
+    /// Decomposed scoring explanation.
     pub score_breakdown: ScoreBreakdown,
+    /// How this memory was found.
     pub retrieval_source: RetrievalSource,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
+/// Summary of an `ingest_transcript` operation — what was created, reinforced, or contradicted.
 pub struct IngestionReport {
+    /// IDs of newly created memories.
     pub created_ids: Vec<String>,
+    /// IDs of existing memories that were reinforced (duplicate detected).
     pub reinforced_ids: Vec<String>,
+    /// IDs of existing memories that the new memory contradicts.
     pub contradiction_ids: Vec<String>,
+    /// Duplicate candidates that were skipped.
     pub skipped_duplicates: u32,
+    /// Candidates that failed relevance verification.
     pub skipped_irrelevant: u32,
+    /// Total number of memories extracted from the transcript.
     pub extracted_count: u32,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+/// Self-contained memory snapshot for export/import.
+///
+/// Contains both project and global graphs so a complete memory state can be
+/// transferred between sessions or machines.
 pub struct MemoryExportBundle {
+    /// Format version for forward/backward compatibility.
     pub bundle_version: u32,
+    /// Project-scoped memory graph (omitted if not included in export).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub project: Option<MemoryGraph>,
+    /// Global-scoped memory graph (omitted if not included in export).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub global: Option<MemoryGraph>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
+/// Statistics from an export operation.
 pub struct ExportStats {
+    /// Number of project memories exported.
     pub project_memories: usize,
+    /// Number of global memories exported.
     pub global_memories: usize,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
+/// Statistics from an import operation.
 pub struct ImportStats {
+    /// Number of project memories imported (or merged).
     pub project_memories: usize,
+    /// Number of global memories imported (or merged).
     pub global_memories: usize,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
+/// Statistics from an ANN index rebuild.
 pub struct AnnRebuildStats {
+    /// Number of vectors indexed for the project scope.
     pub project_vectors: usize,
+    /// Number of vectors indexed for the global scope.
     pub global_vectors: usize,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
+/// Statistics from a cluster refresh operation.
 pub struct ClusterRefreshStats {
+    /// Number of clusters created/updated in the project scope.
     pub project_clusters: usize,
+    /// Number of clusters created/updated in the global scope.
     pub global_clusters: usize,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
+/// Statistics from a compact (governance) operation.
 pub struct CompactStats {
+    /// Memories removed from the project graph.
     pub project_removed: usize,
+    /// Memories removed from the global graph.
     pub global_removed: usize,
+    /// Stale memory files deleted from disk (via GC).
     pub removed_files: usize,
+    /// Total memory files scanned during GC.
     pub total_scanned: usize,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+/// A single audit trail entry for memory operations.
+///
+/// Appended to `memory.audit.jsonl` for compliance and debugging.
 pub struct MemoryAuditEvent {
+    /// When the event occurred.
     pub timestamp: chrono::DateTime<chrono::Utc>,
+    /// Operation name (e.g. "remember", "forget", "redact", "compact").
     pub action: String,
+    /// Memory scope affected (omitted for scope-independent operations).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub scope: Option<String>,
+    /// Affected memory ID (omitted for bulk operations).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub memory_id: Option<String>,
+    /// Arbitrary operation-specific metadata.
     #[serde(default)]
     pub details: serde_json::Value,
 }

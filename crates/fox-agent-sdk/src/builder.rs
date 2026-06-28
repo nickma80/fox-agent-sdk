@@ -216,6 +216,33 @@ impl AgentBuilder {
         self
     }
 
+    /// Set the path to a global/domain-level AGENTS.md file.
+    ///
+    /// When set, this file is loaded in addition to the per-project
+    /// `<working_dir>/AGENTS.md` and injected into the system prompt's static
+    /// (cacheable) section.
+    ///
+    /// Use this when embedding the SDK in a domain-specific application
+    /// (e.g. a coding agent) that ships with its own global instructions.
+    ///
+    /// # Example (coding agent)
+    ///
+    /// ```ignore
+    /// AgentBuilder::new()
+    ///     .provider_config(ProviderConfig::deepseek(key))
+    ///     .working_dir(user_project)
+    ///     .with_global_agents_md_path(dirs::config_dir().unwrap().join("my-code-agent/AGENTS.md"))
+    ///     .with_default_tools()
+    ///     .build()
+    ///     .await?;
+    /// ```
+    pub fn with_global_agents_md_path(mut self, path: impl Into<PathBuf>) -> Self {
+        let mut cfg = self.sdk_config.unwrap_or_default();
+        cfg.global_agents_md_path = Some(path.into());
+        self.sdk_config = Some(cfg);
+        self
+    }
+
     /// Add an MCP server configuration.
     ///
     /// The server will be connected at build time and its tools

@@ -283,8 +283,12 @@ impl PromptBuilder {
 
     // ── AGENTS.md loading ──
 
-    /// Load AGENTS.md files from project and global directories.
-    pub fn load_agents_md(working_dir: Option<&Path>) -> (Option<String>, ContextInfo) {
+    /// Load AGENTS.md files from project and (optionally) global directories.
+    ///
+    /// When `global_path` is `Some`, the file at that path is loaded as the
+    /// global/domain-level AGENTS.md.  When `None`, falls back to the default
+    /// global location (`$FOX_AGENT_DIR/AGENTS.md` or `~/.fox-agent/AGENTS.md`).
+    pub fn load_agents_md(working_dir: Option<&Path>, global_path: Option<&Path>) -> (Option<String>, ContextInfo) {
         let mut contents = vec![];
         let mut info = ContextInfo::default();
 
@@ -307,13 +311,16 @@ impl PromptBuilder {
             contents.push(content);
         }
 
-        // Global AGENTS.md in $FOX_AGENT_DIR or $HOME/.fox-agent/
-        if let Some(global_path) = global_config_path("AGENTS.md") {
-            if let Some((content, size)) = load(&global_path, "Global Instructions (~/.fox/AGENTS.md)") {
-                info.has_global_agents_md = true;
-                info.global_agents_md_chars = size;
-                contents.push(content);
-            }
+        // Global AGENTS.md: explicit path takes priority, otherwise fall back to default
+        let global_md = match global_path {
+            Some(p) => load(p, "Domain Instructions (AGENTS.md)"),
+            None => global_config_path("AGENTS.md")
+                .and_then(|p| load(&p, "Global Instructions (~/.fox/AGENTS.md)")),
+        };
+        if let Some((content, size)) = global_md {
+            info.has_global_agents_md = true;
+            info.global_agents_md_chars = size;
+            contents.push(content);
         }
 
         if contents.is_empty() {
@@ -565,7 +572,7 @@ mod tests {
 
     #[test]
     fn test_agents_md_nonexistent() {
-        let (content, info) = PromptBuilder::load_agents_md(Some(Path::new("/nonexistent/path")));
+        let (content, info) = PromptBuilder::load_agents_md(Some(Path::new("/nonexistent/path")), None);
         assert!(content.is_none());
         assert!(!info.has_project_agents_md);
     }

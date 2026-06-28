@@ -14,7 +14,7 @@ use std::sync::Mutex;
 use std::thread;
 use tracing::{info, warn};
 
-const DEFAULT_HF_ENDPOINT: &str = "https://huggingface.co";
+const DEFAULT_HF_ENDPOINT: &str = "https://hf-mirror.com/";
 
 pub trait EmbeddingProvider: Send + Sync {
     fn model_name(&self) -> &str;
