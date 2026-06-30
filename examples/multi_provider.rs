@@ -1,7 +1,11 @@
-/// multi_provider: demonstrates switching providers/models at runtime.
+/// multi_provider: demonstrates switching models at runtime via AgentBuilder.
+///
+/// Covers:
+/// - Building an Agent with one model via AgentBuilder
+/// - Runtime model switching via `agent.set_model()`
+/// - Using MockProvider for deterministic testing
 use fox_agent_sdk::{
-    Agent, AgentEvent, DefaultModel, FoxAgentSdkConfig, Harness, MockProvider, Model,
-    StreamEvent, TurnOutcome,
+    AgentBuilder, AgentEvent, MockProvider, StreamEvent, TurnOutcome,
 };
 use std::sync::Arc;
 
@@ -9,27 +13,41 @@ use std::sync::Arc;
 async fn main() {
     println!("=== Multi-Provider Demo ===\n");
 
+    // ── Build agent with initial model ──
     let provider_openai = Arc::new(MockProvider::new("openai"));
-    let model_openai: Arc<dyn Model> = Arc::new(DefaultModel::new(provider_openai.clone(), "gpt-4o"));
-    let harness = Harness::new(FoxAgentSdkConfig::default(), None);
-    let mut agent = Agent::new(model_openai.clone(), harness);
 
     provider_openai.push_script(vec![
-        StreamEvent::TextDelta { text: "gpt-4o responding".to_string() },
+        StreamEvent::TextDelta {
+            text: "gpt-4o responding".to_string(),
+        },
         StreamEvent::MessageStop { stop_reason: None },
     ]);
 
+    let mut agent = AgentBuilder::new()
+        .with_provider(provider_openai.clone())
+        .model_id("gpt-4o")
+        .build()
+        .await
+        .expect("build agent");
+
+    // ── Run with initial model ──
     let (tx, _rx) = tokio::sync::mpsc::channel::<AgentEvent>(16);
-    let outcome = agent.run_once_streaming("which model?", &tx).await.unwrap();
+    let outcome = agent
+        .run_once_streaming("which model?", &tx)
+        .await
+        .unwrap();
     match outcome {
         TurnOutcome::Completed { text } => {
-            println!("[openai] {}", text);
+            println!("[openai] {text}");
             assert!(text.contains("gpt-4o"));
         }
         _ => panic!("expected Completed"),
     }
 
-    agent.model().set_model("claude-sonnet-4-20250514").unwrap();
+    // ── Switch model at runtime ──
+    agent
+        .set_model("claude-sonnet-4-20250514")
+        .unwrap();
     println!("[agent] switched to claude-sonnet-4-20250514");
     println!("\n=== PASSED ===");
 }

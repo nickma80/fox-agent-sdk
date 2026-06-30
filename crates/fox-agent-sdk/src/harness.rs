@@ -102,7 +102,7 @@ impl Harness {
             memory_manager: MemoryManager::new(memory_cfg),
             compaction_manager: Arc::new(RwLock::new(CompactionManager::new(compaction_cfg))),
             safety_system: SafetySystem::with_permission_hook(safety_cfg, hook),
-            prompt_builder: PromptBuilder::new(version, git_hash),
+            prompt_builder,
             planning_store,
             session_store,
             skill_registry: Arc::new(RwLock::new(SkillRegistry::default())),

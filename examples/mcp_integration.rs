@@ -24,8 +24,8 @@
 /// ```
 
 use fox_agent_sdk::{
-    Agent, AgentEvent, DefaultModel, FoxAgentSdkConfig, Harness, MockProvider, Model, Tool,
-    ToolContext, ToolError, ToolOutput, TurnOutcome, StreamEvent,
+    AgentBuilder, AgentEvent, MockProvider, Tool, ToolContext, ToolError, ToolOutput,
+    TurnOutcome, StreamEvent,
 };
 use fox_agent_mcp::{
     McpClient, McpToolDefinition,
@@ -207,24 +207,21 @@ async fn main() {
     println!("[<<] result: {result}");
     assert_eq!(result, "42");
 
-    // ── 5. Register discovered tools into the Agent harness ──
+    // ── 5. Build agent with AgentBuilder, then register MCP tools ──
     let provider = Arc::new(MockProvider::new("mock"));
-    let model: Arc<dyn Model> = Arc::new(DefaultModel::new(provider.clone(), "mock-1"));
-    let harness = Harness::new(FoxAgentSdkConfig::default(), None);
 
-    for def in &definitions {
-        harness
-            .register_tool(Arc::new(McpToolAdapter {
+    // Build tools from discovered MCP definitions
+    let mcp_tools: Vec<Arc<dyn Tool>> = definitions
+        .iter()
+        .map(|def| {
+            Arc::new(McpToolAdapter {
                 client: client.clone(),
                 full_name: def.name.clone(),
-            }))
-            .await;
-    }
+            }) as Arc<dyn Tool>
+        })
+        .collect();
 
-    // ── 6. Simulate agent loop routing a tool call through the MCP tool ──
-    let mut agent = Agent::new(model, harness);
-    agent.mcp_client = Some(client);
-
+    // ── 6. Build agent, then attach MCP client and register tools ──
     provider.push_script(vec![
         StreamEvent::ToolUse {
             id: "c1".into(),
@@ -239,6 +236,21 @@ async fn main() {
         },
         StreamEvent::MessageStop { stop_reason: None },
     ]);
+
+    let mut agent = AgentBuilder::new()
+        .with_provider(provider.clone())
+        .model_id("mock-1")
+        .build()
+        .await
+        .expect("build agent");
+
+    // Attach the manually-connected MCP client
+    agent.mcp_client = Some(client);
+
+    // Register the pre-built MCP tools into the agent harness
+    for tool in mcp_tools {
+        agent.harness().register_tool(tool).await;
+    }
 
     let (tx, mut rx) = tokio::sync::mpsc::channel::<AgentEvent>(32);
     let outcome = agent.run_once_streaming("12 + 30 = ?", &tx).await.unwrap();

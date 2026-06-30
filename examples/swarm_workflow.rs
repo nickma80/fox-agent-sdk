@@ -6,6 +6,9 @@
 /// - Failure retry and task reassignment
 /// - Summary report generation
 ///
+/// Uses `SwarmCoordinator` + `SwarmSupervisor` directly.
+/// For a higher-level API, see `SwarmRuntimeBuilder` in the SDK.
+///
 /// Uses MockProvider - no real LLM credentials needed.
 use fox_agent_sdk::{
     AgentReport, PlanItem, PlanPriority, PlanStatus,

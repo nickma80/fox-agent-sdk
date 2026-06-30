@@ -21,9 +21,8 @@ use std::sync::Arc;
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // ── Read API key from environment ──
-    // let api_key = std::env::var("DEEPSEEK_API_KEY")
-    //     .expect("Set DEEPSEEK_API_KEY to your DeepSeek API key");
-    let api_key = "sk-eb41069e23244d0fb40e86d872238d92".to_string();
+    let api_key = std::env::var("DEEPSEEK_API_KEY")
+        .expect("Set DEEPSEEK_API_KEY to your DeepSeek API key");
     // ── Shared planning store so we can read state after the turn ──
     let planning_store: Arc<dyn PlanningStore> = Arc::new(InMemoryPlanningStore::default());
 

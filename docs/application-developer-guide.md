@@ -1,931 +1,847 @@
-# Fox Agent SDK — Application Developer's Guide
+# Fox Agent SDK 应用开发指南
 
-This guide walks you through building real applications with the Fox Agent SDK,
-from a simple CLI bot to a permission-aware, multi-agent system with
-observability.
+面向基于 Fox Agent SDK 构建 AI Agent 应用的开发者的完整指南。涵盖从
+Agent 生命周期管理到高级配置的全部内容。
 
 ---
 
-## 1. Your First Agent
+## 目录
+
+1. [Agent 构建](#1-agent-构建)
+2. [Agent 执行](#2-agent-执行)
+3. [会话管理](#3-会话管理)
+4. [工具系统](#4-工具系统)
+5. [权限与安全](#5-权限与安全)
+6. [记忆系统](#6-记忆系统)
+7. [规划系统](#7-规划系统)
+8. [上下文压缩](#8-上下文压缩)
+9. [运行治理](#9-运行治理)
+10. [事件录制与回放](#10-事件录制与回放)
+11. [MCP 集成](#11-mcp-集成)
+12. [域自适应 — 让 Agent 适配任意领域](#12-域自适应--让-agent-适配任意领域)
+13. [故障排查](#13-故障排查)
+
+---
+
+## 1. Agent 构建
+
+### 1.1 最小示例
 
 ```rust
-use fox_agent_sdk::{AgentBuilder, AgentEvent, ProviderConfig, TurnOutcome};
+use fox_agent_sdk::{AgentBuilder, ProviderConfig, TurnOutcome};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let api_key = std::env::var("DEEPSEEK_API_KEY")
-        .expect("Set DEEPSEEK_API_KEY");
-
+    let api_key = std::env::var("DEEPSEEK_API_KEY")?;
     let mut agent = AgentBuilder::new()
         .provider_config(ProviderConfig::deepseek(api_key))
-        .model_id("deepseek-v4-flash")
-        .with_default_tools()
+        .model_id("deepseek-reasoner")
         .build()
         .await?;
 
-    let (tx, mut rx) = tokio::sync::mpsc::channel::<AgentEvent>(64);
-
-    // Spawn event display
-    tokio::spawn(async move {
-        while let Some(ev) = rx.recv().await {
-            match ev {
-                AgentEvent::ModelTextDelta { text } => print!("{text}"),
-                AgentEvent::ToolCallStart { name, .. } => println!("[tool:{name}]"),
-                AgentEvent::ModelUsage { usage } => {
-                    eprintln!("(tokens: {}/{})", usage.input_tokens, usage.output_tokens);
-                }
-                _ => {}
-            }
-        }
-    });
-
-    let prompt = std::env::args()
-        .nth(1)
-        .unwrap_or_else(|| "What files are in this directory?".into());
-
-    let outcome = agent.run_once_streaming(&prompt, &tx).await?;
-
-    match outcome {
-        TurnOutcome::Completed { text } => println!("\nDone: {}", text),
-        TurnOutcome::RequiresUserDecision { request } => {
-            println!("\nPermission needed: {} ({})", request.tool_name, request.risk_level);
-        }
-        TurnOutcome::Failed { error } => eprintln!("Error: {error}"),
-        TurnOutcome::Cancelled => eprintln!("Cancelled"),
-    }
-
+    let outcome = agent.run_once("你是谁？").await?;
+    println!("{:?}", outcome);
     Ok(())
 }
 ```
 
-### What's happening
+### 1.2 Builder 配置选项
 
-| Line | What it does |
-|------|-------------|
-| `AgentBuilder::new()` | Starts the builder with sensible defaults |
-| `.provider_config(...)` | Sets up the LLM provider (DeepSeek / OpenAI / Anthropic) |
-| `.model_id(...)` | Chooses which model to use |
-| `.with_default_tools()` | Registers `read`, `write`, `bash`, `grep`, `todo`, `plan`, `memory`, `skill` |
-| `.build().await` | Assembles `Provider → Model → Harness → Agent` |
-| `.run_once_streaming(...)` | Runs one turn, emitting events to the channel |
+| 方法 | 默认值 | 说明 |
+|------|--------|------|
+| `.provider_config(config)` | 无（必须设置） | 选择 Provider（DeepSeek/OpenAI/Anthropic） |
+| `.model_id(id)` | `"deepseek-reasoner"` | 模型标识符 |
+| `.working_dir(path)` | `None` | 工具执行的工作目录 |
+| `.with_default_tools()` | 不注册任何工具 | 注册所有内置工具 |
+| `.with_tool(tool)` | - | 注册自定义工具 |
+| `.with_system_prompt(text)` | 内置 `system.md` | 覆盖系统提示词 |
+| `.with_safety_policy(config)` | `SafetyConfig::default()` | 权限策略 |
+| `.with_session_store(store)` | `InMemorySessionStore` | 会话持久化后端 |
+| `.with_planning_store(store)` | `InMemoryPlanningStore` | 规划持久化后端 |
+| `.with_mcp_server(config)` | - | 接入 MCP 服务器 |
+| `.with_global_agents_md_path(path)` | `~/.fox-agent/AGENTS.md` | 全局/领域级 AGENTS.md 路径 |
+| `.build()` | - | 构建 Agent |
 
----
-
-## 2. Working with Tools
-
-### 2.1 Built-in Tools
-
-When you call `.with_default_tools()`, these tools are available to the agent:
-
-| Tool | What it does | Sandboxed |
-|------|-------------|-----------|
-| `read` | Read file contents | Yes |
-| `write` | Create or overwrite files | Yes |
-| `edit` | Apply string replacements | Yes |
-| `bash` | Execute shell commands | Yes |
-| `grep` | Search file contents | Yes |
-| `glob` | Find files by pattern | Yes |
-| `todo` | Maintain a task list | — |
-| `plan` | Manage a shared plan | — |
-| `goal` | Track goals with checkpoints | — |
-| `memory` | Cross-session learning | — |
-| `skill` | On-demand domain expertise | — |
-
-### 2.2 Registering Custom Tools
+### 1.3 多 Provider 配置
 
 ```rust
-use fox_agent_sdk::{AgentBuilder, ProviderConfig, Tool, ToolContext, ToolError, ToolOutput};
-use serde_json::{json, Value};
-use std::sync::Arc;
-
-struct WeatherTool;
-
-#[async_trait::async_trait]
-impl Tool for WeatherTool {
-    fn name(&self) -> &str {
-        "get_weather"
-    }
-
-    fn description(&self) -> &str {
-        "Get current weather for a city"
-    }
-
-    fn parameters_schema(&self) -> Value {
-        json!({
-            "type": "object",
-            "properties": {
-                "city": { "type": "string", "description": "City name" }
-            },
-            "required": ["city"]
-        })
-    }
-
-    async fn execute(
-        &self,
-        input: Value,
-        _ctx: ToolContext,
-    ) -> Result<ToolOutput, ToolError> {
-        let city = input["city"].as_str().unwrap_or("unknown");
-        // In production: call a real weather API
-        Ok(ToolOutput {
-            text: format!("Sunny, 22C in {city}"),
-            is_error: false,
-            json: Some(json!({"city": city, "temp_c": 22, "condition": "sunny"})),
-        })
-    }
-}
-
-// Register it
-let agent = AgentBuilder::new()
-    .provider_config(ProviderConfig::deepseek(key))
-    .model_id("deepseek-v4-flash")
-    .with_tool(Arc::new(WeatherTool))
-    .build()
-    .await?;
-```
-
-The agent now sees `get_weather` in its tool list and can call it naturally:
-> User: "What's the weather in Tokyo?"
-> Agent: calls `get_weather({city: "Tokyo"})` → "Sunny, 22C in Tokyo"
-
----
-
-## 3. Working with Skills
-
-Skills are domain expertise modules your agent loads **on demand** — they are
-not pre-loaded into the system prompt. Fox Agent SDK skills use the
-**Claude Code skill format** (YAML frontmatter + Markdown body), so you can
-reuse skills from Claude Code projects directly.
-
-### 3.1 Creating a Skill
-
-Create a `.md` file in `.claude/skills/`:
-
-```markdown
----
-name: sql-analyst
-description: SQL query analysis and optimization
-allowed-tools: [read, grep, glob]
----
-
-You are a SQL analyst. When asked to review or write queries:
-
-## Instructions
-1. First read the schema files in `migrations/` using grep or glob.
-2. Validate syntax against the target dialect.
-3. Suggest indexes for any query touching >10k rows.
-4. Flag N+1 query patterns.
-```
-
-**Frontmatter fields**:
-
-| Field | Required | Description |
-|-------|----------|-------------|
-| `name` | No | Unique name. Defaults to filename (without `.md`). Frontmatter overrides filename. |
-| `description` | No | Human-readable description. Defaults to `name`. |
-| `allowed-tools` | No | Tools the skill may use, e.g. `[read, grep, bash]`. Empty = no restriction. |
-| `model` | No | Preferred model. Fox Agent SDK preserves this field but does not enforce it. |
-
-### 3.2 How Skills Are Loaded
-
-Skills are loaded automatically when you call `with_default_tools()`:
-
-```rust
-let agent = AgentBuilder::new()
-    .provider_config(ProviderConfig::deepseek(key))
-    .model_id("deepseek-v4-flash")
-    .working_dir(".")             // .claude/skills/*.md scanned here
-    .with_default_tools()         // loads skills + registers SkillTool
-    .build()
-    .await?;
-
-// Skills are loaded from <.working_dir>/.claude/skills/*.md.
-// Only .md files are loaded. Other files are ignored.
-
-### 3.3 How the Agent Uses Skills
-
-Skills are activated on demand via the built-in `skill` tool. The agent
-sees the skill list in its system prompt and can activate skills when needed:
-
-```
-Agent: skill(action="list")
-  → Available skills:
-       /sql-analyst  — SQL query analysis and optimization
-     ★ /pdf          — PDF manipulation expert
-    Use action="activate" with name to load a skill.
-
-Agent: skill(action="activate", name="sql-analyst")
-  → Skill `/sql-analyst` activated (856 chars of expertise loaded).
-
-[Next turn: the agent's system prompt includes the SQL analyst instructions]
-```
-
-The agent can deactivate a skill when it's no longer needed:
-
-```
-Agent: skill(action="deactivate")
-  → Skill `/sql-analyst` deactivated.
-```
-
-### 3.4 Design Rationale
-
-Why on-demand activation instead of pre-loading all skills into the system
-prompt?
-
-| Approach | Prompt Size | Context Efficiency | Claude Code Compat |
-|----------|------------|-------------------|--------------------|
-| Pre-load all skills | O(N) grows with each skill | Wastes context on unused skills | No |
-| On-demand activation (this SDK) | O(1) independent of skill count | Only active skill uses context | Yes |
-
-With 20 skills averaging 2000 chars each, pre-loading wastes ~40K chars of
-context. On-demand activation keeps the prompt lean and only pays the context
-cost for skills the agent actually uses.
-
-### 3.5 Programmatic Access
-
-```rust
-use fox_agent_core::{Skill, SkillRegistry};
-
-// Manual skill loading
-let mut registry = SkillRegistry::default();
-registry.load_from_working_dir(Some(std::path::Path::new(".")))?;
-
-// Check what's available
-for skill in registry.list() {
-    println!("  {} — {}", skill.name, skill.description);
-}
-
-// Activate a skill
-let pdf = registry.get("pdf").unwrap();
-println!("Prompt: {} chars", pdf.prompt.len());
-println!("Allowed tools: {:?}", pdf.allowed_tools);
-```
-
----
-
-## 4. Permission & Approval System
-
-### 4.1 Default Policy
-
-Choose how the agent handles untrusted tool calls:
-
-```rust
-use fox_agent_sdk::SafetyConfig;
-
-// Liberal: let the agent use any tool it wants
-SafetyConfig {
-    default_policy: DefaultSafetyPolicy::Allow,
-    ..Default::default()
-}
-
-// Strict: ask the user before every tool call
-SafetyConfig {
-    default_policy: DefaultSafetyPolicy::Confirm,
-    ..Default::default()
-}
-
-// Most restrictive: deny all tools unless explicitly allowed
-SafetyConfig {
-    default_policy: DefaultSafetyPolicy::Deny,
-    tool_allowlist: Some(vec!["read".into(), "grep".into()]),
-    ..Default::default()
-}
-```
-
-### 4.2 Denylist & Allowlist
-
-```rust
-SafetyConfig {
-    default_policy: DefaultSafetyPolicy::Confirm,
-    tool_denylist: Some(vec!["bash".into(), "write".into()]),   // never allowed
-    tool_allowlist: Some(vec!["read".into(), "grep".into()]),    // always allowed
-    ..Default::default()
-}
-```
-
-### 4.3 Handling Permission Requests
-
-When the agent hits a tool that needs user approval, it returns
-`TurnOutcome::RequiresUserDecision`:
-
-```rust
-loop {
-    match agent.run_once_streaming(&user_input, &tx).await? {
-        TurnOutcome::Completed { text } => {
-            println!("Agent: {text}");
-            break;
-        }
-        TurnOutcome::RequiresUserDecision { request } => {
-            // Show the risk level and prompt to the user
-            println!("Risk: {}", request.risk_level);
-            println!("Source: {}", request.policy_source);
-            println!("{}", request.prompt);
-
-            // Get user decision
-            let allowed = ask_user_yes_no("Allow?");
-            let decision = if allowed {
-                PermissionDecision::Allow
-            } else {
-                PermissionDecision::Deny
-            };
-
-            // Resume with decision
-            agent.resume_streaming(decision, &tx).await?;
-        }
-        TurnOutcome::Failed { error } => {
-            eprintln!("Error: {error}");
-            break;
-        }
-        _ => break,
-    }
-}
-```
-
-### 4.4 Approval Caching (Skip re-prompting)
-
-```rust
-use fox_agent_sdk::{ApprovalManager, ApprovalScope};
-
-let approval = ApprovalManager::new("session-001", safety_config);
-
-// Approve "read" for the entire session
-approval
-    .cache_decision("read", &PermissionResult::Allow, ApprovalScope::ThisSession)
-    .await;
-
-// Later calls to "read" skip the permission check
-let cached = approval.check_cache("read").await;
-assert!(cached.is_some()); // Returns PermissionResult::Allow
-```
-
-Cache scopes:
-
-| Scope | Lifetime |
-|-------|----------|
-| `ThisTurn` | Cleared at end of the current turn |
-| `ThisSession` | Persists across turns within the session |
-| `ThisWorkspace` | Persists across session restarts |
-
-### 4.5 Audit Trail
-
-```rust
-let request = PermissionRequest::new("bash", "Execute: rm -rf /tmp/cache");
-
-approval
-    .record_audit(&request, &PermissionResult::Allow, 42)
-    .await;
-
-let trail = approval.dump_audit().await;
-for entry in trail {
-    println!("[{ts}] {tool} → {decision}", ts = entry.timestamp, tool = entry.tool_name, decision = entry.decision);
-}
-```
-
----
-
-## 5. Session & Planning State Persistence
-
-### 5.1 Auto-Snapshot
-
-Enable automatic persistence of session state (messages, model state, pending
-interrupts) after each turn:
-
-```rust
-use fox_agent_sdk::FoxAgentSdkConfig;
-
-let config = FoxAgentSdkConfig {
-    session_storage_dir: Some(PathBuf::from("./sessions")),
-    planning_storage_dir: Some(PathBuf::from("./planning")),
-    auto_snapshot: true,
-    ..Default::default()
-};
-
-let agent = AgentBuilder::new()
-    .provider_config(ProviderConfig::deepseek(key))
-    .sdk_config(config)
-    .build()
-    .await?;
-```
-
-### 5.2 Manual Save/Load
-
-```rust
-use fox_agent_sdk::{FileSessionStore, SessionStore};
-
-let store = FileSessionStore::new(PathBuf::from("./sessions"));
-
-// Save after a turn
-let snapshot = agent.harness().dump_snapshot();
-store.save_snapshot(&snapshot).unwrap();
-
-// Restore later
-let session_ids = store.list_session_ids().unwrap();
-let restored = store.load_snapshot(&session_ids[0]).unwrap();
-agent.restore_from_complete_snapshot(restored);
-```
-
-### 5.3 Planning Store
-
-```rust
-use fox_agent_sdk::FilePlanningStore;
-
-let planning = FilePlanningStore::new(PathBuf::from("./planning"));
-
-// Read back todos/plans/goals from a previous session
-let todos = planning.load_todos("session-001", PlanningScope::Session).unwrap();
-let plan = planning.load_plan("session-001", PlanningScope::Session).unwrap();
-```
-
----
-
-## 6. Event Recording & Replay
-
-### 6.1 Recording to JSONL
-
-```rust
-use fox_agent_sdk::EventRecorder;
-use std::path::PathBuf;
-
-let recorder = EventRecorder::new("my-session", 1);
-let (tx, rx) = tokio::sync::mpsc::channel::<AgentEvent>(64);
-
-// Spawn the recorder to consume events
-tokio::spawn(recorder.clone().run(rx, Some(PathBuf::from("trace.jsonl"))));
-
-// Run agent — events are automatically recorded
-agent.run_once_streaming("Hello", &tx).await?;
-
-// The JSONL file now contains one EventEnvelope per event with:
-// event_id, session_id, turn_id, seq, timestamp, trace_id,
-// parent_event_id, source, and the event payload.
-```
-
-### 6.2 Replay for Testing
-
-```rust
-use fox_agent_sdk::ReplayRunner;
-
-let runner = ReplayRunner::from_file(
-    &PathBuf::from("trace.jsonl")
-).unwrap();
-
-// Add assertions on the transcript
-let mut transcript = runner.transcript().clone();
-transcript.verification_checks.push(TranscriptCheck {
-    description: "agent must call the read tool".into(),
-    jsonpath: "$[?(@.payload.ToolCallStart.name == 'read')]".into(),
-    min_occurrences: 1,
-    max_occurrences: None,
-});
-
-// Run verification
-let report = runner.verify(&transcript);
-assert!(report.all_passed());
-```
-
-### 6.3 Secret Scrubbing
-
-Export files are automatically scrubbed. You can also scrub manually:
-
-```rust
-use fox_agent_sdk::mask_secrets;
-
-let safe = mask_secrets(
-    "curl -H 'Authorization: Bearer eyJhbG...' https://api.example.com"
-);
-// → "curl -H 'Authorization: Bearer [JWT]' https://api.example.com"
-```
-
-Detected patterns: API keys (`sk-...`), JWT tokens, `Authorization:` headers,
-`x-api-key:` headers, `password=` assignments, PEM private keys.
-
----
-
-## 7. Governance & Observability
-
-### 7.1 Budget Enforcement
-
-Prevent runaway costs:
-
-```rust
-use fox_agent_sdk::{BudgetConfig, GovernanceGuard};
-
-let guard = GovernanceGuard::new(BudgetConfig {
-    token_budget: Some(500_000),       // max tokens per session
-    cost_budget_cents: Some(2000),     // max $20.00 per session
-    tool_timeout_secs: 30,             // kill tools after 30s
-    provider_timeout_secs: 120,        // HTTP timeout for LLM calls
-    provider_retries: 2,               // retry on transient errors
-    max_turns: 50,                     // hard cap on turns
-    ..Default::default()
-});
-
-// Wire into agent
-agent.set_governance(Some(guard.clone()));
-```
-
-The agent will return `AgentError::BudgetExceeded` when limits are hit.
-
-### 7.2 Metrics Hooks
-
-```rust
-guard.add_metrics_hook(|snap: &MetricsSnapshot| {
-    println!(
-        "tokens={} cost={}c tools={} errors={:.1}% compaction={}",
-        snap.total_tokens,
-        snap.estimated_cost_cents,
-        snap.tool_calls,
-        snap.tool_error_rate() * 100.0,
-        snap.compaction_count,
-    );
-}).await;
-```
-
-### 7.3 Metrics Snapshot
-
-```rust
-let snap = guard.snapshot().await;
-println!("{snap:#?}");
-// MetricsSnapshot {
-//     total_tokens: 12450,
-//     total_input_tokens: 8340,
-//     total_output_tokens: 4110,
-//     estimated_cost_cents: 45,
-//     tool_calls: 12,
-//     tool_success_count: 10,
-//     tool_error_count: 2,
-//     compaction_count: 1,
-//     turns_completed: 5,
-//     total_latency_ms: 8230,
-// }
-```
-
----
-
-## 8. Multi-Agent (Swarm)
-
-### 8.1 Setting Up a Swarm
-
-```rust
-use fox_agent_sdk::{
-    PlanItem, PlanPriority, PlanStatus,
-    SwarmCoordinator, SwarmSupervisor,
-};
-use std::sync::Arc;
-
-let coordinator = Arc::new(SwarmCoordinator::new());
-let supervisor = SwarmSupervisor::with_defaults(coordinator.clone());
-
-// Spawn workers
-coordinator.spawn("researcher", "researcher").await;
-coordinator.spawn("coder", "coder").await;
-coordinator.spawn("reviewer", "reviewer").await;
-
-// Define tasks with dependencies
-coordinator.upsert_plan(vec![
-    PlanItem {
-        id: "research".into(),
-        content: "Research the approach".into(),
-        status: PlanStatus::Pending,
-        priority: PlanPriority::High,
-        assigned_to: Some("researcher".into()),
-        blocked_by: vec![],
-    },
-    PlanItem {
-        id: "implement".into(),
-        content: "Implement the feature".into(),
-        status: PlanStatus::Pending,
-        priority: PlanPriority::High,
-        assigned_to: Some("coder".into()),
-        blocked_by: vec!["research".into()], // depends on research
-    },
-    PlanItem {
-        id: "review".into(),
-        content: "Code review".into(),
-        status: PlanStatus::Pending,
-        priority: PlanPriority::Medium,
-        assigned_to: Some("reviewer".into()),
-        blocked_by: vec!["implement".into()], // depends on implementation
-    },
-]);
-```
-
-### 8.2 Task Lifecycle
-
-Each task flows through these states:
-
-```
-Pending → Assigned → Running → Completed
-                       |          Failed → [Retry] → Running
-                       |          TimedOut → [Reassign] → Running
-                       ↓
-                    Blocked (waiting for dependency)
-```
-
-### 8.3 Supervisor
-
-The [`SwarmSupervisor`] provides:
-
-| Feature | Description |
-|---------|-------------|
-| **Health checks** | Monitors running workers; restarts or reassigns |
-| **Retry** | Auto-retries failed tasks with configurable policy |
-| **Reassignment** | Moves tasks to different workers on exhaustion |
-| **Timeout** | Detects tasks that exceed their time limit |
-| **Summary report** | Aggregates results across all workers |
-
-```rust
-// Configure retry policy
-use fox_agent_sdk::RetryPolicy;
-
-let supervisor = SwarmSupervisor::new(
-    coordinator,
-    RetryPolicy {
-        max_retries: 3,
-        backoff_ms: 1000,
-        timeout_secs: 300,
-        reassign_on_exhaust: true,
-    },
+// DeepSeek（最小配置）
+let config = ProviderConfig::deepseek(api_key);
+
+// OpenAI
+let config = ProviderConfig::new(
+    "openai",
+    "https://api.openai.com/v1".to_string(),
+    api_key,
 );
 
-// Generate summary after all work completes
-let report = supervisor.generate_summary().await;
-println!("Tasks: {} completed, {} failed, {} timed out",
-    report.completed, report.failed, report.timed_out);
+// Anthropic
+let config = ProviderConfig::new(
+    "anthropic",
+    "https://api.anthropic.com/v1".to_string(),
+    api_key,
+);
 
-// Worker status
-for (id, status) in report.worker_statuses {
-    println!("  {id}: {status:?}");
-}
+// 通过 builder 组装
+let mut agent = AgentBuilder::new()
+    .provider_config(config)
+    .model_id("claude-sonnet-4-20250514")
+    .build()
+    .await?;
 ```
 
----
+### 1.4 使用 MockProvider 测试
 
-## 9. Testing Your Agent
-
-### 9.1 Using MockProvider
+不调用真实 LLM，使用确定性脚本：
 
 ```rust
-use fox_agent_sdk::{AgentBuilder, MockProvider, StreamEvent};
+use std::sync::Arc;
+use fox_agent_sdk::{MockProvider, StreamEvent, AgentBuilder};
 
 let provider = Arc::new(MockProvider::new("mock"));
 
-// Script the agent's behavior
+// 推送确定性输出
 provider.push_script(vec![
-    StreamEvent::ToolUse {
-        id: "call1".into(),
-        name: "read".into(),
-        input: json!({"path": "Cargo.toml"}),
-    },
-    StreamEvent::MessageStop { stop_reason: None },
-]);
-
-provider.push_script(vec![
-    StreamEvent::TextDelta { text: "This is a Rust project.".into() },
+    StreamEvent::TextDelta { text: "Hello!".into() },
     StreamEvent::MessageStop { stop_reason: None },
 ]);
 
 let mut agent = AgentBuilder::new()
-    .with_provider(provider)
+    .with_provider(provider.clone())
     .model_id("mock-1")
-    .with_default_tools()
+    .build()
+    .await?;
+```
+
+### 1.5 运行时切换模型
+
+```rust
+let mut agent = AgentBuilder::new()
+    .provider_config(ProviderConfig::deepseek(key))
+    .model_id("deepseek-reasoner")
     .build()
     .await?;
 
-let outcome = agent.run_once("What's in Cargo.toml?").await.unwrap();
+// 运行时切换
+agent.set_model("deepseek-v4-flash")?;
+```
 
-match outcome {
-    TurnOutcome::Completed { text } => {
-        assert!(text.contains("Rust project"));
+---
+
+## 2. Agent 执行
+
+### 2.1 三种运行模式
+
+| 方法 | 返回 | 场景 |
+|------|------|------|
+| `run_once(msg)` | `Result<()>` | 纯副作用（忽略输出） |
+| `run_once_capture(msg)` | `Result<TurnOutcome>` | 捕获最终结果 |
+| `run_once_streaming(msg, tx)` | `Result<TurnOutcome>` | 通过 channel 获取实时事件 |
+
+**示例：流式获取事件**
+
+```rust
+let (tx, mut rx) = tokio::sync::mpsc::channel::<AgentEvent>(64);
+let outcome = agent.run_once_streaming("创建项目结构", &tx).await?;
+
+loop {
+    match rx.recv().await {
+        Some(AgentEvent::TextDelta { text, .. }) => print!("{}", text),
+        Some(AgentEvent::ToolCallStart { name, .. }) => println!("[tool] {}", name),
+        Some(AgentEvent::Usage { input_tokens, output_tokens, .. }) => {
+            // token 统计
+        }
+        Some(AgentEvent::TurnComplete { .. }) => break,
+        Some(AgentEvent::Error { message, .. }) => eprintln!("error: {}", message),
+        _ => {}
     }
-    _ => panic!("expected Completed"),
 }
 ```
 
-### 9.2 Golden Transcript Testing
+### 2.2 AgentEvent 类型
+
+| 事件 | 时机 | 关键字段 |
+|------|------|---------|
+| `TextDelta` | Provider 返回文本块 | `text`、`turn_id` |
+| `ThinkingDelta` | 推理模型思考过程 | `text`、`turn_id` |
+| `ToolCallStart` | 工具调用开始 | `call_id`、`name`、`input` |
+| `ToolCallEnd` | 工具调用结束 | `call_id`、`name`、`output` |
+| `Usage` | 每轮结束 | `input_tokens`、`output_tokens` |
+| `Compacting` | 上下文压缩开始 | `trigger` |
+| `Error` | 发生错误 | `message`、`fatal` |
+| `TurnComplete` | 轮次完全结束 | `outcome` |
+
+### 2.3 TurnOutcome 结果类型
 
 ```rust
-use fox_agent_sdk::{EventRecorder, ReplayRunner};
-
-// Record a known-good trace
-let recorder = EventRecorder::new("golden", 1);
-// ... run agent with known input ...
-
-// Save as golden file
-recorder.export_to_file(PathBuf::from("golden.jsonl")).await.unwrap();
-
-// In CI: verify behavior matches golden
-let runner = ReplayRunner::from_file(&PathBuf::from("golden.jsonl")).unwrap();
-let passes = runner.check_event_types(&[
-    "TurnStart", "ModelTextDelta", "ToolCallStart", "ModelTextDelta", "TurnEnd"
-]);
-assert!(passes, "Event sequence changed from golden transcript");
-```
-
----
-
-## 10. Provider Configuration Reference
-
-### DeepSeek
-
-```rust
-ProviderConfig {
-    provider_name: "deepseek".into(),
-    base_url: "https://api.deepseek.com".into(),
-    api_key: key,
-    ..ProviderConfig::default()
+pub enum TurnOutcome {
+    Completed { text: String },
+    RequiresUserDecision { request: PermissionRequest },
+    CancelledByUser,
+    BudgetExceeded { reason: String },
+    Error { message: String },
+    GracefulShutdown,
 }
-// Shortcut:
-ProviderConfig::deepseek(key)
 ```
 
-### OpenAI
+### 2.4 权限中断与恢复
+
+LLM 调用工具触发权限检查 → 用户决策 → Agent 恢复执行：
 
 ```rust
-ProviderConfig::new("openai", "https://api.openai.com/v1", key)
-```
+let (tx, mut rx) = tokio::sync::mpsc::channel::<AgentEvent>(64);
 
-### Anthropic
-
-```rust
-ProviderConfig::new("anthropic", "https://api.anthropic.com", key)
-```
-
-### Custom / Self-hosted
-
-```rust
-ProviderConfig {
-    provider_name: "openai".into(),
-    base_url: "http://localhost:8080/v1".into(),
-    api_key: "not-needed".into(),
-    ..ProviderConfig::default()
+// 第一轮：触发权限
+let outcome = agent.run_once_streaming("删除日志文件", &tx).await?;
+match outcome {
+    TurnOutcome::RequiresUserDecision { request } => {
+        println!("Agent 请求权限: {}", request.prompt);
+        // 用户决策后恢复
+        let decision = PermissionDecision::Allow;
+        agent.record_permission_decision(request.id.clone(), decision.clone());
+        let outcome2 = agent.resume_streaming(decision, &tx).await?;
+    }
+    _ => {}
 }
 ```
 
 ---
 
-## 11. Configuration Cheat Sheet
+## 3. 会话管理
+
+### 3.1 SessionState（运行时模型）
+
+`SessionState` 是领域层 Reducer 模型，通过 `apply(SessionEvent)` 驱动状态转移：
 
 ```rust
-FoxAgentSdkConfig {
-    // Memory: cross-session learning
-    memory: MemoryConfig {
-        enabled: true,
-        auto_extract: true,           // auto-learn from conversations
-        embedding_enabled: false,     // set true for semantic search
-        storage_dir: Some(PathBuf::from("./memory")),
-        ..Default::default()
-    },
+pub struct SessionState {
+    pub id: String,
+    pub parent_id: Option<String>,
+    pub title: Option<String>,
+    pub model: Option<String>,
+    pub provider_key: Option<String>,
+    pub status: SessionStatus,     // New / Active / Closed
+    pub working_dir: Option<PathBuf>,
+    pub messages: Vec<Message>,
+    pub env_snapshots: Vec<EnvSnapshot>,
+}
+```
 
-    // Compaction: context window management
-    compaction: CompactionConfig {
-        enabled: true,
-        auto_compact: true,
-        ..Default::default()
-    },
+### 3.2 SessionSnapshot（持久化格式）
 
-    // Safety: tool permission
-    safety: SafetyConfig {
-        default_policy: DefaultSafetyPolicy::Confirm,
-        tool_denylist: Some(vec!["delete".into()]),
-        approval_cache: ApprovalCacheConfig {
-            enabled: true,
-            ttl_secs: 3600,
-        },
-        approval_timeout_secs: 30,
-        ..Default::default()
-    },
+Agent 调用 `snapshot()` 时，将运行时状态（包括模型运行时、待审批权限、中断队列等）导出为完整快照：
 
-    // Budget: cost control
-    budget: BudgetConfig {
-        token_budget: Some(1_000_000),
-        cost_budget_cents: Some(5000),
-        provider_timeout_secs: 120,
-        tool_timeout_secs: 30,
-        ..Default::default()
-    },
+```rust
+let snapshot = agent.snapshot();
+session_store.save_session(&snapshot)?;
+```
 
-    session_storage_dir: Some(PathBuf::from("./sessions")),
-    planning_storage_dir: Some(PathBuf::from("./planning")),
+### 3.3 SessionStore
+
+两个内置实现：
+
+- **InMemorySessionStore**：`HashMap` 存储，测试用
+- **FileSessionStore**：按 `session_id` 分文件存储为 JSON，生产用
+
+```rust
+use fox_agent_sdk::FileSessionStore;
+
+let store = Arc::new(FileSessionStore::new(PathBuf::from("./sessions")));
+let mut agent = AgentBuilder::new()
+    .provider_config(ProviderConfig::deepseek(key))
+    .with_session_store(store)
+    .build()
+    .await?;
+```
+
+### 3.4 会话恢复
+
+```rust
+let mut agent = AgentBuilder::new()
+    .provider_config(ProviderConfig::deepseek(key))
+    .with_session_store(store.clone())
+    .build()
+    .await?;
+
+let restored = Agent::load_from_store(
+    model,
+    harness,
+    "session-1",
+)?;
+
+restored.run_once("继续刚才的工作").await?;
+```
+
+### 3.5 自动快照
+
+`auto_snapshot: true`（默认开启）时，每次 `run_once` 调用自动持久化。
+
+```rust
+let config = FoxAgentSdkConfig {
     auto_snapshot: true,
-}
+    session_storage_dir: Some(PathBuf::from("./sessions")),
+    ..Default::default()
+};
 ```
 
 ---
 
-## 12. Domain Adaptation — Making Your Agent Work in Any Domain
+## 4. 工具系统
 
-Fox Agent SDK is a **general-purpose agent runtime**. The same binary can work
-in coding, quantitative trading, data analysis, SRE, or document writing —
-without changing SDK code. The Agent adapts through three layered mechanisms.
+### 4.1 Tool Trait
 
-### 12.1 How It Works
+```rust
+#[async_trait]
+pub trait Tool: Send + Sync {
+    fn name(&self) -> &str;
+    fn description(&self) -> &str;
+    fn parameters_schema(&self) -> Value;       // JSON Schema
+    async fn execute(
+        &self,
+        input: Value,
+        ctx: ToolContext,
+    ) -> Result<ToolOutput, ToolError>;
+}
+```
+
+### 4.2 ToolOutput
+
+```rust
+pub struct ToolOutput {
+    pub text: String,          // LLM 可读文本
+    pub is_error: bool,        // 是否为错误
+    pub json: Option<Value>,   // 结构化数据
+}
+```
+
+### 4.3 ToolContext
+
+每次工具调用注入完整的执行上下文：
+
+```rust
+pub struct ToolContext {
+    pub session_id: String,
+    pub message_id: String,
+    pub tool_call_id: String,
+    pub working_dir: Option<PathBuf>,
+    pub execution_mode: ToolExecutionMode,  // Foreground / Background
+    pub graceful_shutdown_requested: bool,
+}
+```
+
+### 4.4 自定义工具示例
+
+```rust
+struct TimeTool;
+
+#[async_trait]
+impl Tool for TimeTool {
+    fn name(&self) -> &str { "get_current_time" }
+    fn description(&self) -> &str { "获取当前系统时间（ISO 8601 格式）" }
+    fn parameters_schema(&self) -> Value {
+        json!({"type":"object","properties":{},"additionalProperties":false})
+    }
+
+    async fn execute(
+        &self,
+        _input: Value,
+        _ctx: ToolContext,
+    ) -> Result<ToolOutput, ToolError> {
+        let now = chrono::Utc::now().to_rfc3339();
+        Ok(ToolOutput { text: now, is_error: false, json: None })
+    }
+}
+
+let mut agent = AgentBuilder::new()
+    .provider_config(ProviderConfig::deepseek(key))
+    .with_tool(Arc::new(TimeTool))
+    .build()
+    .await?;
+```
+
+### 4.5 风险分级
+
+每个工具注册时声明风险等级，权限系统据此做出决策：
+
+| 风险等级 | 典型工具 | 默认行为 |
+|---------|---------|---------|
+| `Low` | `read`、`grep`、`glob` | Allow |
+| `Medium` | `edit`、`todo` | Confirm |
+| `High` | `write`、`bash` | Confirm |
+| `Critical` | `websearch`、`webfetch` | Confirm |
+
+### 4.6 工具执行保障
+
+- **超时保护**：默认 60 秒（通过 `GovernanceGuard` 配置）
+- **并发限制**：`GovernanceGuard` 中的 `Semaphore` 控制
+- **优雅关闭**：`graceful_shutdown_requested` 在调用前检查
+
+---
+
+## 5. 权限与安全
+
+### 5.1 SafetyConfig
+
+```rust
+pub struct SafetyConfig {
+    pub default_policy: DefaultSafetyPolicy,    // Allow / Deny / Confirm
+    pub tool_denylist: Option<Vec<String>>,     // 黑名单工具
+    pub tool_allowlist: Option<Vec<String>>,    // 白名单工具
+    pub custom_hook: Option<Arc<dyn PermissionHook>>,
+    pub approval_timeout_secs: Option<u64>,     // 审批超时（默认 120 秒）
+}
+```
+
+### 5.2 策略评估流程
+
+```
+自定义 hook (优先) → Denylist 检查 → Allowlist 检查 → Default Policy
+```
+
+### 5.3 ApprovalManager
+
+三层缓存设计，减少重复审批：
+
+| 层级 | 生命周期 | 场景 |
+|------|---------|------|
+| `ThisTurn` | 轮次结束清空 | 同轮内相同工具免重复审批 |
+| `ThisSession` | 会话结束清空 | 用户确认一次，整个会话生效 |
+| `ThisWorkspace` | 跨会话持久 | 信任的工具永久生效 |
+
+```rust
+let safety = SafetyConfig {
+    default_policy: DefaultSafetyPolicy::Confirm,
+    ..Default::default()
+};
+
+let approval = ApprovalManager::new("session-1", safety);
+
+// 会话级别缓存 read 工具的审批
+approval.cache_decision(
+    "read",
+    &PermissionResult::Allow,
+    ApprovalScope::ThisSession,
+).await;
+
+// 检查缓存
+match approval.check_cache("read").await {
+    Some(result) => { /* 使用缓存结果 */ }
+    None => { /* 需要用户决策 */ }
+}
+```
+
+### 5.4 审计与溯源
+
+每个 `PermissionRequest` 携带 `policy_source` 字段，记录决策逻辑来源（`"denylist"`、`"allowlist"`、`"default:confirm"` 等）。完整决策链可导出到 JSONL，用于安全审计和回溯分析，确保不可抵赖性。
+
+```rust
+approval.record_audit(&request, &result, turn_id).await;
+approval.export_audit(&audit_path).await?;
+```
+
+---
+
+## 6. 记忆系统
+
+### 6.1 架构概览
+
+Fox Agent SDK 内建记忆系统，支持跨会话学习和召回：
+
+```
+MemoryManager → 生命周期管理
+MemoryGraph   → 图结构存储
+Extractor     → LLM 驱动提取
+EmbeddingProvider → 语义嵌入
+ANN 索引      → 快速语义搜索
+```
+
+### 6.2 配置示例
+
+```rust
+let mem_config = MemoryConfig {
+    enabled: true,
+    storage_dir: Some(PathBuf::from("./memory")),
+    extraction_interval_turns: 3,    // 每 3 轮触发提取
+    max_recall_entries: 10,         // 召回条数上限
+    embedding_model: "mistral-text-embed".to_string(),
+    ..Default::default()
+};
+```
+
+### 6.3 MemoryEntry 结构
+
+```rust
+pub struct MemoryEntry {
+    pub id: String,
+    pub session_id: Option<String>,
+    pub content: String,
+    pub category: MemoryCategory,       // Fact / Preference / Todo / QAPair
+    pub scope: MemoryScope,            // Session / Global
+    pub trust_level: TrustLevel,       // Low / Medium / High
+    pub created_at: u64,
+    pub tags: Vec<String>,
+    pub embeddings: Option<Vec<f32>>,
+}
+```
+
+### 6.4 召回模式
+
+- **Relevant**：LLM 相关性校验 + 语义检索（精确但慢）
+- **Recent**：最近记忆（快速但可能不精确）
+- **Hybrid**：混合策略（平衡精度和速度）
+
+### 6.5 记忆工作流
+
+```
+1. 用户: "我更喜欢中文回复"
+2. MemoryExtractor 从消息中提取 → MemoryEntry { category: Preference, ... }
+3. 下次会话: 当前消息触发 recall
+4. 相关记忆注入 → system prompt dynamic 部分
+5. Agent: "好的，我会用中文回复"
+```
+
+---
+
+## 7. 规划系统
+
+### 7.1 层次结构
+
+| 结构 | 粒度 | 作用域 | 持久化键 |
+|------|------|-------|---------|
+| `GoalItem` | 目标 | Session / Global | `{session_id}:goal` / `:global_goals` |
+| `VersionedPlan` | 计划 | Session | `{session_id}:plan` |
+| `TodoItem` | 任务 | Session | `{session_id}:todo` |
+
+### 7.2 PlanItem 结构
+
+```rust
+pub struct PlanItem {
+    pub id: String,
+    pub content: String,
+    pub status: PlanStatus,     // Pending / InProgress / Done / Blocked / Cancelled
+    pub depends_on: Vec<String>, // 依赖的任务 ID 列表
+    pub assigned_to: Option<String>,
+    pub priority: Priority,     // Low / Medium / High
+    pub tags: Vec<String>,
+    pub version: u64,
+}
+```
+
+### 7.3 PlanningStore
+
+与 `SessionStore` 类似的持久化接口：
+
+```rust
+pub trait PlanningStore: Send + Sync {
+    fn save_todos(&self, session_id: &str, todos: &[TodoItem]) -> Result<(), String>;
+    fn load_todos(&self, session_id: &str) -> Result<Vec<TodoItem>, String>;
+    fn save_plan(&self, session_id: &str, plan: &VersionedPlan) -> Result<(), String>;
+    fn load_plan(&self, session_id: &str) -> Result<VersionedPlan, String>;
+    fn save_goals(&self, session_id: &str, goals: &[GoalItem], scope: GoalScope) -> Result<(), String>;
+    fn load_goals(&self, session_id: &str) -> Result<Vec<GoalItem>, String>;
+}
+```
+
+### 7.4 内置工具
+
+Agent 通过以下工具管理规划：
+
+- **goal**：设置和跟踪目标
+- **plan**：制定和更新计划
+- **todo**：管理任务项
+
+规划状态在每轮构建 prompt 时注入 `dynamic_part`。
+
+---
+
+## 8. 上下文压缩
+
+当会话消息超出 token 预算或轮次上限时，`CompactionManager` 自动执行压缩。
+
+### 8.1 触发策略
+
+| 策略 | 条件 | 说明 |
+|------|------|------|
+| `TokenBudget` | 总字符数超过阈值 | 最常见的触发方式 |
+| `TurnCount` | 消息数超过 `max_turns_before_compaction` | 轮次控制 |
+| `ContextLimitApproaching` | 上下文接近但未超预算 | 预防性压缩 |
+| `Provider` | Provider 原生通知 | 如 Anthropic |
+| `Manual` | 手动触发 | API 调用 |
+
+### 8.2 压缩行为
+
+1. 保留最近 `preserve_recent_messages` 条消息
+2. 将更早的消息汇总为 `[Conversation summary]` 注记
+3. 注入到 system 消息中
+4. 记录 `CompactionEvent`（触发原因、删除/保留条数等）
+
+### 8.3 配置
+
+```rust
+let compaction = CompactionConfig {
+    token_budget: Some(60_000),               // 字符数阈值
+    max_turns_before_compaction: 15,
+    context_limit_threshold: 0.85,            // 85% 时触发
+    preserve_recent_messages: 10,
+    max_compaction_count: 5,
+    ..Default::default()
+};
+```
+
+---
+
+## 9. 运行治理
+
+### 9.1 BudgetConfig
+
+```rust
+pub struct BudgetConfig {
+    pub token_budget: Option<u64>,         // Token 预算上限
+    pub cost_budget_cents: Option<u64>,    // 费用预算（美分）
+    pub max_consecutive_errors: u64,       // 连续错误上限
+    pub provider_timeout_secs: u64,        // Provider 调用超时
+    pub tool_timeout_secs: u64,            // 工具调用超时
+    pub tool_concurrency_limit: u64,       // 工具并发数
+}
+```
+
+### 9.2 Metrics 钩子
+
+```rust
+guard.add_metrics_hook(|metrics| {
+    println!(
+        "turns={} tokens_in={} tokens_out={} cost={}c err_rate={:.1}%",
+        metrics.turns_completed,
+        metrics.total_input_tokens,
+        metrics.total_output_tokens,
+        metrics.estimated_cost_cents,
+        metrics.tool_error_rate() * 100.0,
+    );
+}).await;
+```
+
+### 9.3 自动停止条件
+
+- 超预算：`TurnOutcome::BudgetExceeded`
+- 连续错误过多：自动终止
+- 正常完成：`TurnOutcome::Completed`
+
+---
+
+## 10. 事件录制与回放
+
+### 10.1 EventRecorder
+
+录制整轮事件到 JSONL：
+
+```rust
+let recorder = EventRecorder::new("session-1", 1);
+
+// 在 agent 执行过程中，每次 agent event 到达时：
+// recorder.record(&event);
+
+recorder.export_to_file(PathBuf::from("events.jsonl")).await?;
+```
+
+### 10.2 ReplayRunner
+
+黄金文件回放用于 CI 回归测试：
+
+```rust
+let events = EventRecorder::load_from_file(&PathBuf::from("golden.jsonl"))?;
+let runner = ReplayRunner::new(events);
+
+runner.run_with_assertions(vec![
+    Check::TextContains("42"),
+    Check::ToolCallPresent("calculator"),
+    Check::NoErrors,
+])?;
+```
+
+### 10.3 自动脱敏
+
+导出时自动检测并脱敏 API key / JWT / PEM 私钥：
+
+```
+sk-abc123...  →  [API_KEY]
+eyJhbGci...   →  [JWT]
+```
+
+---
+
+## 11. MCP 集成
+
+### 11.1 接入 MCP 服务器
+
+```rust
+use fox_agent_sdk::McpServerConfig;
+
+let mcp_conf = McpServerConfig {
+    name: "filesystem".to_string(),
+    command: "npx".to_string(),
+    args: vec!["-y".into(), "@modelcontextprotocol/server-filesystem".into(), "/tmp".into()],
+    env: None,
+    transport: McpTransport::Stdio,
+};
+
+let mut agent = AgentBuilder::new()
+    .provider_config(ProviderConfig::deepseek(key))
+    .with_mcp_server(mcp_conf)
+    .build()
+    .await?;
+```
+
+### 11.2 传输方式
+
+- `McpTransport::Stdio`：通过子进程 stdin/stdout 通信
+- `McpTransport::Sse { url }`：通过 HTTP SSE 连接
+
+### 11.3 动态工具发现
+
+`McpClient` 在启动时完成三步初始化：
+1. `tools/list` → 发现所有可用工具
+2. 为每个工具创建 `McpToolAdapter`（实现 `Tool` trait）
+3. 将适配器注册到 harness 工具体系中
+
+所有已加入权限检查、审计、超时控制等 SDK 级保障。
+
+---
+
+## 12. 域自适应 — 让 Agent 适配任意领域
+
+Fox Agent SDK 是**通用 Agent 运行时**，同一个 Agent 二进制可以在 coding、量化交易、数据分析、运维、文档写作等截然不同的领域工作。域自适应通过三层递进机制实现。
+
+### 12.1 工作原理
 
 ```
 ┌───────────────────────────────────────────────────────┐
-│              Domain Adaptation Layers                   │
+│              域自适应分层                                │
 │                                                         │
-│ Layer 1: AGENTS.md    (Domain instructions)             │
-│   project/AGENTS.md        Project-level conventions    │
-│   ~/.fox-agent/AGENTS.md   Personal global preferences  │
-│   → Injected into static_part, prefix-cacheable         │
+│ 第一层: AGENTS.md    (领域指引)                          │
+│   项目/AGENTS.md        项目级约定                       │
+│   ~/.fox-agent/AGENTS.md   个人全局偏好                  │
+│   → 注入 static_part，支持前缀缓存                       │
 │                                                         │
-│ Layer 2: Prompt Overlay  (Override directives)          │
-│   project/.fox/prompt-overlay.md                        │
+│ 第二层: Prompt Overlay  (覆盖指令)                       │
+│   项目/.fox/prompt-overlay.md                           │
 │   ~/.fox-agent/prompt-overlay.md                        │
-│   → Appended to static_part with highest priority       │
+│   → 以最高优先级追加到 static_part                       │
 │                                                         │
-│ Layer 3: Planning Guidance  (system.md built-in)        │
+│ 第三层: Planning Guidance  (system.md 内置)               │
 │   system.md §Planning + §Domain Adaptation              │
-│   → Tells Agent to read AGENTS.md and self-adapt        │
+│   → 告知 Agent 读取 AGENTS.md 并自适应                   │
 └───────────────────────────────────────────────────────┘
 ```
 
-### 12.2 Step-by-step: From Coding Agent to Trading Agent
+### 12.2 分步演示：从 Coding Agent 到量化交易 Agent
 
-**Start with a coding project** (the default case):
+**从编程项目开始**（默认情况）：
 
 ```
 project/
-├── AGENTS.md          ← "Use Rust. Follow idiomatic patterns."
+├── AGENTS.md          ← "使用 Rust，遵循惯用模式。"
 ├── Cargo.toml
 └── src/
 ```
 
-The Agent reads `AGENTS.md` and acts as a Rust developer. No configuration needed.
+Agent 读取 `AGENTS.md`，以 Rust 开发者身份工作。无需任何配置。
 
-**Switch to quantitative trading** — just replace `AGENTS.md`:
+**切换到量化交易** — 只需替换 `AGENTS.md`：
 
 ```markdown
-# AGENTS.md (quantitative trading project)
+# AGENTS.md （量化交易项目）
 
-You are a quantitative trading strategy analyst.
-- Data sources: CSV files in ./data/ (OHLCV daily bars)
-- Backtesting engine: use `backtrader` Python library
-- Performance metrics: Sharpe ratio, max drawdown, win rate
-- NEVER execute live trades without explicit user confirmation
-- Output strategy reports to ./reports/ as markdown
-- Reference: strategy parameters are defined in ./config/strategy.yaml
+你是一名量化交易策略分析师。
+- 数据源：./data/ 目录下的 CSV 文件（OHLCV 日线数据）
+- 回测引擎：使用 `backtrader` Python 库
+- 绩效指标：夏普比率、最大回撤、胜率
+- 绝对禁止在未得到用户明确确认的情况下执行实盘交易
+- 将策略报告输出到 ./reports/ 目录，格式为 markdown
+- 参考：策略参数在 ./config/strategy.yaml 中定义
 ```
 
 ```rust
 let agent = AgentBuilder::new()
     .provider_config(ProviderConfig::deepseek(api_key))
-    .working_dir("./trading-project")  // ← point to trading project
+    .working_dir("./trading-project")  // ← 指向交易项目
     .with_default_tools()
     .build()
     .await?;
 ```
 
-That's it. The same `AgentBuilder` code, same tools — different domain behavior driven entirely by `AGENTS.md`.
+就这样。同样的 `AgentBuilder` 代码，同样的工具——领域行为完全由 `AGENTS.md` 驱动。
 
-### 12.3 Best Practices
+### 12.3 最佳实践
 
-| Practice | Why |
-|----------|-----|
-| **Keep AGENTS.md domain-focused** | Don't repeat tool instructions; system.md already covers those. Focus on domain rules, data sources, terminology, and constraints. |
-| **Use Prompt Overlay for system.md overrides** | If system.md says "Commit as you go" but your domain never uses git, add a `.fox/prompt-overlay.md` that overrides it. |
-| **One project, one domain** | Don't try to make one `AGENTS.md` cover multiple domains. Create separate project directories. |
-| **Global AGENTS.md for personal preferences** | Put language preferences, code style, and toolchain choices in `~/.fox-agent/AGENTS.md`. They apply to all projects. |
-| **Planning tiers are domain-agnostic** | `goal`/`plan`/`todo` work the same way whether the goal is "ship a feature" or "find an alpha signal". |
+| 实践 | 原因 |
+|------|------|
+| **AGENTS.md 聚焦领域规则** | 不要重复工具使用说明；system.md 已包含。聚焦领域规则、数据源、术语和约束。 |
+| **用 Prompt Overlay 覆盖 system.md** | 如果 system.md 说"修改后自动提交"但你的领域不使用 git，创建 `.fox/prompt-overlay.md` 覆盖。 |
+| **一个项目一个领域** | 不要让一个 `AGENTS.md` 涵盖多个领域。创建独立项目目录。 |
+| **全局 AGENTS.md 存放个人偏好** | 将语言偏好、代码风格、工具链选择放在 `~/.fox-agent/AGENTS.md` 中，对所有项目生效。 |
+| **规划层级与领域无关** | `goal`/`plan`/`todo` 在"发布功能"或"寻找 alpha 信号"两种场景下的工作方式完全一致。 |
 
-### 12.4 Domain Examples
+### 12.4 领域示例
 
-| Domain | AGENTS.md key content | Example skills |
-|--------|----------------------|----------------|
-| **Coding** | Language, framework, testing conventions, linting rules | `code-review`, `refactoring`, `api-design` |
-| **Quant Trading** | Data sources, backtesting engine, risk limits, execution rules | `portfolio-optimization`, `market-microstructure` |
-| **Data Analysis** | Tools (pandas, matplotlib), data locations, report format, citation rules | `sql-analyst`, `statistical-modeling` |
-| **SRE / Operations** | Cluster endpoints, read-only constraints, alert thresholds, runbook locations | `incident-response`, `capacity-planning` |
-| **Documentation** | Style guide, target audience, output format, review checklist | `api-docs`, `release-notes` |
-| **Research** | Literature sources, experiment methodology, note-taking conventions | `literature-review`, `experiment-design` |
+| 领域 | AGENTS.md 关键内容 | 典型技能 |
+|------|-------------------|---------|
+| **编程** | 语言、框架、测试规范、lint 规则 | `code-review`、`refactoring`、`api-design` |
+| **量化交易** | 数据源、回测引擎、风险限制、执行规则 | `portfolio-optimization`、`market-microstructure` |
+| **数据分析** | 工具（pandas、matplotlib）、数据位置、报告格式、引用规则 | `sql-analyst`、`statistical-modeling` |
+| **SRE / 运维** | 集群端点、只读限制、告警阈值、runbook 位置 | `incident-response`、`capacity-planning` |
+| **文档写作** | 风格指南、目标受众、输出格式、审核清单 | `api-docs`、`release-notes` |
+| **科研** | 文献来源、实验方法、笔记规范 | `literature-review`、`experiment-design` |
 
-### 12.5 How the Agent Reads AGENTS.md
+### 12.5 Agent 如何读取 AGENTS.md
 
-The system prompt tells the Agent explicitly:
+系统提示词会明确告知 Agent：
 
 ```
-## Domain Adaptation
+## 领域自适应
 
-The domain (coding, trading, research, operations, etc.) is defined by the
-tools, skills, and project context available to you — not by your identity.
-Read project instructions (AGENTS.md, prompt overlay) to understand the
-current domain's conventions. Adapt your behavior accordingly.
+领域（编程、交易、科研、运维等）由你可用的工具、技能和项目上下文定义，
+而非由你的身份定义。阅读项目指引（AGENTS.md、prompt overlay）理解
+当前领域的约定。据此调整行为。
 ```
 
-This is in `static_part`, cached by the provider across turns — the Agent
-reads it once at session start and carries the domain knowledge through the
-entire session.
+此内容属于 `static_part`，由 Provider 跨轮次缓存——Agent 在会话启动时读取一次，在整个会话期间持续持有领域知识。
+
+### 12.6 Code Agent 应用的全局 AGENTS.md
+
+当你基于 Fox Agent SDK 开发特定领域的应用（如 code agent）时，可以通过 `with_global_agents_md_path()` 指定应用自身的全局指引文件：
+
+```rust
+let mut agent = AgentBuilder::new()
+    .provider_config(ProviderConfig::deepseek(key))
+    .working_dir(user_project)                         // 用户项目根目录
+    // 指定 code agent 应用自身的全局 AGENTS.md
+    .with_global_agents_md_path(
+        dirs::config_dir()
+            .unwrap()
+            .join("my-code-agent/AGENTS.md")
+    )
+    .with_default_tools()
+    .build()
+    .await?;
+```
+
+这样形成三层 AGENTS.md 体系：
+
+```
+[应用领域指引]  ← with_global_agents_md_path 指定的路径
+[项目上下文]     ← <working_dir>/AGENTS.md 自动加载
+[个人全局偏好]   ← 如果 global_agents_md_path 为 None，回退到 ~/.fox-agent/AGENTS.md
+```
 
 ---
 
-## 13. Troubleshooting
+## 13. 故障排查
 
-| Problem | Likely cause | Solution |
-|---------|-------------|----------|
-| Agent returns empty text | Model didn't connect | Check API key and base URL |
-| `BudgetExceeded` error | Token/cost limit hit | Raise `token_budget` or `cost_budget_cents` |
-| Permission requests loop forever | Default policy is `Confirm` with no cache | Use `ApprovalManager` caching |
-| Tool calls hang | Tool timeout | Set `budget.tool_timeout_secs` |
-| Memory not persisting | `storage_dir` not set | Set `memory.storage_dir` |
-| Compilation error: `enum` not found | Tool name not registered | Call `.with_default_tools()` or `.with_tool(...)` |
+| 问题 | 可能原因 | 解决方案 |
+|------|---------|---------|
+| Agent 返回空文本 | 模型未连接 | 检查 API key 和 base URL |
+| `BudgetExceeded` 错误 | Token/cost 限额触发 | 提高 `token_budget` 或 `cost_budget_cents` |
+| 权限请求无限循环 | 默认策略为 `Confirm` 且无缓存 | 使用 `ApprovalManager` 缓存 |
+| 工具调用挂起 | 工具超时 | 设置 `budget.tool_timeout_secs` |
+| 记忆不持久化 | `storage_dir` 未设置 | 设置 `memory.storage_dir` |
+| 编译错误：找不到 `enum` | 工具名未注册 | 调用 `.with_default_tools()` 或 `.with_tool(...)` |

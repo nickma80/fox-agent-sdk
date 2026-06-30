@@ -1,16 +1,15 @@
 # Fox Agent SDK
 
-A production-grade Agent SDK for building AI applications with full lifecycle
-management — from rapid prototyping to deployment-ready governance.
+面向 AI 应用开发的生产级 Agent SDK，提供从快速原型到部署就绪治理的完整生命周期管理。
 
-## Installation
+## 安装
 
 ```toml
 [dependencies]
 fox-agent-sdk = "0.1.0"
 ```
 
-## Quick Start
+## 快速开始
 
 ```rust
 use fox_agent_sdk::{AgentBuilder, AgentEvent, ProviderConfig, TurnOutcome};
@@ -42,21 +41,21 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 }
 ```
 
-## Architecture
+## 架构
 
 ```
-fox-agent-sdk (facade)
-├── fox-agent-core        # Provider, Model, Agent loop, Event types, Config
-├── fox-agent-providers   # DeepSeek, OpenAI, Anthropic, Mock
-├── fox-agent-tools       # Built-in tools (bash, read, write, todo, plan, goal...)
-└── fox-agent-swarm       # Multi-agent coordinator, supervisor, retry
+fox-agent-sdk (门面)
+├── fox-agent-core        # Provider、Model、Agent Loop、Event 类型、Config
+├── fox-agent-providers   # DeepSeek、OpenAI、Anthropic、Mock
+├── fox-agent-tools       # 内置工具 (bash、read、write、todo、plan、goal...)
+└── fox-agent-swarm       # 多 Agent 协调器、监管器、重试
 ```
 
-## Features
+## 功能特性
 
 ### Builder API
 
-Initialize a fully-configured Agent in a few lines with sensible defaults:
+几行代码即可初始化完整配置的 Agent，全部提供合理默认值：
 
 ```rust
 AgentBuilder::new()
@@ -65,32 +64,32 @@ AgentBuilder::new()
     .working_dir(".")
     .with_default_tools()
     .with_safety_policy(SafetyConfig::default())
-    // For non-coding agents: .with_system_prompt("You are a customer support agent...")
+    // 非编程 Agent： .with_system_prompt("你是一个客服助手...")
     .build()
     .await?;
 ```
 
-### Multi-Provider Support
+### 多 Provider 支持
 
-| Provider   | `provider_name` | Constructor |
-|------------|-----------------|-------------|
+| Provider   | `provider_name` | 构造函数 |
+|------------|-----------------|----------|
 | DeepSeek   | `deepseek`      | `ProviderConfig::deepseek(key)` |
 | OpenAI     | `openai`        | `ProviderConfig::new("openai", base_url, key)` |
 | Anthropic  | `anthropic`     | `ProviderConfig::new("anthropic", base_url, key)` |
 | Mock       | N/A             | `builder.with_provider(Arc::new(MockProvider::new("mock")))` |
 
-### Tool System
+### 工具系统
 
-**Built-in tools** included with `with_default_tools()`:
+**内置工具**，通过 `with_default_tools()` 注册：
 
-- `read` / `write` / `edit` — file operations
-- `bash` — shell command execution (sandboxed)
-- `grep` / `glob` — code search
-- `todo` / `plan` / `goal` — planning and task tracking
-- `memory` — cross-session learning
-- `skill` — on-demand domain expertise (Claude Code skill format)
+- `read` / `write` / `edit` — 文件操作
+- `bash` — Shell 命令执行（沙箱约束）
+- `grep` / `glob` — 代码搜索
+- `todo` / `plan` / `goal` — 规划与任务跟踪
+- `memory` — 跨会话学习
+- `skill` — 按需加载领域专业知识（兼容 Claude Code 格式）
 
-**Custom tools** via the `Tool` trait:
+**自定义工具**，通过 `Tool` trait 实现：
 
 ```rust
 struct MyTool;
@@ -98,7 +97,7 @@ struct MyTool;
 #[async_trait]
 impl Tool for MyTool {
     fn name(&self) -> &str { "my_tool" }
-    fn description(&self) -> &str { "Does something useful" }
+    fn description(&self) -> &str { "做一些有用的事情" }
     fn parameters_schema(&self) -> Value {
         json!({"type": "object", "properties": {...}})
     }
@@ -107,7 +106,7 @@ impl Tool for MyTool {
         input: Value,
         ctx: ToolContext,
     ) -> Result<ToolOutput, ToolError> {
-        // ... your logic ...
+        // ... 你的逻辑 ...
         Ok(ToolOutput {
             text: "done".into(),
             is_error: false,
@@ -116,17 +115,15 @@ impl Tool for MyTool {
     }
 }
 
-// Register
+// 注册
 builder.with_tool(Arc::new(MyTool));
 ```
 
-### Skills (Claude Code Compatible)
+### Skills 技能系统（兼容 Claude Code）
 
-On-demand domain expertise via Claude Code-compatible skill files. Skills are
-**not** pre-loaded into the system prompt — the agent activates them only when
-needed, avoiding prompt bloat.
+按需加载的领域专业知识，采用 Claude Code 兼容的技能文件格式。技能**不会**预加载到系统提示词中，Agent 仅在需要时激活，避免 prompt 膨胀。
 
-**Skill file format** (`.md` in `.claude/skills/`):
+**技能文件格式**（`.md` 文件，放在 `.claude/skills/` 下）：
 
 ```markdown
 ---
@@ -143,38 +140,38 @@ You are a PDF expert. When asked about PDF files:
 2. Plan the changes before writing.
 ```
 
-The agent discovers and activates skills via the built-in `skill` tool:
+Agent 通过内置 `skill` 工具发现并激活技能：
 
-- `skill(action="list")` — see all available skills
-- `skill(action="activate", name="pdf")` — load a skill's expertise
-- `skill(action="deactivate")` — unload the current skill
+- `skill(action="list")` — 查看所有可用技能
+- `skill(action="activate", name="pdf")` — 加载某个技能的专业知识
+- `skill(action="deactivate")` — 卸载当前技能
 
 ```rust
-// Skills are loaded automatically with with_default_tools():
+// 使用 with_default_tools() 时自动加载技能：
 AgentBuilder::new()
     .provider_config(ProviderConfig::deepseek(key))
     .model_id("deepseek-v4-flash")
-    .working_dir(".")             // scans .claude/skills/*.md
-    .with_default_tools()         // registers SkillTool automatically
+    .working_dir(".")             // 扫描 .claude/skills/*.md
+    .with_default_tools()         // 自动注册 SkillTool
     .build()
     .await?;
 ```
 
-Skills from Claude Code projects work directly — no conversion needed.
+Claude Code 项目的技能文件可直接使用，无需转换。
 
-### Permission & Approval
+### 权限与审批
 
-Fine-grained access control with caching and audit:
+细粒度访问控制，支持缓存和审计：
 
 ```rust
 let safety = SafetyConfig {
-    default_policy: DefaultSafetyPolicy::Confirm, // ask user by default
-    tool_denylist: Some(vec!["delete".into()]),    // always block
-    tool_allowlist: Some(vec!["read".into()]),      // always allow
+    default_policy: DefaultSafetyPolicy::Confirm, // 默认询问用户
+    tool_denylist: Some(vec!["delete".into()]),    // 始终阻止
+    tool_allowlist: Some(vec!["read".into()]),      // 始终允许
     ..Default::default()
 };
 
-// Approval cache: skip re-prompting within a session/workspace
+// 审批缓存：在会话/工作区范围内跳过重复询问
 let approval = ApprovalManager::new("session-1", safety);
 approval.cache_decision(
     "read",
@@ -183,24 +180,24 @@ approval.cache_decision(
 ).await;
 ```
 
-### Event Recording & Replay
+### 事件录制与回放
 
-Capture every round for debugging, audit, or CI:
+捕获每一轮执行用于调试、审计或 CI：
 
 ```rust
 let recorder = EventRecorder::new("session-1", 1);
-// ... run agent ...
+// ... 运行 agent ...
 recorder.export_to_file(PathBuf::from("events.jsonl")).await.unwrap();
 
-// Replay
+// 回放
 let loaded = EventRecorder::load_from_file(&PathBuf::from("events.jsonl")).unwrap();
 ```
 
-Secrets in event exports are automatically scrubbed (`[REDACTED]`, `[API_KEY]`, `[JWT]`).
+事件导出中的密钥信息自动脱敏（`[REDACTED]`、`[API_KEY]`、`[JWT]`）。
 
-### Governance & Observability
+### 治理与可观测性
 
-Runtime budget enforcement and metrics:
+运行时预算强制执行和指标采集：
 
 ```rust
 let guard = GovernanceGuard::new(BudgetConfig {
@@ -219,9 +216,9 @@ guard.add_metrics_hook(|metrics| {
 }).await;
 ```
 
-### Swarm (Multi-Agent)
+### Swarm 多 Agent 协作
 
-Coordinate multiple agents with supervisor oversight:
+通过监管器协调多个 Agent：
 
 ```rust
 let coordinator = Arc::new(SwarmCoordinator::new());
@@ -236,57 +233,62 @@ coordinator.upsert_plan(vec![
 ]);
 ```
 
-The supervisor handles health checks, timeouts, retries, and task reassignment
-automatically.
+监管器自动处理健康检查、超时、重试和任务重分配。
 
-## Running Examples
+## 运行示例
 
 ```bash
-# Single agent with DeepSeek
+# 使用 DeepSeek 的单 Agent 示例
 DEEPSEEK_API_KEY="sk-xxx" cargo run --example simple_agent
 
-# General agent (customer support bot with custom system prompt)
+# 通用 Agent（使用自定义系统提示词的客服机器人）
 cargo run --example general_agent
 
-# Permission approval flow
+# 权限审批流程
 cargo run --example permission_flow
 
-# Swarm multi-agent demo
+# 治理与预算控制
+cargo run --example governance
+
+# 事件录制与回放
+cargo run --example event_replay
+
+# Swarm 多 Agent 演示
 cargo run --example swarm_workflow
 
-# Custom tool registration
+# 自定义工具注册
 cargo run --example custom_tool
 ```
 
-## API Summary
+## API 概览
 
-| Module | Key Types | Purpose |
-|--------|-----------|---------|
-| `AgentBuilder` | `builder::AgentBuilder` | One-liner agent construction |
-| `Agent` | `agent::Agent` | Run single-turn or streaming agent |
-| `Harness` | `harness::Harness` | Tool/safety/memory/compaction container |
-| `GovernanceGuard` | `governance::GovernanceGuard` | Budget, metrics, cost tracking |
-| `EventRecorder` | `event_recorder::EventRecorder` | JSONL export and replay |
-| `ApprovalManager` | `approval_manager::ApprovalManager` | 3-tier cache, timeout auto-deny, audit |
-| `ReplayRunner` | `replay_runner::ReplayRunner` | Golden transcript verification |
-| `SwarmSupervisor` | `swarm::SwarmSupervisor` | Health, retry, reassignment, reporting |
-| `PromptBuilder` | `prompt_builder::PromptBuilder` | Split prompt with planning + memory injection |
-| `mask_secrets` | `scrub::mask_secrets` | Secret scrubbing for event/log export |
+| 模块 | 关键类型 | 用途 |
+|------|---------|------|
+| `AgentBuilder` | `builder::AgentBuilder` | 一行代码构建 Agent |
+| `Agent` | `agent::Agent` | 运行单轮或流式 Agent |
+| `Harness` | `harness::Harness` | 工具/安全/记忆/压缩容器 |
+| `GovernanceGuard` | `governance::GovernanceGuard` | 预算、指标、成本跟踪 |
+| `EventRecorder` | `event_recorder::EventRecorder` | JSONL 导出与回放 |
+| `ApprovalManager` | `approval_manager::ApprovalManager` | 三层缓存、超时自动拒绝、审计 |
+| `ReplayRunner` | `replay_runner::ReplayRunner` | 黄金转录验证 |
+| `SwarmSupervisor` | `swarm::SwarmSupervisor` | 健康检查、重试、重分配、报告 |
+| `PromptBuilder` | `prompt_builder::PromptBuilder` | 分层 prompt 注入（规划 + 记忆） |
+| `mask_secrets` | `scrub::mask_secrets` | 事件/日志导出的密钥脱敏 |
 
-## Non-Functional Properties
+## 非功能性特性
 
-- **Async-first** — all I/O and LLM calls are non-blocking with `tokio`
-- **Testable** — `MockProvider` for deterministic unit/integration tests
-- **Observable** — structured events, metrics hooks, budget enforcement
-- **Secure** — permission workflow with denylist/allowlist, secret scrubbing
-- **Replayable** — golden transcript replay for CI regression testing
+- **异步优先** — 所有 I/O 和 LLM 调用均为非阻塞，基于 `tokio`
+- **可测试** — `MockProvider` 提供确定性单元/集成测试
+- **可观测** — 结构化事件、指标钩子、预算强制执行
+- **安全** — 权限工作流（denylist/allowlist）、密钥脱敏
+- **可回放** — 黄金转录回放，用于 CI 回归测试
 
-## Requirements
+## 环境要求
 
-- Rust 2024 edition (1.85+)
-- `tokio` async runtime
-- `DEEPSEEK_API_KEY` / `OPENAI_API_KEY` / `ANTHROPIC_API_KEY` for real providers
+- Rust 2024 版本（1.85+）
+- `tokio` 异步运行时
+- 真实 Provider 需要 `DEEPSEEK_API_KEY` / `OPENAI_API_KEY` / `ANTHROPIC_API_KEY`
 
-## License
+## 许可
 
 MIT License
