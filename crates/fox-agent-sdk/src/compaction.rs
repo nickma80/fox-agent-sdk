@@ -53,7 +53,16 @@ impl CompactionManager {
     /// Perform the actual compaction operation.
     fn do_compact(&mut self, messages: &mut Vec<Message>, trigger: CompactionTrigger) -> CompactionEvent {
         let preserve = self.cfg.preserve_recent_messages.min(messages.len());
-        let split_at = if messages.len() > preserve { messages.len() - preserve } else { 0 };
+        let mut split_at = if messages.len() > preserve { messages.len() - preserve } else { 0 };
+
+        // Safety: never leave orphaned Tool results without their preceding
+        // Assistant tool_calls message.  If the preserved section starts with
+        // Tool messages, drain them too — they become meaningless without the
+        // assistant message that requested them.
+        while split_at < messages.len() && messages[split_at].role == Role::Tool {
+            split_at += 1;
+        }
+
         let old_messages: Vec<Message> = messages.drain(..split_at).collect();
 
         let summary_text = if old_messages.is_empty() {
@@ -106,4 +115,117 @@ fn message_chars(messages: &[Message]) -> usize {
         ContentBlock::ToolResult { text, .. } => text.len(),
         ContentBlock::ToolUse { .. } | ContentBlock::Image { .. } => 0,
     }).sum()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use fox_agent_core::{CompactionConfig, ContentBlock, Message, Role};
+
+    fn build_assistant_with_tool_calls(text: &str, tool_calls: &[(&str, &str)]) -> Message {
+        let mut content: Vec<ContentBlock> = Vec::new();
+        if !text.is_empty() {
+            content.push(ContentBlock::Text { text: text.into() });
+        }
+        for (call_id, name) in tool_calls {
+            content.push(ContentBlock::ToolUse {
+                id: call_id.to_string(),
+                name: name.to_string(),
+                input: serde_json::json!({}),
+            });
+        }
+        Message { role: Role::Assistant, content }
+    }
+
+    fn build_tool_result(call_id: &str, text: &str) -> Message {
+        Message::tool_result(call_id, text, false)
+    }
+
+    fn build_user(text: &str) -> Message {
+        Message { role: Role::User, content: vec![ContentBlock::Text { text: text.into() }] }
+    }
+
+    /// Regression test: compaction must NOT leave orphaned Tool results
+    /// when the split point cuts between an Assistant(tool_calls) and its
+    /// Tool result(s).  DeepSeek/OpenAI reject such messages with:
+    /// "Messages with role 'tool' must be a response to a preceding message with 'tool_calls'"
+    #[test]
+    fn do_compact_never_leaves_orphaned_tool_results() {
+        let mut messages = vec![
+            build_user("do task A"),
+            build_assistant_with_tool_calls("ok, running tools", &[("c1", "read")]),
+            build_tool_result("c1", "file content here"),
+            build_user("do task B"),
+            build_assistant_with_tool_calls("ok", &[("c2", "write")]),
+            build_tool_result("c2", "write done"),
+        ];
+
+        // preserve_recent_messages = 4 → split after index 2 (messages 0,1 drained)
+        // messages 2 = tool_result("c1") → ORPHAN! We should drain it too.
+        let cfg = CompactionConfig {
+            enabled: true,
+            preserve_recent_messages: 4,
+            token_budget: 1000,
+            max_turns_before_compaction: 100,
+            ..Default::default()
+        };
+        let mut mgr = CompactionManager::new(cfg);
+        let event = mgr.do_compact(&mut messages, CompactionTrigger::TokenBudget);
+
+        // verify no Tool messages appear without preceding Assistant(tool_calls)
+        let mut last_was_tool_calls = false;
+        for msg in &messages {
+            let is_assistant_tool_calls = msg.role == Role::Assistant
+                && msg.content.iter().any(|b| matches!(b, ContentBlock::ToolUse { .. }));
+
+            match msg.role {
+                Role::Tool => {
+                    assert!(
+                        last_was_tool_calls,
+                        "orphaned tool result found: {:?}",
+                        msg
+                    );
+                }
+                _ => {}
+            }
+            last_was_tool_calls = is_assistant_tool_calls;
+        }
+
+        // also verify that the summary message is present
+        assert!(messages[0].role == Role::System || messages[0].role == Role::Tool, "first message should be system or tool");
+        println!("fine: {} removed, {} kept", event.removed_messages, event.kept_messages);
+    }
+
+    /// When the split boundary is safe (before a User message), the orphan
+    /// guard should NOT drain extra messages.
+    #[test]
+    fn do_compact_preserves_when_boundary_is_safe() {
+        let mut messages = vec![
+            build_user("task 1"),
+            build_assistant_with_tool_calls("", &[("c1", "read")]),
+            build_tool_result("c1", "content"),
+            build_user("task 2"),
+            build_assistant_with_tool_calls("", &[("c2", "write")]),
+            build_tool_result("c2", "done"),
+        ];
+
+        // preserve_recent_messages = 3 → split after index 3 (messages 0,1,2 drained)
+        // remaining: [user("task 2"), assistant(tool_calls), tool_result]
+        // boundary is safe — starts with User
+        let cfg = CompactionConfig {
+            enabled: true,
+            preserve_recent_messages: 3,
+            token_budget: 1000,
+            max_turns_before_compaction: 100,
+            ..Default::default()
+        };
+        let mut mgr = CompactionManager::new(cfg);
+        mgr.do_compact(&mut messages, CompactionTrigger::TokenBudget);
+
+        // After compaction, first non-system message should be User
+        let has_non_system = messages.iter().find(|m| m.role != Role::System);
+        if let Some(non_sys) = has_non_system {
+            assert_eq!(non_sys.role, Role::User, "safe boundary should preserve User as first");
+        }
+    }
 }

@@ -2,8 +2,8 @@ use fox_agent_core::{
     AgentError, AgentEvent, AgentEventTx, ContentBlock, GoalCheckpoint, GoalScope, GoalStatus,
     Message, Model, PermissionDecision, PermissionRequest, PermissionResult,
     PendingToolCallSnapshot, ProviderError, Role, SessionSnapshot, Skill, StreamEvent,
-    ToolContext, ToolError, ToolExecutionMode, TurnOutcome, load_goals_with_store, now_secs,
-    save_goals_with_store,
+    ToolContext, ToolError, ToolExecutionMode, ToolOutput, TurnOutcome, load_goals_with_store,
+    now_secs, save_goals_with_store,
 };
 use fox_agent_mcp::McpClient;
 use futures::StreamExt;
@@ -16,8 +16,13 @@ use crate::harness::Harness;
 
 // ── Loop limits (P0) ──
 
-/// Maximum number of tool-loop iterations (API call + tool execution cycles).
-const MAX_TOOL_LOOP_ITERATIONS: u32 = 100;
+/// Maximum number of tool-loop iterations per turn (API call + tool exec cycles).
+///
+/// 500 is high enough for complex multi-step tasks (e.g. search that spawns
+/// file reads) while still preventing true infinite loops. The turn will
+/// naturally terminate once the model produces a text response without a
+/// tool call.
+const MAX_TOOL_LOOP_ITERATIONS: u32 = 500;
 /// Maximum number of context-limit compaction retries before giving up.
 const MAX_CONTEXT_LIMIT_RETRIES: u32 = 5;
 /// Maximum number of incomplete / degenerate continuation attempts.
@@ -322,8 +327,22 @@ impl Agent {
                         if let Some(ref guard) = self.governance {
                             guard.record_tool_error().await;
                         }
-                        self.emit_error_event(event_tx, AgentError::Tool(err.clone())).await;
-                        return Err(AgentError::Tool(err));
+                        // Push error tool result so conversation history stays valid
+                        // for the next API call.
+                        self.harness.session_state.messages.push(
+                            Message::tool_result(&pending.call_id, format!("tool error: {}", err), true),
+                        );
+                        let _ = event_tx
+                            .send(AgentEvent::ToolCallEnd {
+                                call_id: pending.call_id.clone(),
+                                output: ToolOutput {
+                                    text: format!("tool error: {}", err),
+                                    is_error: true,
+                                    json: None,
+                                },
+                            })
+                            .await;
+                        return Ok(());
                     }
                     Err(_elapsed) => {
                         error!(tool = %pending.name, timeout_secs = timeout_dur.as_secs(), "Tool timed out");
@@ -331,8 +350,22 @@ impl Agent {
                         if let Some(ref guard) = self.governance {
                             guard.record_tool_error().await;
                         }
+                        // Push timeout tool result so conversation history stays valid.
+                        self.harness.session_state.messages.push(
+                            Message::tool_result(&pending.call_id, format!("tool timed out after {}s", timeout_dur.as_secs()), true),
+                        );
+                        let _ = event_tx
+                            .send(AgentEvent::ToolCallEnd {
+                                call_id: pending.call_id.clone(),
+                                output: ToolOutput {
+                                    text: format!("tool timed out after {}s", timeout_dur.as_secs()),
+                                    is_error: true,
+                                    json: None,
+                                },
+                            })
+                            .await;
                         self.emit_error_event(event_tx, AgentError::Tool(timeout_err.clone())).await;
-                        return Err(AgentError::Tool(timeout_err));
+                        return Ok(());
                     }
                 };
                 let elapsed_ms = start.elapsed().as_millis() as u64;
@@ -815,15 +848,76 @@ impl Agent {
                         if let Some(ref guard) = self.governance {
                             guard.record_tool_error().await;
                         }
-                        return Err(self.handle_error(event_tx, turn_id, AgentError::Tool(err)));
+                        // Push error tool result so conversation history stays valid.
+                        self.harness.session_state.messages.push(
+                            Message::tool_result(&call_id, format!("tool error: {}", err), true),
+                        );
+                        let _ = event_tx
+                            .send(AgentEvent::ToolCallEnd {
+                                call_id: call_id.clone(),
+                                output: ToolOutput {
+                                    text: format!("tool error: {}", err),
+                                    is_error: true,
+                                    json: None,
+                                },
+                            })
+                            .await;
+                        // Push error results for remaining tools in the batch.
+                        for j in (idx+1)..total {
+                            let tc2 = &collected_tool_calls[j];
+                            self.harness.session_state.messages.push(
+                                Message::tool_result(&tc2.call_id, format!("skipped: earlier tool '{}' failed", name), true),
+                            );
+                            let _ = event_tx
+                                .send(AgentEvent::ToolCallEnd {
+                                    call_id: tc2.call_id.clone(),
+                                    output: ToolOutput {
+                                        text: "skipped due to earlier tool error".to_string(),
+                                        is_error: true,
+                                        json: None,
+                                    },
+                                })
+                                .await;
+                        }
+                        break;
                     }
                     Err(_elapsed) => {
                         error!(tool = %name, timeout_secs = timeout_dur.as_secs(), "Tool timed out");
-                        let timeout_err = ToolError::Timeout { timeout_secs: timeout_dur.as_secs() };
                         if let Some(ref guard) = self.governance {
                             guard.record_tool_error().await;
                         }
-                        return Err(self.handle_error(event_tx, turn_id, AgentError::Tool(timeout_err)));
+                        // Push timeout tool result so conversation history stays valid.
+                        self.harness.session_state.messages.push(
+                            Message::tool_result(&call_id, format!("tool timed out after {}s", timeout_dur.as_secs()), true),
+                        );
+                        let _ = event_tx
+                            .send(AgentEvent::ToolCallEnd {
+                                call_id: call_id.clone(),
+                                output: ToolOutput {
+                                    text: format!("tool timed out after {}s", timeout_dur.as_secs()),
+                                    is_error: true,
+                                    json: None,
+                                },
+                            })
+                            .await;
+                        // Push error results for remaining tools in the batch.
+                        for j in (idx+1)..total {
+                            let tc2 = &collected_tool_calls[j];
+                            self.harness.session_state.messages.push(
+                                Message::tool_result(&tc2.call_id, format!("skipped: earlier tool '{}' timed out", name), true),
+                            );
+                            let _ = event_tx
+                                .send(AgentEvent::ToolCallEnd {
+                                    call_id: tc2.call_id.clone(),
+                                    output: ToolOutput {
+                                        text: "skipped due to earlier tool timeout".to_string(),
+                                        is_error: true,
+                                        json: None,
+                                    },
+                                })
+                                .await;
+                        }
+                        break;
                     }
                 };
                 let elapsed_ms = start.elapsed().as_millis() as u64;
@@ -1039,7 +1133,10 @@ fn tool_result_msg(call_id: String, text: String, is_error: bool, duration_ms: u
 
 fn truncate(s: &str, max: usize) -> String {
     if s.len() <= max { s.to_string() }
-    else { format!("{}... ({}/{})", &s[..max], max, s.len()) }
+    else {
+        let boundary = s.floor_char_boundary(max);
+        format!("{}... ({}/{})", &s[..boundary], boundary, s.len())
+    }
 }
 
 fn format_message_summaries(messages: &[Message]) -> Vec<String> {
