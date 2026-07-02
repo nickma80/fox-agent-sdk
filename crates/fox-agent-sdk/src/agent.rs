@@ -27,6 +27,8 @@ const MAX_TOOL_LOOP_ITERATIONS: u32 = 500;
 const MAX_CONTEXT_LIMIT_RETRIES: u32 = 5;
 /// Maximum number of incomplete / degenerate continuation attempts.
 const MAX_INCOMPLETE_CONTINUATION_ATTEMPTS: u32 = 3;
+/// Number of consecutive identical tool calls before injecting a warning.
+const DUPLICATE_TOOL_CALL_WARN_THRESHOLD: u32 = 3;
 /// Substrings that indicate a context-limit error from the provider.
 const CTRL_LIMIT_KEYWORDS: &[&str] = &[
     "context_length_exceeded",
@@ -410,6 +412,11 @@ impl Agent {
         let mut tool_loop_iterations = 0u32;
         let mut provider_retry_count = 0u32;
 
+        // Track recent tool call fingerprints (name + query) to detect
+        // duplicate-call spirals (e.g. model repeatedly calls agentgrep
+        // with the same query, getting 0 results each time).
+        let mut prev_tool_fingerprints: Vec<(String, String)> = Vec::new();
+
         loop {
             let turn_id = self.next_turn_id;
             self.next_turn_id += 1;
@@ -694,6 +701,47 @@ impl Agent {
             if filtered > 0 {
                 info!(filtered, "Filtered truncated tool calls");
             }
+
+            // P3: Duplicate tool call detection — detect when the model is
+            // stuck in a loop of the same tool calls that return empty results.
+            let fingerprints: Vec<(String, String)> = collected_tool_calls
+                .iter()
+                .map(|tc| {
+                    let query = tc.input.get("query")
+                        .and_then(|v| v.as_str())
+                        .map(|s| s.to_string())
+                        .unwrap_or_else(|| {
+                            tc.input.to_string().chars().take(80).collect::<String>()
+                        });
+                    (tc.name.clone(), query)
+                })
+                .collect();
+
+            // Count how many fingerprints from this turn match the previous turn.
+            if !prev_tool_fingerprints.is_empty() {
+                let dup_count = fingerprints
+                    .iter()
+                    .filter(|fp| prev_tool_fingerprints.contains(fp))
+                    .count();
+                if dup_count as u32 >= DUPLICATE_TOOL_CALL_WARN_THRESHOLD {
+                    let dup_names: Vec<&str> = fingerprints.iter().map(|(n, _)| n.as_str()).collect();
+                    info!(
+                        dup_count = dup_count,
+                        ?dup_names,
+                        "Duplicate tool calls detected across turns, injecting soft interrupt"
+                    );
+                    self.harness
+                        .interrupt_manager
+                        .write()
+                        .await
+                        .queue_soft_interrupt(
+                            format!("重复工具调用警告: 工具名称={:?}, 重复次数={}", dup_names, dup_count),
+                            false,
+                        );
+                }
+            }
+
+            prev_tool_fingerprints = fingerprints;
 
             if collected_tool_calls.is_empty() {
                 // P0: Check for incomplete continuation

@@ -209,6 +209,10 @@ pub struct CompactionConfig {
     /// Maximum number of compaction operations allowed
     /// (prevents infinite compaction loops).
     pub max_compaction_count: u32,
+    /// Minimum number of turns between consecutive compactions.
+    /// Prevents compaction from firing every turn when the agent
+    /// reads large files that immediately fill the budget again.
+    pub min_compaction_gap_turns: u32,
 }
 
 impl Default for CompactionConfig {
@@ -216,10 +220,11 @@ impl Default for CompactionConfig {
         Self {
             enabled: false,
             token_budget: 12_000,
-            preserve_recent_messages: 6,
-            max_turns_before_compaction: 12,
+            preserve_recent_messages: 20,       // keep more context to avoid frequent re-compaction
+            max_turns_before_compaction: 20,
             context_limit_threshold: 0.85,
             max_compaction_count: 10,
+            min_compaction_gap_turns: 3,
         }
     }
 }

@@ -4,11 +4,12 @@ use fox_agent_core::{CompactionConfig, CompactionEvent, CompactionTrigger, Conte
 pub struct CompactionManager {
     cfg: CompactionConfig,
     compaction_count: u64,
+    turns_since_last_compaction: u32,
 }
 
 impl CompactionManager {
     pub fn new(cfg: CompactionConfig) -> Self {
-        Self { cfg, compaction_count: 0 }
+        Self { cfg, compaction_count: 0, turns_since_last_compaction: 0 }
     }
 
     /// Check whether compaction is possible (not exceeded max count).
@@ -19,6 +20,15 @@ impl CompactionManager {
     /// Auto-compact based on token budget / turn count triggers.
     pub fn maybe_compact(&mut self, messages: &mut Vec<Message>) -> Option<CompactionEvent> {
         if !self.cfg.enabled || messages.len() <= self.cfg.preserve_recent_messages {
+            return None;
+        }
+
+        self.turns_since_last_compaction += 1;
+
+        // Enforce minimum gap between compactions to avoid thrashing
+        if self.compaction_count > 0
+            && self.turns_since_last_compaction <= self.cfg.min_compaction_gap_turns
+        {
             return None;
         }
 
@@ -52,6 +62,8 @@ impl CompactionManager {
 
     /// Perform the actual compaction operation.
     fn do_compact(&mut self, messages: &mut Vec<Message>, trigger: CompactionTrigger) -> CompactionEvent {
+        self.compaction_count += 1;
+        self.turns_since_last_compaction = 0;
         let preserve = self.cfg.preserve_recent_messages.min(messages.len());
         let mut split_at = if messages.len() > preserve { messages.len() - preserve } else { 0 };
 

@@ -67,7 +67,7 @@ impl Tool for AgentGrepTool {
     }
 
     fn description(&self) -> &str {
-        "Search code and file names. Defaults to grep mode when mode is omitted. Supports grep (text search), find (file search), outline (file summarization), and trace (DSL-based relationship search)."
+        "Search code and file names. Defaults to grep mode when mode is omitted. Supports grep (text search), find (file search), outline (file summarization), and trace (DSL-based relationship search). If a search returns 0 results twice in a row, switch to a different tool like `grep` or `ls` instead of retrying with similar queries."
     }
 
     fn parameters_schema(&self) -> Value {

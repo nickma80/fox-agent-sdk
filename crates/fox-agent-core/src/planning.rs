@@ -611,7 +611,7 @@ fn render_goal_lines(goals: &[Goal]) -> String {
         .join("\n")
 }
 
-fn update_session_snapshot<F>(
+pub fn update_session_snapshot<F>(
     store: &dyn PlanningStore,
     session_id: &str,
     source: Option<&str>,

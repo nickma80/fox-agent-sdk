@@ -34,9 +34,16 @@ fn resolved_search_scope(
     path: Option<&str>,
     glob: Option<&str>,
 ) -> ResolvedSearchScope {
+    let default_root = || {
+        ctx.working_dir
+            .as_ref()
+            .map(|p| p.display().to_string())
+            .unwrap_or_else(|| ".".to_string())
+    };
+
     let Some(path) = path else {
         return ResolvedSearchScope {
-            root: None,
+            root: Some(default_root()),
             glob: normalized_glob(glob),
         };
     };
