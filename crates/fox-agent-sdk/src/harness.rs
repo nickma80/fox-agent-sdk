@@ -203,9 +203,8 @@ fn resolve_session_store(
         return Arc::new(FileSessionStore::new(dir.clone()));
     }
     if let Some(dir) = working_dir {
-        return Arc::new(FileSessionStore::new(
-            dir.join(".fox-agent-sdk").join("sessions"),
-        ));
+        let sub = storage_subdir(&cfg.app_name);
+        return Arc::new(FileSessionStore::new(dir.join(sub).join("sessions")));
     }
     Arc::new(InMemorySessionStore::default())
 }
@@ -218,9 +217,18 @@ fn resolve_planning_store(
         return Arc::new(FilePlanningStore::new(dir.clone()));
     }
     if let Some(dir) = working_dir {
-        return Arc::new(FilePlanningStore::new(
-            dir.join(".fox-agent-sdk").join("planning"),
-        ));
+        let sub = storage_subdir(&cfg.app_name);
+        return Arc::new(FilePlanningStore::new(dir.join(sub).join("planning")));
     }
     Arc::new(InMemoryPlanningStore::default())
+}
+
+/// Derive the hidden subdirectory name from the optional app name.
+/// When `app_name` is set, returns `.{app_name}` (e.g. `.fox-code`).
+/// When `None`, returns `.fox-agent-sdk` for backward compatibility.
+fn storage_subdir(app_name: &Option<String>) -> String {
+    match app_name {
+        Some(name) => format!(".{name}"),
+        None => ".fox-agent-sdk".to_string(),
+    }
 }

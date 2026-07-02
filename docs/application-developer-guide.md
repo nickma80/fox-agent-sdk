@@ -56,8 +56,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 | `.with_tool(tool)` | - | 注册自定义工具 |
 | `.with_system_prompt(text)` | 内置 `system.md` | 覆盖系统提示词 |
 | `.with_safety_policy(config)` | `SafetyConfig::default()` | 权限策略 |
-| `.with_session_store(store)` | `InMemorySessionStore` | 会话持久化后端 |
-| `.with_planning_store(store)` | `InMemoryPlanningStore` | 规划持久化后端 |
+| `.with_app_name(name)` | `None` | 应用名称，用于派生存储目录 |
+| `.with_session_store(store)` | `InMemorySessionStore` | 会话持久化后端（覆盖默认路径） |
+| `.with_planning_store(store)` | `InMemoryPlanningStore` | 规划持久化后端（覆盖默认路径） |
 | `.with_mcp_server(config)` | - | 接入 MCP 服务器 |
 | `.with_global_agents_md_path(path)` | `~/.fox-agent/AGENTS.md` | 全局/领域级 AGENTS.md 路径 |
 | `.build()` | - | 构建 Agent |
@@ -272,11 +273,25 @@ let restored = Agent::load_from_store(
 restored.run_once("继续刚才的工作").await?;
 ```
 
-### 3.5 自动快照
+### 3.5 存储路径解析
 
-`auto_snapshot: true`（默认开启）时，每次 `run_once` 调用自动持久化。
+SDK 按以下优先级解析会话和规划存储路径：
+
+1. 手动指定：`with_session_store()` / `with_planning_store()` 直接传入
+2. 绝对路径：`FoxAgentSdkConfig.session_storage_dir` / `planning_storage_dir`
+3. 应用感知：`{working_dir}/.{app_name}/sessions` 和 `{working_dir}/.{app_name}/planning`（当 `app_name` 设置时）
+4. 默认回退：`{working_dir}/.fox-agent-sdk/sessions` 和 `{working_dir}/.fox-agent-sdk/planning`
+5. 无 working_dir 时：`InMemorySessionStore` / `InMemoryPlanningStore`
 
 ```rust
+// 方式 1：应用名称派生
+let mut agent = AgentBuilder::new()
+    .working_dir(".")
+    .with_app_name("fox-code")         // → ./.fox-code/sessions
+    .build()
+    .await?;
+
+// 方式 2：绝对路径覆盖
 let config = FoxAgentSdkConfig {
     auto_snapshot: true,
     session_storage_dir: Some(PathBuf::from("./sessions")),

@@ -243,6 +243,33 @@ impl AgentBuilder {
         self
     }
 
+    /// Set the application name for deriving storage directories.
+    ///
+    /// When set, the SDK stores session and planning data in
+    /// `{working_dir}/.{app_name}/sessions` and `{working_dir}/.{app_name}/planning`
+    /// instead of the default `{working_dir}/.fox-agent-sdk/...`.
+    ///
+    /// Use this when embedding the SDK in a domain-specific application
+    /// (e.g. a coding agent called `"fox-code"`).
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// AgentBuilder::new()
+    ///     .provider_config(ProviderConfig::deepseek(key))
+    ///     .working_dir(".")
+    ///     .with_app_name("fox-code")
+    ///     .with_default_tools()
+    ///     .build()
+    ///     .await?;
+    /// ```
+    pub fn with_app_name(mut self, name: impl Into<String>) -> Self {
+        let mut cfg = self.sdk_config.unwrap_or_default();
+        cfg.app_name = Some(name.into());
+        self.sdk_config = Some(cfg);
+        self
+    }
+
     /// Add an MCP server configuration.
     ///
     /// The server will be connected at build time and its tools

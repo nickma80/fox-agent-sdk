@@ -9,9 +9,22 @@ pub struct FoxAgentSdkConfig {
     pub compaction: CompactionConfig,
     /// Tool permission safety configuration
     pub safety: SafetyConfig,
+
+    /// Application name — used to derive data directories.
+    ///
+    /// When set, the SDK uses `{working_dir}/.{app_name}/sessions` and
+    /// `{working_dir}/.{app_name}/planning` as default storage paths
+    /// (instead of the hardcoded `.fox-agent-sdk/`).
+    ///
+    /// Set this when embedding the SDK in a domain-specific application
+    /// (e.g. `"fox-code"`, `"fox-trader"`).
+    pub app_name: Option<String>,
+
     /// Optional root directory for persisted session snapshots.
+    /// When set, takes precedence over the app-name-based default.
     pub session_storage_dir: Option<std::path::PathBuf>,
     /// Optional root directory for persisted planning snapshots.
+    /// When set, takes precedence over the app-name-based default.
     pub planning_storage_dir: Option<std::path::PathBuf>,
     /// Whether to persist a fresh session snapshot at key lifecycle points.
     pub auto_snapshot: bool,
@@ -41,6 +54,7 @@ impl Default for FoxAgentSdkConfig {
             memory: MemoryConfig::default(),
             compaction: CompactionConfig::default(),
             safety: SafetyConfig::default(),
+            app_name: None,
             session_storage_dir: None,
             planning_storage_dir: None,
             auto_snapshot: true,
