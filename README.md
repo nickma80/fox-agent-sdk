@@ -253,6 +253,11 @@ cargo run --example governance
 # 事件录制与回放
 cargo run --example event_replay
 
+# Web 工具验证（websearch + webfetch）
+cargo run --example web_tools
+# 启用实时网络调用
+WEB_TOOLS_LIVE=1 cargo run --example web_tools
+
 # Swarm 多 Agent 演示
 cargo run --example swarm_workflow
 
