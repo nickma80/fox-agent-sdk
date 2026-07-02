@@ -64,6 +64,8 @@ pub struct SessionState {
     pub working_dir: Option<PathBuf>,
     pub messages: Vec<Message>,
     pub env_snapshots: Vec<EnvSnapshot>,
+    /// Wall-clock creation time (seconds since Unix epoch).
+    pub created_at: u64,
 }
 
 impl SessionState {
@@ -79,6 +81,7 @@ impl SessionState {
             working_dir,
             messages: Vec::new(),
             env_snapshots: Vec::new(),
+            created_at: now_secs(),
         }
     }
 
@@ -143,6 +146,14 @@ impl SessionState {
             working_dir: snapshot.working_dir.clone(),
             messages: snapshot.messages.clone(),
             env_snapshots: snapshot.env_snapshots.clone(),
+            created_at: snapshot.created_at,
         }
     }
+}
+
+fn now_secs() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs()
 }

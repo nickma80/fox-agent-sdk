@@ -60,6 +60,10 @@ pub struct SessionSnapshot {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub metadata: Option<serde_json::Value>,
     pub updated_at: u64,
+    /// Wall-clock creation timestamp (seconds since Unix epoch).
+    /// Set once when the session is first created, never changes.
+    #[serde(default)]
+    pub created_at: u64,
 }
 
 pub trait SessionStore: Send + Sync {
@@ -231,6 +235,7 @@ mod tests {
             next_turn_id: 2,
             metadata: None,
             updated_at: now_secs(),
+            created_at: now_secs(),
         };
         store.save_session(&snapshot).unwrap();
 

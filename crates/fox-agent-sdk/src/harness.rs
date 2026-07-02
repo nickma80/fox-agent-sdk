@@ -204,7 +204,7 @@ fn resolve_session_store(
     }
     if let Some(dir) = working_dir {
         let sub = storage_subdir(&cfg.app_name);
-        return Arc::new(FileSessionStore::new(dir.join(sub).join("sessions")));
+        return Arc::new(FileSessionStore::new(dir.join(sub)));
     }
     Arc::new(InMemorySessionStore::default())
 }

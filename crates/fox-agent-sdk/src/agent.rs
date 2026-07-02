@@ -144,6 +144,7 @@ impl Agent {
             next_turn_id: self.next_turn_id,
             metadata: None,
             updated_at: now_secs(),
+            created_at: self.harness.session_state.created_at,
         }
     }
 
