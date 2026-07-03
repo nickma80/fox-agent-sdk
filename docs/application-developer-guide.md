@@ -56,7 +56,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 | `.with_tool(tool)` | - | 注册自定义工具 |
 | `.with_system_prompt(text)` | 内置 `system.md` | 覆盖系统提示词 |
 | `.with_safety_policy(config)` | `SafetyConfig::default()` | 权限策略 |
-| `.with_app_name(name)` | `None` | 应用名称，用于派生存储目录 |
+| `.with_storage_dir(path)` | `.fox-agent-sdk` | 存储根目录（必填） |
 | `.with_session_store(store)` | `InMemorySessionStore` | 会话持久化后端（覆盖默认路径） |
 | `.with_planning_store(store)` | `InMemoryPlanningStore` | 规划持久化后端（覆盖默认路径） |
 | `.with_mcp_server(config)` | - | 接入 MCP 服务器 |
@@ -273,30 +273,34 @@ let restored = Agent::load_from_store(
 restored.run_once("继续刚才的工作").await?;
 ```
 
-### 3.5 存储路径解析
+### 3.5 存储路径
 
-SDK 按以下优先级解析会话和规划存储路径：
+`FoxAgentSdkConfig.storage_dir` 是必填字段，所有持久化数据统一存储在该目录下：
 
-1. 手动指定：`with_session_store()` / `with_planning_store()` 直接传入
-2. 绝对路径：`FoxAgentSdkConfig.session_storage_dir` / `planning_storage_dir`
-3. 应用感知：`{working_dir}/.{app_name}/sessions` 和 `{working_dir}/.{app_name}/planning`（当 `app_name` 设置时）
-4. 默认回退：`{working_dir}/.fox-agent-sdk/sessions` 和 `{working_dir}/.fox-agent-sdk/planning`
-5. 无 working_dir 时：`InMemorySessionStore` / `InMemoryPlanningStore`
+```
+{storage_dir}/
+├── sessions/   — 会话快照 (*.json)
+├── planning/   — 规划数据（goals, plans, todos）
+└── memory/     — 长期记忆图
+```
+
+相对路径会基于 `working_dir` 解析。
 
 ```rust
-// 方式 1：应用名称派生
-let mut agent = AgentBuilder::new()
-    .working_dir(".")
-    .with_app_name("fox-code")         // → ./.fox-code/sessions
-    .build()
-    .await?;
-
-// 方式 2：绝对路径覆盖
+// 显式指定绝对路径
 let config = FoxAgentSdkConfig {
     auto_snapshot: true,
-    session_storage_dir: Some(PathBuf::from("./sessions")),
+    storage_dir: dirs::data_dir().unwrap().join("fox-code"),
     ..Default::default()
 };
+
+// 通过 Builder 指定相对路径 → working_dir/.fox-code/
+let mut agent = AgentBuilder::new()
+    .working_dir("./my-project")
+    .provider_config(ProviderConfig::deepseek(key))
+    .with_storage_dir(".fox-code")
+    .build()
+    .await?;
 ```
 
 ---
@@ -475,12 +479,12 @@ ANN 索引      → 快速语义搜索
 ```rust
 let mem_config = MemoryConfig {
     enabled: true,
-    storage_dir: Some(PathBuf::from("./memory")),
     extraction_interval_turns: 3,    // 每 3 轮触发提取
     max_recall_entries: 10,         // 召回条数上限
     embedding_model: "mistral-text-embed".to_string(),
     ..Default::default()
 };
+// 记忆存储于 {storage_dir}/memory/（由 FoxAgentSdkConfig.storage_dir 控制）
 ```
 
 ### 6.3 MemoryEntry 结构
@@ -858,5 +862,5 @@ let mut agent = AgentBuilder::new()
 | `BudgetExceeded` 错误 | Token/cost 限额触发 | 提高 `token_budget` 或 `cost_budget_cents` |
 | 权限请求无限循环 | 默认策略为 `Confirm` 且无缓存 | 使用 `ApprovalManager` 缓存 |
 | 工具调用挂起 | 工具超时 | 设置 `budget.tool_timeout_secs` |
-| 记忆不持久化 | `storage_dir` 未设置 | 设置 `memory.storage_dir` |
+| 记忆不持久化 | `storage_dir` 未设置 | 设置 `FoxAgentSdkConfig.storage_dir` |
 | 编译错误：找不到 `enum` | 工具名未注册 | 调用 `.with_default_tools()` 或 `.with_tool(...)` |

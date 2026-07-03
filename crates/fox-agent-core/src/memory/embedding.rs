@@ -1,5 +1,4 @@
 use crate::config::MemoryConfig;
-use crate::memory::storage::default_storage_dir;
 use anyhow::{Context, Result};
 use futures::StreamExt;
 use mistralrs::{EmbeddingModelBuilder, EmbeddingRequest, EmbeddingRequestBuilder};
@@ -41,7 +40,8 @@ pub struct EmbeddingModelDescriptor {
 
 impl EmbeddingModelDescriptor {
     pub fn from_config(config: &MemoryConfig) -> Self {
-        let storage_root = config.storage_dir.clone().unwrap_or_else(default_storage_dir);
+        use crate::memory::storage::default_storage_dir;
+        let storage_root = default_storage_dir();
         let cache_dir = config
             .embedding_cache_dir
             .clone()
@@ -475,7 +475,6 @@ mod tests {
         std::fs::write(temp.join("config.json"), "{}").unwrap();
 
         let mut cfg = MemoryConfig::default();
-        cfg.storage_dir = Some(temp.clone());
         cfg.embedding_model_id = "BAAI/bge-small-en-v1.5".to_string();
         cfg.embedding_model_path = Some(temp.clone());
 
@@ -495,7 +494,6 @@ mod tests {
         std::fs::write(temp.join("config.json"), "{\"name\":\"v1\"}").unwrap();
 
         let mut cfg = MemoryConfig::default();
-        cfg.storage_dir = Some(temp.clone());
         cfg.embedding_model_id = "Qwen/Qwen3-Embedding-0.6B".to_string();
         cfg.embedding_model_path = Some(temp.clone());
 

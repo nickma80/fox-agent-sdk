@@ -215,11 +215,12 @@ pub struct MemoryAuditEvent {
 
 impl MemoryManager {
     /// Create a new MemoryManager from config.
+    ///
+    /// Call `.with_storage_dir()` afterwards to set the actual storage
+    /// path (typically `{M::storage_dir}/memory/`).
     pub fn new(config: &MemoryConfig) -> Self {
-        let storage_dir = config.storage_dir.clone()
-            .unwrap_or_else(default_storage_dir);
         Self {
-            storage_dir,
+            storage_dir: default_storage_dir(),
             project_dir: None,
             test_mode: false,
             cfg: config.clone(),
@@ -245,10 +246,7 @@ impl MemoryManager {
             storage_dir: temp.clone(),
             project_dir: None,
             test_mode: true,
-            cfg: MemoryConfig {
-                storage_dir: Some(temp.clone()),
-                ..MemoryConfig::default()
-            },
+            cfg: MemoryConfig::default(),
             embedding_provider: None,
         }
     }
@@ -257,7 +255,6 @@ impl MemoryManager {
 
     pub fn with_storage_dir(mut self, dir: PathBuf) -> Self {
         self.storage_dir = dir;
-        self.cfg.storage_dir = Some(self.storage_dir.clone());
         self
     }
 

@@ -246,9 +246,9 @@ mod sdk_tests {
                 auto_extract_message_window: 4,
                 verify_relevance: false,
                 embedding_enabled: false,
-                storage_dir: Some(mem_dir),
                 ..Default::default()
             },
+            storage_dir: mem_dir,
             ..Default::default()
         }, None);
         let mut agent = Agent::new(model, harness, Arc::new(tokio::sync::RwLock::new(None)));
@@ -321,14 +321,12 @@ mod sdk_tests {
 
         let working_dir = std::env::temp_dir().join(format!("fox-sdk-m1-{}", uuid::Uuid::new_v4()));
         tokio::fs::create_dir_all(&working_dir).await.unwrap();
-        let session_root = working_dir.join("session-store");
-        let planning_root = working_dir.join("planning-store");
+        let storage_root = working_dir.join("data");
 
         let model: Arc<dyn Model> = Arc::new(DefaultModel::new(Arc::new(provider), "mock-1"));
         let harness = Harness::new(
             FoxAgentSdkConfig {
-                session_storage_dir: Some(session_root.clone()),
-                planning_storage_dir: Some(planning_root.clone()),
+                storage_dir: storage_root.clone(),
                 auto_snapshot: true,
                 ..Default::default()
             },
@@ -352,8 +350,7 @@ mod sdk_tests {
 
         let restore_harness = Harness::new(
             FoxAgentSdkConfig {
-                session_storage_dir: Some(session_root),
-                planning_storage_dir: Some(planning_root),
+                storage_dir: storage_root,
                 auto_snapshot: true,
                 ..Default::default()
             },

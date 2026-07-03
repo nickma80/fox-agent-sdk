@@ -2,7 +2,7 @@ use fox_agent_core::{
     ContextInfo, FoxAgentSdkConfig, InterruptManager, InjectedInterrupt, MemoryStateEvent,
     PermissionResult, PlanningStore, SessionStore, SkillInfo, SkillRegistry, SplitPrompt, Tool, ToolContext,
     ToolDefinition, ToolError, ToolOutput, WorkspaceSandbox, FilePlanningStore, FileSessionStore,
-    InMemoryPlanningStore, InMemorySessionStore, set_default_planning_store,
+    set_default_planning_store,
 };
 use fox_agent_tools::ToolExecutor;
 use std::path::PathBuf;
@@ -35,16 +35,20 @@ pub struct Harness {
 impl Harness {
     pub fn new(cfg: FoxAgentSdkConfig, working_dir: Option<PathBuf>) -> Self {
         let memory_cfg = cfg.memory.clone();
+        let memory_enabled = memory_cfg.enabled;
         let compaction_cfg = cfg.compaction.clone();
         let safety_cfg = cfg.safety.clone();
         let session_store = resolve_session_store(&cfg, working_dir.as_deref());
         let planning_store = resolve_planning_store(&cfg, working_dir.as_deref());
         set_default_planning_store(planning_store.clone());
-        let memory_state = Arc::new(RwLock::new(MemoryInjectionState::with_enabled(memory_cfg.enabled)));
+        let storage_root = resolve_storage_root(&cfg, working_dir.as_deref());
+        let memory_manager = MemoryManager::new(memory_cfg.clone())
+            .with_storage_dir(storage_root.join("memory"));
+        let memory_state = Arc::new(RwLock::new(MemoryInjectionState::with_enabled(memory_enabled)));
         let session = SessionState::new(working_dir);
         info!(
             session_id = %session.id,
-            memory_enabled = memory_cfg.enabled,
+            memory_enabled = memory_enabled,
             compaction_enabled = compaction_cfg.enabled,
             "Harness created"
         );
@@ -59,7 +63,7 @@ impl Harness {
             session_state: session,
             tool_executor: ToolExecutor::new(),
             memory_state,
-            memory_manager: MemoryManager::new(memory_cfg),
+            memory_manager,
             compaction_manager: Arc::new(RwLock::new(CompactionManager::new(compaction_cfg))),
             safety_system: SafetySystem::new(safety_cfg),
             prompt_builder,
@@ -76,16 +80,20 @@ impl Harness {
         hook: impl Fn(&str, &serde_json::Value) -> PermissionResult + Send + Sync + 'static,
     ) -> Self {
         let memory_cfg = cfg.memory.clone();
+        let memory_enabled = memory_cfg.enabled;
         let compaction_cfg = cfg.compaction.clone();
         let safety_cfg = cfg.safety.clone();
         let session_store = resolve_session_store(&cfg, working_dir.as_deref());
         let planning_store = resolve_planning_store(&cfg, working_dir.as_deref());
         set_default_planning_store(planning_store.clone());
-        let memory_state = Arc::new(RwLock::new(MemoryInjectionState::with_enabled(memory_cfg.enabled)));
+        let storage_root = resolve_storage_root(&cfg, working_dir.as_deref());
+        let memory_manager = MemoryManager::new(memory_cfg.clone())
+            .with_storage_dir(storage_root.join("memory"));
+        let memory_state = Arc::new(RwLock::new(MemoryInjectionState::with_enabled(memory_enabled)));
         let session = SessionState::new(working_dir);
         info!(
             session_id = %session.id,
-            memory_enabled = memory_cfg.enabled,
+            memory_enabled = memory_enabled,
             "Harness created with custom permission hook"
         );
         let version = env!("CARGO_PKG_VERSION").to_string();
@@ -99,7 +107,7 @@ impl Harness {
             session_state: session,
             tool_executor: ToolExecutor::new(),
             memory_state,
-            memory_manager: MemoryManager::new(memory_cfg),
+            memory_manager,
             compaction_manager: Arc::new(RwLock::new(CompactionManager::new(compaction_cfg))),
             safety_system: SafetySystem::with_permission_hook(safety_cfg, hook),
             prompt_builder,
@@ -195,40 +203,29 @@ impl Harness {
     }
 }
 
+fn resolve_storage_root(
+    cfg: &FoxAgentSdkConfig,
+    working_dir: Option<&std::path::Path>,
+) -> std::path::PathBuf {
+    // Resolve relative paths against working_dir
+    if cfg.storage_dir.is_relative() {
+        if let Some(dir) = working_dir {
+            return dir.join(&cfg.storage_dir);
+        }
+    }
+    cfg.storage_dir.clone()
+}
+
 fn resolve_session_store(
     cfg: &FoxAgentSdkConfig,
     working_dir: Option<&std::path::Path>,
 ) -> Arc<dyn SessionStore> {
-    if let Some(dir) = &cfg.session_storage_dir {
-        return Arc::new(FileSessionStore::new(dir.clone()));
-    }
-    if let Some(dir) = working_dir {
-        let sub = storage_subdir(&cfg.app_name);
-        return Arc::new(FileSessionStore::new(dir.join(sub)));
-    }
-    Arc::new(InMemorySessionStore::default())
+    Arc::new(FileSessionStore::new(resolve_storage_root(cfg, working_dir).join("sessions")))
 }
 
 fn resolve_planning_store(
     cfg: &FoxAgentSdkConfig,
     working_dir: Option<&std::path::Path>,
 ) -> Arc<dyn PlanningStore> {
-    if let Some(dir) = &cfg.planning_storage_dir {
-        return Arc::new(FilePlanningStore::new(dir.clone()));
-    }
-    if let Some(dir) = working_dir {
-        let sub = storage_subdir(&cfg.app_name);
-        return Arc::new(FilePlanningStore::new(dir.join(sub).join("planning")));
-    }
-    Arc::new(InMemoryPlanningStore::default())
-}
-
-/// Derive the hidden subdirectory name from the optional app name.
-/// When `app_name` is set, returns `.{app_name}` (e.g. `.fox-code`).
-/// When `None`, returns `.fox-agent-sdk` for backward compatibility.
-fn storage_subdir(app_name: &Option<String>) -> String {
-    match app_name {
-        Some(name) => format!(".{name}"),
-        None => ".fox-agent-sdk".to_string(),
-    }
+    Arc::new(FilePlanningStore::new(resolve_storage_root(cfg, working_dir).join("planning")))
 }

@@ -10,22 +10,25 @@ pub struct FoxAgentSdkConfig {
     /// Tool permission safety configuration
     pub safety: SafetyConfig,
 
-    /// Application name — used to derive data directories.
+    /// Unified storage root directory for all persisted SDK data.
     ///
-    /// When set, the SDK uses `{working_dir}/.{app_name}/sessions` and
-    /// `{working_dir}/.{app_name}/planning` as default storage paths
-    /// (instead of the hardcoded `.fox-agent-sdk/`).
+    /// Application code must set this explicitly.  Data is organised as
+    /// subdirectories under the root:
+    /// - `sessions/` — session snapshots
+    /// - `planning/` — planning state (goals, plans, todos)
+    /// - `memory/`  — long-term memory graph
     ///
-    /// Set this when embedding the SDK in a domain-specific application
-    /// (e.g. `"fox-code"`, `"fox-trader"`).
-    pub app_name: Option<String>,
+    /// # Examples
+    ///
+    /// ```ignore
+    /// // store data next to the working tree
+    /// storage_dir: working_dir.join(".fox-code"),
+    ///
+    /// // store data in the user's config directory
+    /// storage_dir: dirs::data_dir().unwrap().join("fox-code"),
+    /// ```
+    pub storage_dir: std::path::PathBuf,
 
-    /// Optional root directory for persisted session snapshots.
-    /// When set, takes precedence over the app-name-based default.
-    pub session_storage_dir: Option<std::path::PathBuf>,
-    /// Optional root directory for persisted planning snapshots.
-    /// When set, takes precedence over the app-name-based default.
-    pub planning_storage_dir: Option<std::path::PathBuf>,
     /// Whether to persist a fresh session snapshot at key lifecycle points.
     pub auto_snapshot: bool,
 
@@ -54,9 +57,7 @@ impl Default for FoxAgentSdkConfig {
             memory: MemoryConfig::default(),
             compaction: CompactionConfig::default(),
             safety: SafetyConfig::default(),
-            app_name: None,
-            session_storage_dir: None,
-            planning_storage_dir: None,
+            storage_dir: std::path::PathBuf::from(".fox-agent-sdk"),
             auto_snapshot: true,
             budget: BudgetConfig::default(),
             mcp: McpConfig::default(),
@@ -80,14 +81,15 @@ pub enum ContradictionPolicy {
 }
 
 /// Memory retrieval and injection configuration.
+///
+/// The actual storage directory is inherited from the parent
+/// `FoxAgentSdkConfig.storage_dir` (→ `{storage_dir}/memory/`).
 #[derive(Debug, Clone)]
 pub struct MemoryConfig {
     /// Whether memory retrieval is enabled
     pub enabled: bool,
     /// Whether semantic embedding generation and recall are enabled.
     pub embedding_enabled: bool,
-    /// Memory storage root directory. None = default (~/.fox-agent/memory/)
-    pub storage_dir: Option<std::path::PathBuf>,
     /// Local directory containing a pre-downloaded embedding model.
     /// If not provided, the SDK will use `embedding_model_id` and may download
     /// it from Hugging Face or the configured mirror.
@@ -158,7 +160,6 @@ impl Default for MemoryConfig {
         Self {
             enabled: false,
             embedding_enabled: true,
-            storage_dir: None,
             embedding_model_path: None,
             embedding_model_id: "Qwen/Qwen3-Embedding-0.6B".to_string(),
             embedding_hf_endpoint: None,

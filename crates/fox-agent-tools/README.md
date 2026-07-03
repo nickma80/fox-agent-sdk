@@ -199,7 +199,7 @@ BFS `cascade_retrieve` 通过标签传播和边权重衰减发现间接相关记
 
 #### 决策说明
 
-1. **存储路径 → 配置化**：`FoxAgentSdkConfig.memory.storage_dir` 缺省 `~/.fox-agent/memory/`
+1. **存储路径 → 配置化**：`FoxAgentSdkConfig.storage_dir` 统一管理，memory 存于 `{storage_dir}/memory/`
 2. **Embedding 模型路径 → 配置化**：`FoxAgentSdkConfig.memory.embedding_model_path`，缺省尝试内置 ONNX
 3. **Sidecar (Haiku) → Provider 模型**：不使用 babycode 的独立 Haiku 调用，改为通过 `fox_agent_core::Provider` trait 调用主 agent 的模型做相关性验证和记忆提取
 4. **跳过 MemoryStore**：只迁移 `MemoryGraph (v2)`，不做 `from_legacy_store` 迁移

@@ -6,6 +6,8 @@
 //! - `trigger_recall_for_next_turn()` — background async recall using the
 //!   `fox_agent_core::MemoryManager` (with MemoryGraph persistence).
 
+use std::path::PathBuf;
+use std::sync::Arc;
 use fox_agent_core::{
     AgentEvent, AgentEventTx, ContentBlock, ExtractedMemory, MemoryExtractor,
     MemoryManager as CoreMemoryManager, MemoryRelevanceChecker, MemoryScope, Message, Model,
@@ -15,7 +17,6 @@ use fox_agent_core::{
 use async_trait::async_trait;
 use futures::StreamExt;
 
-use std::sync::Arc;
 use std::time::Instant;
 use tokio::sync::RwLock;
 
@@ -116,6 +117,12 @@ impl MemoryManager {
     /// Access the underlying core MemoryManager.
     pub fn core(&self) -> &CoreMemoryManager {
         &self.core
+    }
+
+    /// Set the storage directory for the core MemoryManager.
+    pub fn with_storage_dir(mut self, dir: PathBuf) -> Self {
+        self.core = self.core.with_storage_dir(dir);
+        self
     }
 
     /// Store a memory entry via the core MemoryManager (project scope).

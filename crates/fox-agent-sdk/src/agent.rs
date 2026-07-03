@@ -561,12 +561,13 @@ impl Agent {
                     // Provider transient error retry (network, 5xx, etc.)
                     let max_retries = self.governance.as_ref()
                         .map(|g| g.budget().provider_retries)
-                        .unwrap_or(0);
+                        .unwrap_or(2);  // default to 2 retries even without GovernanceGuard
                     if provider_retry_count < max_retries {
                         provider_retry_count += 1;
                         let backoff_ms = (250u64 * (1u64 << provider_retry_count.min(4))).min(5000);
                         warn!(
                             retry = provider_retry_count,
+                            max_retries = max_retries,
                             backoff_ms = backoff_ms,
                             error = %err_str,
                             "Provider error, retrying"
@@ -574,6 +575,12 @@ impl Agent {
                         tokio::time::sleep(std::time::Duration::from_millis(backoff_ms)).await;
                         continue;
                     }
+                    warn!(
+                        retry_count = provider_retry_count,
+                        max_retries = max_retries,
+                        error = %err_str,
+                        "Provider retries exhausted, giving up"
+                    );
                     return Err(self.handle_error(event_tx, turn_id, AgentError::Provider(err)));
                 }
             };
