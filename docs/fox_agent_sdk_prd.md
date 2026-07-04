@@ -1313,8 +1313,8 @@ let runtime = SwarmRuntimeBuilder::new()
 | T8 | `SwarmSupervisor` + retry/reassign/timeout | 已完成 |
 | T9 | `ReplayRunner` + golden transcript | 已完成 |
 | T10 | Examples + 测试模板 | 已完成 |
-| T11 | `McpTransport` trait + stdio/SSE 实现 | 设计完成，待实现 |
-| T12 | `McpClient` + Builder 集成 + 权限适配 | 设计完成，待实现 |
+| T11 | `McpTransport` trait + stdio/SSE 实现 | 已实现（stdio + SSE 双传输） |
+| T12 | `McpClient` + Builder 集成 + 权限适配 | 已实现（含 resources/prompts 注入） |
 
 ---
 

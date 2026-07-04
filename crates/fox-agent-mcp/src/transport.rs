@@ -241,3 +241,117 @@ impl Drop for StdioTransport {
         // The sender channel drop will cause the I/O task to exit.
     }
 }
+
+// ── SSE transport ──
+
+/// Configuration for an SSE‑based MCP server (HTTP long‑poll).
+#[derive(Clone)]
+pub struct SseTransportConfig {
+    pub url: String,
+    pub headers: Vec<(String, String)>,
+    pub connect_timeout_secs: u64,
+    pub request_timeout_secs: u64,
+}
+
+/// SSE transport — connects to a remote MCP server via HTTP POST + SSE.
+///
+/// POST request body → server processes → response comes back as the HTTP
+/// response body (not a separate SSE stream).  This works with servers that
+/// use the SSE transport as "HTTP POST with streaming response".
+pub struct SseTransport {
+    config: SseTransportConfig,
+    client: tokio::sync::Mutex<Option<reqwest::Client>>,
+}
+
+impl SseTransport {
+    pub fn new(config: SseTransportConfig) -> Self {
+        Self { config, client: tokio::sync::Mutex::new(None) }
+    }
+}
+
+#[async_trait]
+impl McpTransport for SseTransport {
+    async fn start(&self) -> Result<(), TransportError> {
+        let mut headers = reqwest::header::HeaderMap::new();
+        for (k, v) in &self.config.headers {
+            headers.insert(
+                reqwest::header::HeaderName::from_bytes(k.as_bytes())
+                    .map_err(|e| TransportError::Protocol(format!("invalid header name '{k}': {e}")))?,
+                reqwest::header::HeaderValue::from_str(v)
+                    .map_err(|e| TransportError::Protocol(format!("invalid header value '{v}': {e}")))?,
+            );
+        }
+        headers.insert(
+            reqwest::header::CONTENT_TYPE,
+            reqwest::header::HeaderValue::from_static("application/json"),
+        );
+
+        let client = reqwest::Client::builder()
+            .connect_timeout(std::time::Duration::from_secs(self.config.connect_timeout_secs))
+            .default_headers(headers)
+            .build()
+            .map_err(|e| TransportError::Protocol(format!("failed to build http client: {e}")))?;
+
+        // Send a ping/initialize to verify connectivity
+        let ping_req = McpRequest::new(
+            serde_json::Value::String("ping".into()),
+            "ping",
+            None,
+        );
+
+        let json = crate::json_rpc::serialize_request(&ping_req)?;
+        let resp = client
+            .post(&self.config.url)
+            .body(json)
+            .send()
+            .await
+            .map_err(|e| TransportError::Protocol(format!("connect failed: {e}")))?;
+
+        if !resp.status().is_success() {
+            return Err(TransportError::Protocol(format!(
+                "connect returned {}",
+                resp.status()
+            )));
+        }
+
+        *self.client.lock().await = Some(client);
+        Ok(())
+    }
+
+    async fn send(&self, request: &McpRequest) -> Result<McpResponse, TransportError> {
+        let json = crate::json_rpc::serialize_request(request)?;
+
+        let client_guard = self.client.lock().await;
+        let client = client_guard.as_ref().ok_or(TransportError::NotStarted)?;
+
+        let resp = tokio::time::timeout(
+            std::time::Duration::from_secs(self.config.request_timeout_secs),
+            client.post(&self.config.url).body(json).send(),
+        )
+        .await
+        .map_err(|_| TransportError::Timeout("request timed out".into()))?
+        .map_err(|e| TransportError::Protocol(format!("POST failed: {e}")))?;
+
+        if !resp.status().is_success() {
+            let status = resp.status();
+            let body_text = resp.text().await.unwrap_or_default();
+            return Err(TransportError::Protocol(format!(
+                "POST returned {}: {}",
+                status, body_text
+            )));
+        }
+
+        let body = resp.text().await.map_err(|e| {
+            TransportError::Protocol(format!("failed to read response body: {e}"))
+        })?;
+
+        crate::json_rpc::deserialize_response(&body)
+            .map_err(|e| TransportError::Codec(e))
+    }
+
+    async fn shutdown(&self) -> Result<(), TransportError> {
+        *self.client.lock().await = None;
+        Ok(())
+    }
+}
+

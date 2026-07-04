@@ -56,6 +56,12 @@ pub fn serialize_request(req: &McpRequest) -> Result<String, CodecError> {
     Ok(json)
 }
 
+/// Deserialize a JSON‑RPC response from a raw string.
+pub fn deserialize_response(body: &str) -> Result<McpResponse, CodecError> {
+    let val: Value = serde_json::from_str(body)?;
+    Ok(serde_json::from_value(val)?)
+}
+
 /// An MCP message — either a response or a server-initiated notification.
 #[derive(Debug, Clone)]
 pub enum McpMessage {

@@ -10,6 +10,8 @@ pub struct PromptBuilder {
     /// Optional path to the global/domain-level AGENTS.md.
     /// When `None`, falls back to `$FOX_AGENT_DIR/AGENTS.md` or `~/.fox-agent/AGENTS.md`.
     global_agents_md_path: Option<std::path::PathBuf>,
+    /// Optional summary of connected MCP resources and prompts.
+    mcp_context_summary: Option<String>,
 }
 
 impl PromptBuilder {
@@ -18,6 +20,7 @@ impl PromptBuilder {
         Self {
             core: CorePromptBuilder::new(version, git_hash),
             global_agents_md_path: None,
+            mcp_context_summary: None,
         }
     }
 
@@ -28,6 +31,15 @@ impl PromptBuilder {
     /// The file is loaded in addition to the per-project `<working_dir>/AGENTS.md`.
     pub fn with_global_agents_md_path(mut self, path: impl Into<std::path::PathBuf>) -> Self {
         self.global_agents_md_path = Some(path.into());
+        self
+    }
+
+    /// Inject a summary of connected MCP resources and prompts.
+    ///
+    /// This is generated during `AgentBuilder::build()` from the connected
+    /// MCP servers and will appear in the system prompt's MCP context section.
+    pub fn with_mcp_context(mut self, summary: String) -> Self {
+        self.mcp_context_summary = Some(summary);
         self
     }
 
@@ -86,6 +98,11 @@ impl PromptBuilder {
             static_sections.push(content);
         }
 
+        // MCP resources & prompts context
+        if let Some(ref mcp_ctx) = self.mcp_context_summary {
+            static_sections.push(mcp_ctx.clone());
+        }
+
         // Prompt overlay
         if let (Some(content), _size) = CorePromptBuilder::load_prompt_overlay(working_dir) {
             static_sections.push(content);
@@ -129,5 +146,10 @@ impl PromptBuilder {
     pub fn with_system_template(mut self, template: impl Into<String>) -> Self {
         self.core = self.core.with_system_template(template);
         self
+    }
+
+    /// Set MCP context after builder construction (non-builder setter).
+    pub(crate) fn set_mcp_context(&mut self, summary: String) {
+        self.mcp_context_summary = Some(summary);
     }
 }

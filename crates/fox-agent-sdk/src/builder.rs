@@ -4,8 +4,8 @@
 //! a chainable, discoverable builder that provides sensible defaults.
 
 use fox_agent_core::{
-    FoxAgentSdkConfig, Model, PermissionResult, PlanningStore, ProviderConfig, SafetyConfig,
-    SessionStore, WorkspaceSandbox, Tool, Skill,
+    FoxAgentSdkConfig, McpConfig, Model, PermissionResult, PlanningStore, ProviderConfig,
+    SafetyConfig, SessionStore, WorkspaceSandbox, Tool, Skill,
 };
 use fox_agent_providers::{AnthropicCompatibleProvider, DeepSeekProvider, OpenAiCompatibleProvider};
 use fox_agent_swarm::SwarmCoordinator;
@@ -17,7 +17,7 @@ use tokio::sync::RwLock;
 use crate::agent::Agent;
 use crate::governance::GovernanceGuard;
 use crate::harness::Harness;
-use crate::mcp::{McpServerConfig, connect_and_discover_tools};
+use crate::mcp::{McpServerConfig, build_mcp_context_summary, connect_and_discover_tools};
 use crate::swarm_runtime::SwarmRuntime;
 
 // ── Provider factory ──
@@ -69,6 +69,7 @@ pub struct AgentBuilder {
         Option<Arc<dyn Fn(&str, &serde_json::Value) -> PermissionResult + Send + Sync>>,
     system_prompt: Option<String>,
     mcp_servers: Vec<McpServerConfig>,
+    mcp_config_override: Option<McpConfig>,
     active_skill: Arc<RwLock<Option<Skill>>>,
 }
 
@@ -96,6 +97,7 @@ impl AgentBuilder {
             permission_hook: None,
             system_prompt: None,
             mcp_servers: Vec::new(),
+            mcp_config_override: None,
             active_skill: Arc::new(RwLock::new(None)),
         }
     }
@@ -278,12 +280,30 @@ impl AgentBuilder {
     /// # Example
     ///
     /// ```ignore
+    /// // Stdio transport
     /// AgentBuilder::new()
     ///     .provider_config(ProviderConfig::deepseek(key))
     ///     .with_mcp_server(McpServerConfig {
     ///         name: "filesystem".into(),
-    ///         command: "npx".into(),
-    ///         args: vec!["-y".into(), "@modelcontextprotocol/server-filesystem".into(), "/tmp".into()],
+    ///         transport: McpTransportMode::Stdio {
+    ///             command: "npx".into(),
+    ///             args: vec!["-y".into(), "@modelcontextprotocol/server-filesystem".into(), "/tmp".into()],
+    ///             ..Default::default()
+    ///         },
+    ///         ..Default::default()
+    ///     })
+    ///     .build()
+    ///     .await?;
+    ///
+    /// // SSE transport
+    /// AgentBuilder::new()
+    ///     .with_mcp_server(McpServerConfig {
+    ///         name: "remote-tools".into(),
+    ///         transport: McpTransportMode::Sse {
+    ///             url: "https://mcp.example.com".into(),
+    ///             headers: vec![("Authorization".into(), "Bearer token".into())],
+    ///             connect_timeout_secs: None, // defaults to 30s
+    ///         },
     ///         ..Default::default()
     ///     })
     ///     .build()
@@ -294,11 +314,22 @@ impl AgentBuilder {
         self
     }
 
+    /// Override the global MCP configuration.
+    ///
+    /// Takes precedence over `McpConfig` set via `FoxAgentSdkConfig.mcp`.
+    pub fn with_mcp_config(mut self, cfg: McpConfig) -> Self {
+        self.mcp_config_override = Some(cfg);
+        self
+    }
+
     // ── build ──
 
     /// Assemble an [`Agent`] from the accumulated config.
     pub async fn build(self) -> Result<Agent, String> {
         let mut sdk_config = self.sdk_config.unwrap_or_default();
+        if let Some(mcp_override) = self.mcp_config_override {
+            sdk_config.mcp = mcp_override;
+        }
         let budget_timeout = sdk_config.budget.provider_timeout_secs;
 
         let provider = if let Some(p) = self.provider {
@@ -377,6 +408,13 @@ impl AgentBuilder {
                     for tool in mcp_tools {
                         agent.harness().register_tool(tool).await;
                     }
+
+                    // Build MCP resources/prompts context for the system prompt
+                    let mcp_ctx = build_mcp_context_summary(&mcp_client).await;
+                    if !mcp_ctx.is_empty() {
+                        agent.set_mcp_context(mcp_ctx);
+                    }
+
                     agent.mcp_client = Some(mcp_client);
                 }
                 Err(e) => {

@@ -117,6 +117,11 @@ impl Agent {
     pub fn harness(&self) -> &Harness { &self.harness }
     pub fn model(&self) -> &Arc<dyn Model> { &self.model }
 
+    /// Set MCP resources/prompts context for the system prompt.
+    pub(crate) fn set_mcp_context(&mut self, summary: String) {
+        self.harness.prompt_builder.set_mcp_context(summary);
+    }
+
     pub fn snapshot(&self) -> SessionSnapshot {
         SessionSnapshot {
             session_id: self.harness.session_state.id.clone(),

@@ -15,6 +15,8 @@ pub enum McpClientError {
     ConnectionFailed { server: String, message: String },
     #[error("tool not found: {tool}")]
     ToolNotFound { tool: String },
+    #[error("server not found: {server}")]
+    ServerNotFound { server: String },
     #[error("tool call failed: {0}")]
     ToolCallFailed(String),
     #[error("transport: {0}")]
@@ -253,5 +255,201 @@ impl McpClient {
             .find(|s| s.name == server_name)
             .map(|s| s.auto_approve)
             .unwrap_or(false)
+    }
+
+    /// List resources from all connected servers that support resources.
+    ///
+    /// Follows pagination `next_cursor` links until all resources are fetched.
+    pub async fn list_resources(&self) -> Result<Vec<McpResource>, McpClientError> {
+        let servers = self.servers.read().await;
+        let mut all_resources = Vec::new();
+        for server in servers.iter() {
+            if server.capabilities.resources.is_none() {
+                continue;
+            }
+
+            let mut cursor: Option<String> = None;
+            loop {
+                let params = cursor.as_ref().map(|c| serde_json::json!({ "cursor": c }));
+                let req = McpRequest::new(
+                    serde_json::Value::String(uuid::Uuid::new_v4().to_string()),
+                    "resources/list",
+                    params,
+                );
+                match server.transport.send(&req).await {
+                    Ok(resp) => {
+                        if let Some(result) = resp.result {
+                            match serde_json::from_value::<ResourcesListResult>(result) {
+                                Ok(list) => {
+                                    all_resources.extend(list.resources);
+                                    cursor = list.next_cursor;
+                                    if cursor.is_none() {
+                                        break;
+                                    }
+                                }
+                                Err(e) => {
+                                    tracing::warn!(
+                                        server = %server.name,
+                                        error = %e,
+                                        "resources/list: deserialization failed — skipping"
+                                    );
+                                    break;
+                                }
+                            }
+                        } else {
+                            break;
+                        }
+                    }
+                    Err(e) => {
+                        tracing::warn!(
+                            server = %server.name,
+                            error = %e,
+                            "resources/list failed for MCP server — skipping"
+                        );
+                        break;
+                    }
+                }
+            }
+        }
+        Ok(all_resources)
+    }
+
+    /// Read the content of a resource from the appropriate server.
+    pub async fn read_resource(
+        &self,
+        server_name: &str,
+        uri: &str,
+    ) -> Result<String, McpClientError> {
+        let servers = self.servers.read().await;
+        let server = servers.iter().find(|s| s.name == server_name).ok_or_else(|| {
+            McpClientError::ServerNotFound { server: server_name.to_string() }
+        })?;
+
+        let params = serde_json::json!({ "uri": uri });
+        let req = McpRequest::new(
+            serde_json::Value::String(uuid::Uuid::new_v4().to_string()),
+            "resources/read",
+            Some(params),
+        );
+
+        let resp = server.transport.send(&req).await?;
+        if let Some(err) = &resp.error {
+            return Err(McpClientError::ToolCallFailed(format!(
+                "resources/read: {} (code {})", err.message, err.code
+            )));
+        }
+
+        let result: ResourceReadResult = serde_json::from_value(
+            resp.result.ok_or_else(|| {
+                McpClientError::ToolCallFailed("no result in resources/read response".into())
+            })?,
+        )?;
+
+        let text = result
+            .contents
+            .iter()
+            .filter_map(|c| c.text.as_deref())
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        Ok(text)
+    }
+
+    /// List prompts from all connected servers that support prompts.
+    ///
+    /// Follows pagination `next_cursor` links until all prompts are fetched.
+    pub async fn list_prompts(&self) -> Result<Vec<McpPrompt>, McpClientError> {
+        let servers = self.servers.read().await;
+        let mut all_prompts = Vec::new();
+        for server in servers.iter() {
+            if server.capabilities.prompts.is_none() {
+                continue;
+            }
+
+            let mut cursor: Option<String> = None;
+            loop {
+                let params = cursor.as_ref().map(|c| serde_json::json!({ "cursor": c }));
+                let req = McpRequest::new(
+                    serde_json::Value::String(uuid::Uuid::new_v4().to_string()),
+                    "prompts/list",
+                    params,
+                );
+                match server.transport.send(&req).await {
+                    Ok(resp) => {
+                        if let Some(result) = resp.result {
+                            match serde_json::from_value::<PromptsListResult>(result) {
+                                Ok(list) => {
+                                    all_prompts.extend(list.prompts);
+                                    cursor = list.next_cursor;
+                                    if cursor.is_none() {
+                                        break;
+                                    }
+                                }
+                                Err(e) => {
+                                    tracing::warn!(
+                                        server = %server.name,
+                                        error = %e,
+                                        "prompts/list: deserialization failed — skipping"
+                                    );
+                                    break;
+                                }
+                            }
+                        } else {
+                            break;
+                        }
+                    }
+                    Err(e) => {
+                        tracing::warn!(
+                            server = %server.name,
+                            error = %e,
+                            "prompts/list failed for MCP server — skipping"
+                        );
+                        break;
+                    }
+                }
+            }
+        }
+        Ok(all_prompts)
+    }
+
+    /// Get a specific prompt by name from the appropriate server.
+    pub async fn get_prompt(
+        &self,
+        server_name: &str,
+        prompt_name: &str,
+    ) -> Result<String, McpClientError> {
+        let servers = self.servers.read().await;
+        let server = servers.iter().find(|s| s.name == server_name).ok_or_else(|| {
+            McpClientError::ServerNotFound { server: server_name.to_string() }
+        })?;
+
+        let params = serde_json::json!({ "name": prompt_name });
+        let req = McpRequest::new(
+            serde_json::Value::String(uuid::Uuid::new_v4().to_string()),
+            "prompts/get",
+            Some(params),
+        );
+
+        let resp = server.transport.send(&req).await?;
+        if let Some(err) = &resp.error {
+            return Err(McpClientError::ToolCallFailed(format!(
+                "prompts/get: {} (code {})", err.message, err.code
+            )));
+        }
+
+        let result: GetPromptResult = serde_json::from_value(
+            resp.result.ok_or_else(|| {
+                McpClientError::ToolCallFailed("no result in prompts/get response".into())
+            })?,
+        )?;
+
+        let text = result
+            .messages
+            .iter()
+            .filter_map(|m| m.content.text.as_deref())
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        Ok(text)
     }
 }

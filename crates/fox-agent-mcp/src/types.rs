@@ -173,6 +173,13 @@ pub struct ResourceReadResult {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ResourcesListResult {
+    pub resources: Vec<McpResource>,
+    #[serde(default)]
+    pub next_cursor: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct McpResourceContent {
     pub uri: String,
     #[serde(rename = "mimeType", default)]
@@ -208,6 +215,13 @@ pub struct GetPromptResult {
     #[serde(default)]
     pub description: Option<String>,
     pub messages: Vec<McpPromptMessage>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PromptsListResult {
+    pub prompts: Vec<McpPrompt>,
+    #[serde(default)]
+    pub next_cursor: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
