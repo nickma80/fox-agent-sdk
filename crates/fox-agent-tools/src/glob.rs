@@ -1,21 +1,11 @@
 use async_trait::async_trait;
-use fox_agent_core::{Tool, ToolContext, ToolError, ToolOutput};
+use fox_agent_core::{Tool, ToolContext, ToolError, ToolOutput, intent_schema_property};
 use serde::Deserialize;
 use serde_json::{Value, json};
 use std::path::Path;
 use std::sync::Arc;
 
 const MAX_RESULTS: usize = 100;
-
-fn resolve_path(working_dir: Option<&Path>, path: &Path) -> std::path::PathBuf {
-    if path.is_absolute() {
-        path.to_path_buf()
-    } else if let Some(base) = working_dir {
-        base.join(path)
-    } else {
-        path.to_path_buf()
-    }
-}
 
 pub struct GlobTool;
 
@@ -30,6 +20,8 @@ struct GlobInput {
     pattern: String,
     #[serde(default)]
     path: Option<String>,
+    #[serde(default)]
+    intent: Option<String>,
 }
 
 #[async_trait]
@@ -47,6 +39,7 @@ impl Tool for GlobTool {
             "type": "object",
             "required": ["pattern"],
             "properties": {
+                "intent": intent_schema_property(),
                 "pattern": {
                     "type": "string",
                     "description": "Glob pattern (e.g. \"**/*.rs\")."
@@ -65,7 +58,7 @@ impl Tool for GlobTool {
         })?;
 
         let base_path = params.path.clone().unwrap_or_else(|| ".".to_string());
-        let base = resolve_path(ctx.working_dir.as_deref(), Path::new(&base_path));
+        let base = ctx.resolve_path(Path::new(&base_path));
         let pattern = params.pattern.clone();
 
         if !base.exists() {

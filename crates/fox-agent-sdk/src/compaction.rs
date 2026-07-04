@@ -85,13 +85,28 @@ impl CompactionManager {
         let summary_chars = summary_text.len();
 
         if !summary_text.is_empty() {
-            messages.insert(0, Message {
-                role: Role::System,
-                content: vec![ContentBlock::Text { text: format!("Conversation summary:\n{summary_text}") }],
-            });
+            // Replace (or insert) the summary so repeated compactions don't
+            // stack many conversation-summary system messages on top of each
+            // other.  The summary already captures previous summaries (via the
+            // truncation logic), keeping a single one avoids unbounded growth.
+            if let Some(existing) = messages.iter_mut().find(|m| {
+                m.role == Role::System
+                    && m.content.first().map_or(false, |b| {
+                        matches!(b, ContentBlock::Text { text } if text.starts_with("Conversation summary:"))
+                    })
+            }) {
+                existing.content = vec![ContentBlock::Text {
+                    text: format!("Conversation summary:\n{summary_text}"),
+                }];
+            } else {
+                messages.insert(0, Message {
+                    role: Role::System,
+                    content: vec![ContentBlock::Text {
+                        text: format!("Conversation summary:\n{summary_text}"),
+                    }],
+                });
+            }
         }
-
-        self.compaction_count += 1;
 
         CompactionEvent {
             trigger,
@@ -105,22 +120,47 @@ impl CompactionManager {
 // ── Internal helpers (moved from util.rs) ──
 
 fn summarize_messages(messages: &[Message]) -> String {
-    messages.iter().map(|message| {
+    const MAX_CONTENT_LEN: usize = 500; // Truncate each content block to 500 chars
+    const MAX_SUMMARY_LEN: usize = 4000; // Truncate total summary to 4KB
+    
+    let mut summary = String::new();
+    
+    for message in messages {
         let role = match message.role {
             Role::System => "system", Role::User => "user",
             Role::Assistant => "assistant", Role::Tool => "tool",
         };
-        let content = message.content.iter().map(|block| match block {
-            ContentBlock::Text { text } => text.as_str(),
-            ContentBlock::Reasoning { text } => text.as_str(),
-            ContentBlock::ToolResult { text, .. } => text.as_str(),
-            ContentBlock::ToolUse { .. } | ContentBlock::Image { .. } => "",
+        
+        let content = message.content.iter().map(|block| {
+            let text = match block {
+                ContentBlock::Text { text } => text.as_str(),
+                ContentBlock::Reasoning { text } => text.as_str(),
+                ContentBlock::ToolResult { text, .. } => text.as_str(),
+                ContentBlock::ToolUse { .. } | ContentBlock::Image { .. } => "",
+            };
+            // Truncate long content
+            if text.len() > MAX_CONTENT_LEN {
+                format!("{}...[truncated {} chars]", &text[..MAX_CONTENT_LEN], text.len() - MAX_CONTENT_LEN)
+            } else {
+                text.to_string()
+            }
         }).collect::<Vec<_>>().join(" ");
-        format!("[{role}] {content}")
-    }).collect::<Vec<_>>().join("\n")
+        
+        let line = format!("[{role}] {content}");
+        summary.push_str(&line);
+        summary.push('\n');
+        
+        // Stop if summary is getting too long
+        if summary.len() > MAX_SUMMARY_LEN {
+            summary.push_str("...[summary truncated]\n");
+            break;
+        }
+    }
+    
+    summary
 }
 
-fn message_chars(messages: &[Message]) -> usize {
+pub(crate) fn message_chars(messages: &[Message]) -> usize {
     messages.iter().flat_map(|m| &m.content).map(|block| match block {
         ContentBlock::Text { text } => text.len(),
         ContentBlock::Reasoning { text } => text.len(),

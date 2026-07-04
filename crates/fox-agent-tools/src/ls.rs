@@ -1,5 +1,5 @@
 use async_trait::async_trait;
-use fox_agent_core::{Tool, ToolContext, ToolError, ToolOutput};
+use fox_agent_core::{Tool, ToolContext, ToolError, ToolOutput, intent_schema_property};
 use serde::Deserialize;
 use serde_json::{Value, json};
 use std::path::Path;
@@ -20,16 +20,6 @@ const DEFAULT_IGNORE: &[&str] = &[
     ".cache",
 ];
 
-fn resolve_path(working_dir: Option<&Path>, path: &Path) -> std::path::PathBuf {
-    if path.is_absolute() {
-        path.to_path_buf()
-    } else if let Some(base) = working_dir {
-        base.join(path)
-    } else {
-        path.to_path_buf()
-    }
-}
-
 pub struct LsTool;
 
 impl LsTool {
@@ -44,6 +34,8 @@ struct LsInput {
     path: Option<String>,
     #[serde(default)]
     ignore: Option<Vec<String>>,
+    #[serde(default)]
+    intent: Option<String>,
 }
 
 struct DirEntry {
@@ -66,6 +58,7 @@ impl Tool for LsTool {
         json!({
             "type": "object",
             "properties": {
+                "intent": intent_schema_property(),
                 "path": {
                     "type": "string",
                     "description": "Directory path. Defaults to current directory."
@@ -85,7 +78,7 @@ impl Tool for LsTool {
         })?;
 
         let base_path = params.path.clone().unwrap_or_else(|| ".".to_string());
-        let base = resolve_path(ctx.working_dir.as_deref(), Path::new(&base_path));
+        let base = ctx.resolve_path(Path::new(&base_path));
         let ignore_extra = params.ignore.clone();
 
         if !base.exists() {

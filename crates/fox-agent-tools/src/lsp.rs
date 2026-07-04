@@ -1,5 +1,5 @@
 use async_trait::async_trait;
-use fox_agent_core::{Tool, ToolContext, ToolError, ToolOutput};
+use fox_agent_core::{Tool, ToolContext, ToolError, ToolOutput, intent_schema_property};
 use serde::Deserialize;
 use serde_json::{Value, json};
 use std::path::Path;
@@ -16,16 +16,6 @@ const OPERATIONS: &[&str] = &[
     "outgoingCalls",
 ];
 
-fn resolve_path(working_dir: Option<&Path>, path: &Path) -> std::path::PathBuf {
-    if path.is_absolute() {
-        path.to_path_buf()
-    } else if let Some(base) = working_dir {
-        base.join(path)
-    } else {
-        path.to_path_buf()
-    }
-}
-
 pub struct LspTool;
 
 impl LspTool {
@@ -40,6 +30,8 @@ struct LspInput {
     file_path: String,
     line: u32,
     character: u32,
+    #[serde(default)]
+    intent: Option<String>,
 }
 
 #[async_trait]
@@ -57,6 +49,7 @@ impl Tool for LspTool {
             "type": "object",
             "required": ["operation", "file_path", "line", "character"],
             "properties": {
+                "intent": intent_schema_property(),
                 "operation": {
                     "type": "string",
                     "enum": OPERATIONS,
@@ -91,7 +84,7 @@ impl Tool for LspTool {
             });
         }
 
-        let path = resolve_path(ctx.working_dir.as_deref(), Path::new(&params.file_path));
+        let path = ctx.resolve_path(Path::new(&params.file_path));
         if !path.exists() {
             return Err(ToolError::Message {
                 message: format!("File not found: {}", params.file_path),

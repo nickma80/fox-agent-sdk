@@ -1,4 +1,4 @@
-use fox_agent_core::{Skill, SkillRegistry, Tool, ToolContext, ToolError, ToolOutput};
+use fox_agent_core::{Skill, SkillRegistry, Tool, ToolContext, ToolError, ToolOutput, intent_schema_property};
 use serde::Deserialize;
 use serde_json::Value;
 use std::sync::Arc;
@@ -43,6 +43,7 @@ impl Tool for SkillTool {
         serde_json::json!({
             "type": "object",
             "properties": {
+                "intent": intent_schema_property(),
                 "action": {
                     "type": "string",
                     "enum": ["list", "activate", "deactivate"],
@@ -130,4 +131,6 @@ struct SkillToolInput {
     action: String,
     #[serde(default)]
     name: Option<String>,
+    #[serde(default)]
+    intent: Option<String>,
 }

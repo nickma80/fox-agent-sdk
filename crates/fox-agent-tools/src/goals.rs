@@ -2,7 +2,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use uuid::Uuid;
 
 use async_trait::async_trait;
-use fox_agent_core::{PlanningStore, Tool, ToolContext, ToolError, ToolOutput};
+use fox_agent_core::{PlanningStore, Tool, ToolContext, ToolError, ToolOutput, intent_schema_property};
 pub use fox_agent_core::{
     Goal, GoalCheckpoint, GoalMilestone, GoalScope, GoalStatus, MilestoneStatus, goal_status_label,
     load_goals, load_goals_with_store, save_goals, save_goals_with_store,
@@ -53,6 +53,7 @@ impl Tool for GoalTool {
         json!({
             "type": "object",
             "properties": {
+                "intent": intent_schema_property(),
                 "action": { "type": "string", "enum": ["create", "list", "show", "resume", "update", "checkpoint", "focus"] },
                 "scope": { "type": "string", "enum": ["session", "global"] },
                 "id": { "type": "string" },

@@ -1,5 +1,5 @@
 use async_trait::async_trait;
-use fox_agent_core::{Tool, ToolContext, ToolError, ToolOutput};
+use fox_agent_core::{Tool, ToolContext, ToolError, ToolOutput, intent_schema_property};
 use serde::Deserialize;
 use serde_json::{Value, json};
 use std::time::Duration;
@@ -67,6 +67,7 @@ impl Tool for BashTool {
             "type": "object",
             "required": ["command"],
             "properties": {
+                "intent": intent_schema_property(),
                 "command": {
                     "type": "string",
                     "description": "The bash command to execute."

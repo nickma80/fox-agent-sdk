@@ -1,5 +1,5 @@
 use async_trait::async_trait;
-use fox_agent_core::{Tool, ToolContext, ToolError, ToolOutput};
+use fox_agent_core::{Tool, ToolContext, ToolError, ToolOutput, intent_schema_property};
 use regex::Regex;
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -32,6 +32,8 @@ struct WebSearchInput {
     engine: Option<String>,
     #[serde(default)]
     bing_market: Option<String>,
+    #[serde(default)]
+    intent: Option<String>,
 }
 
 #[derive(Debug)]
@@ -56,6 +58,7 @@ impl Tool for WebSearchTool {
             "type": "object",
             "required": ["query"],
             "properties": {
+                "intent": intent_schema_property(),
                 "query": {
                     "type": "string",
                     "description": "Search query."

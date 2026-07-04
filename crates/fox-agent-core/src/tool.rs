@@ -25,6 +25,18 @@ pub struct ToolOutput {
     pub json: Option<Value>,
 }
 
+impl ToolOutput {
+    /// Convenience constructor for simple text-only output.
+    pub fn new(text: impl Into<String>) -> Self {
+        Self { text: text.into(), is_error: false, json: None }
+    }
+
+    /// Constructor for error output.
+    pub fn error(text: impl Into<String>) -> Self {
+        Self { text: text.into(), is_error: true, json: None }
+    }
+}
+
 /// Whether a tool runs in the foreground (blocking) or background.
 #[derive(Debug, Clone)]
 pub enum ToolExecutionMode {
@@ -51,6 +63,22 @@ pub struct ToolContext {
     pub graceful_shutdown_requested: bool,
 }
 
+impl ToolContext {
+    /// Resolve a path against the working directory.
+    ///
+    /// Absolute paths are returned unchanged.  Relative paths are joined to
+    /// `working_dir` when it is `Some`, otherwise resolved under CWD.
+    pub fn resolve_path(&self, path: &std::path::Path) -> std::path::PathBuf {
+        if path.is_absolute() {
+            path.to_path_buf()
+        } else if let Some(base) = &self.working_dir {
+            base.join(path)
+        } else {
+            path.to_path_buf()
+        }
+    }
+}
+
 /// Trait that all executable tools must implement.
 #[async_trait::async_trait]
 pub trait Tool: Send + Sync {
@@ -71,6 +99,19 @@ pub trait Tool: Send + Sync {
             parameters_schema: self.parameters_schema(),
         }
     }
+}
+
+/// Standard `intent` field to add to every tool's JSON schema.
+///
+/// Use in `parameters_schema()` like:
+/// ```ignore
+/// "intent": intent_schema_property(),
+/// ```
+pub fn intent_schema_property() -> Value {
+    serde_json::json!({
+        "type": "string",
+        "description": "Describe WHY you are calling this tool (one sentence). This helps the system understand your reasoning."
+    })
 }
 
 /// Errors returned by tool execution.

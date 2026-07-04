@@ -1,21 +1,11 @@
 use async_trait::async_trait;
-use fox_agent_core::{Tool, ToolContext, ToolError, ToolOutput};
+use fox_agent_core::{Tool, ToolContext, ToolError, ToolOutput, intent_schema_property};
 use serde::Deserialize;
 use serde_json::{Value, json};
 use std::path::Path;
 
 const DEFAULT_LIMIT: usize = 5000;
 const MAX_LINE_LEN: usize = 2000;
-
-fn resolve_path(working_dir: Option<&Path>, path: &Path) -> std::path::PathBuf {
-    if path.is_absolute() {
-        path.to_path_buf()
-    } else if let Some(base) = working_dir {
-        base.join(path)
-    } else {
-        path.to_path_buf()
-    }
-}
 
 pub struct ReadTool;
 
@@ -36,6 +26,8 @@ struct ReadInput {
     offset: Option<usize>,
     #[serde(default)]
     limit: Option<usize>,
+    #[serde(default)]
+    intent: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -137,6 +129,7 @@ impl Tool for ReadTool {
             "type": "object",
             "required": ["file_path"],
             "properties": {
+                "intent": intent_schema_property(),
                 "file_path": {
                     "type": "string",
                     "description": "Path to a file."
@@ -167,7 +160,7 @@ impl Tool for ReadTool {
         })?;
         let range = normalize_read_range(&params)?;
 
-        let path = resolve_path(ctx.working_dir.as_deref(), Path::new(&params.file_path));
+        let path = ctx.resolve_path(Path::new(&params.file_path));
 
         // Check if file exists
         if !path.exists() {

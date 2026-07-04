@@ -1,5 +1,5 @@
 use async_trait::async_trait;
-use fox_agent_core::{Tool, ToolContext, ToolError, ToolOutput};
+use fox_agent_core::{Tool, ToolContext, ToolError, ToolOutput, intent_schema_property};
 use serde::Deserialize;
 use serde_json::{Value, json};
 use similar::{ChangeTag, TextDiff};
@@ -7,16 +7,6 @@ use std::path::Path;
 
 const FILE_TOUCH_PREVIEW_MAX_LINES: usize = 6;
 const FILE_TOUCH_PREVIEW_MAX_BYTES: usize = 240;
-
-fn resolve_path(working_dir: Option<&Path>, path: &Path) -> std::path::PathBuf {
-    if path.is_absolute() {
-        path.to_path_buf()
-    } else if let Some(base) = working_dir {
-        base.join(path)
-    } else {
-        path.to_path_buf()
-    }
-}
 
 pub struct EditTool;
 
@@ -33,6 +23,8 @@ struct EditInput {
     new_string: String,
     #[serde(default)]
     replace_all: bool,
+    #[serde(default)]
+    intent: Option<String>,
 }
 
 #[async_trait]
@@ -50,6 +42,7 @@ impl Tool for EditTool {
             "type": "object",
             "required": ["file_path", "old_string", "new_string"],
             "properties": {
+                "intent": intent_schema_property(),
                 "file_path": {
                     "type": "string",
                     "description": "File path."
@@ -81,7 +74,7 @@ impl Tool for EditTool {
             });
         }
 
-        let path = resolve_path(ctx.working_dir.as_deref(), Path::new(&params.file_path));
+        let path = ctx.resolve_path(Path::new(&params.file_path));
 
         if !path.exists() {
             return Err(ToolError::Message {

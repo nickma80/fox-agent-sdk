@@ -5,7 +5,7 @@ use args::{
     build_find_args, build_grep_args, build_outline_args, build_smart_args_and_query,
     resolve_search_root,
 };
-use fox_agent_core::{Tool, ToolContext, ToolError, ToolOutput};
+use fox_agent_core::{Tool, ToolContext, ToolError, ToolOutput, intent_schema_property};
 use render::{
     render_find_output, render_grep_output, render_outline_output, render_smart_output,
 };
@@ -45,6 +45,8 @@ struct AgentGrepInput {
     #[serde(default)]
     debug_score: Option<bool>,
     #[serde(default)]
+    intent: Option<String>,
+    #[serde(default)]
     paths_only: Option<bool>,
 }
 
@@ -74,6 +76,7 @@ impl Tool for AgentGrepTool {
         json!({
             "type": "object",
             "properties": {
+                "intent": intent_schema_property(),
                 "mode": {
                     "type": "string",
                     "enum": ["grep", "find", "outline", "trace"],

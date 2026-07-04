@@ -1,5 +1,5 @@
 use async_trait::async_trait;
-use fox_agent_core::{Tool, ToolContext, ToolError, ToolOutput};
+use fox_agent_core::{Tool, ToolContext, ToolError, ToolOutput, intent_schema_property};
 use regex::Regex;
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -9,16 +9,6 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 
 const MAX_RESULTS: usize = 100;
 const MAX_LINE_LEN: usize = 2000;
-
-fn resolve_path(working_dir: Option<&Path>, path: &Path) -> std::path::PathBuf {
-    if path.is_absolute() {
-        path.to_path_buf()
-    } else if let Some(base) = working_dir {
-        base.join(path)
-    } else {
-        path.to_path_buf()
-    }
-}
 
 pub struct GrepTool;
 
@@ -35,6 +25,8 @@ struct GrepInput {
     path: Option<String>,
     #[serde(default)]
     include: Option<String>,
+    #[serde(default)]
+    intent: Option<String>,   // accepted but not used — see intent_schema_property
 }
 
 #[derive(Clone)]
@@ -59,6 +51,7 @@ impl Tool for GrepTool {
             "type": "object",
             "required": ["pattern"],
             "properties": {
+                "intent": intent_schema_property(),
                 "pattern": {
                     "type": "string",
                     "description": "Regex pattern."
@@ -82,7 +75,7 @@ impl Tool for GrepTool {
 
         let regex_pattern = params.pattern.clone();
         let base_path_str = params.path.clone().unwrap_or_else(|| ".".to_string());
-        let base = resolve_path(ctx.working_dir.as_deref(), Path::new(&base_path_str));
+        let base = ctx.resolve_path(Path::new(&base_path_str));
         let include = params.include.clone();
 
         if !base.exists() {

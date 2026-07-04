@@ -1,5 +1,5 @@
 use async_trait::async_trait;
-use fox_agent_core::{Tool, ToolContext, ToolError, ToolOutput};
+use fox_agent_core::{Tool, ToolContext, ToolError, ToolOutput, intent_schema_property};
 use futures::StreamExt;
 use regex::Regex;
 use serde::Deserialize;
@@ -38,6 +38,8 @@ struct WebFetchInput {
     format: Option<String>,
     #[serde(default)]
     timeout: Option<u64>,
+    #[serde(default)]
+    intent: Option<String>,
 }
 
 #[async_trait]
@@ -55,6 +57,7 @@ impl Tool for WebFetchTool {
             "type": "object",
             "required": ["url"],
             "properties": {
+                "intent": intent_schema_property(),
                 "url": {
                     "type": "string",
                     "description": "URL to fetch."

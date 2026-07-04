@@ -1,9 +1,9 @@
 use fox_agent_core::{
-    AgentError, AgentEvent, AgentEventTx, ContentBlock, GoalCheckpoint, GoalScope, GoalStatus,
-    Message, Model, PermissionDecision, PermissionRequest, PermissionResult,
-    PendingToolCallSnapshot, ProviderError, Role, SessionSnapshot, Skill, StreamEvent,
-    ToolContext, ToolError, ToolExecutionMode, ToolOutput, TurnOutcome, load_goals_with_store,
-    now_secs, save_goals_with_store,
+    AgentError, AgentEvent, AgentEventTx, CompactionConfig, ContentBlock, GoalCheckpoint,
+    GoalScope, GoalStatus, Message, Model, PermissionDecision, PermissionRequest,
+    PermissionResult, PendingToolCallSnapshot, ProviderError, Role, SessionSnapshot, Skill,
+    StreamEvent, ToolContext, ToolError, ToolExecutionMode, ToolOutput, TurnOutcome,
+    load_goals_with_store, now_secs, save_goals_with_store,
 };
 use fox_agent_mcp::McpClient;
 use futures::StreamExt;
@@ -984,9 +984,18 @@ impl Agent {
                         output: output.clone(),
                     })
                     .await;
-                // P2: result with duration
+                // P2: context guard — truncate huge tool outputs before they
+                // enter the message stream (avoids wasting tokens and memory on
+                // 10 MB file reads / grep explosions).  Mirrors jcode's
+                // `CONTEXT_GUARD_THRESHOLD` / `SINGLE_OUTPUT_MAX_FRACTION`.
+                let output_text = guard_tool_output(
+                    &self.harness.cfg.compaction,
+                    &self.harness.session_state.messages,
+                    &name,
+                    &output.text,
+                );
                 self.harness.session_state.messages.push(
-                    tool_result_msg(call_id, output.text, output.is_error, elapsed_ms),
+                    tool_result_msg(call_id, output_text, output.is_error, elapsed_ms),
                 );
             }
 
@@ -1185,13 +1194,113 @@ fn tool_result_msg(call_id: String, text: String, is_error: bool, duration_ms: u
     Message::tool_result(call_id, enhanced, is_error)
 }
 
+// ── Context guard (tool output truncation) ──
+//
+// Mirrors jcode's `guard_context_overflow`.  Prevents huge tool outputs
+// (e.g. reading a 10 MB file, grep matching thousands of lines) from
+// entering the message stream at all — saving tokens and preventing
+// memory exhaustion / compaction thrashing.
+
+/// Maximum fraction of the compaction token budget a single tool output
+/// may occupy before it is unconditionally truncated (even if there
+/// appears to be room).
+const SINGLE_OUTPUT_MAX_FRACTION: f32 = 0.30;
+
+/// If the projected total context after adding this output would exceed
+/// this fraction of the budget, truncate.
+const CONTEXT_GUARD_THRESHOLD: f32 = 0.85;
+
+fn guard_tool_output(
+    compaction_cfg: &CompactionConfig,
+    messages: &[Message],
+    tool_name: &str,
+    output_text: &str,
+) -> String {
+    if !compaction_cfg.enabled {
+        return output_text.to_string();
+    }
+
+    let budget = compaction_cfg.token_budget;
+    let current = super::compaction::message_chars(messages);
+    let output_len = output_text.len();
+
+    let single_max = (budget as f32 * SINGLE_OUTPUT_MAX_FRACTION) as usize;
+    let threshold = (budget as f32 * CONTEXT_GUARD_THRESHOLD) as usize;
+    let projected = current + output_len;
+
+    let needs_trunc = output_len > single_max || projected > threshold;
+
+    if !needs_trunc {
+        return output_text.to_string();
+    }
+
+    // How much room do we have?
+    let remaining = if current < threshold {
+        threshold.saturating_sub(current)
+    } else {
+        budget / 50 // ~2% of budget for truncation notice
+    };
+    let max_chars = remaining.min(single_max);
+
+    if output_text.len() <= max_chars {
+        return output_text.to_string();
+    }
+
+    // Keep the beginning of the output (most relevant)
+    let prefix = if max_chars > 300 {
+        // Safe UTF-8 boundary: find last char boundary at or before the limit
+        let cut = max_chars.saturating_sub(200);
+        let boundary = if let Some((idx, _)) = output_text.char_indices().take_while(|(i, _)| *i < cut).last() {
+            idx
+        } else {
+            cut.min(output_text.len())
+        };
+        format!(
+            "{}\n\n[OUTPUT TRUNCATED: {:.0}k → {:.0}k chars. Context {}/{}. Use more targeted tool queries.]",
+            &output_text[..boundary],
+            output_len as f64 / 1000.0,
+            max_chars as f64 / 1000.0,
+            current,
+            budget,
+        )
+    } else {
+        format!(
+            "[OUTPUT TRUNCATED: {:.0}k chars. Context {}/{} almost full. Use more targeted tool queries.]",
+            output_len as f64 / 1000.0,
+            current,
+            budget,
+        )
+    };
+
+    warn!(
+        tool = %tool_name,
+        original = output_len,
+        truncated = prefix.len(),
+        current = current,
+        budget = budget,
+        "Context guard truncated tool output"
+    );
+
+    prefix
+}
+
 // ── Logging helpers ──
 
 fn truncate(s: &str, max: usize) -> String {
     if s.len() <= max { s.to_string() }
     else {
-        let boundary = s.floor_char_boundary(max);
+        let boundary = char_boundary_before(s, max);
         format!("{}... ({}/{})", &s[..boundary], boundary, s.len())
+    }
+}
+
+/// Returns the largest byte index ≤ `pos` that is a valid UTF-8 char boundary.
+fn char_boundary_before(s: &str, pos: usize) -> usize {
+    let pos = pos.min(s.len());
+    if s.is_char_boundary(pos) { pos }
+    else {
+        // Walk back one byte at a time until we hit a boundary
+        (0..pos).rev().find(|&i| s.is_char_boundary(i)).unwrap_or(0)
     }
 }
 

@@ -3,7 +3,7 @@
 use async_trait::async_trait;
 use fox_agent_core::{
     MemoryCategory, MemoryEntry, MemoryManager, MemoryScope, RecallMode, Tool, ToolContext,
-    ToolError, ToolOutput,
+    ToolError, ToolOutput, intent_schema_property,
 };
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -110,6 +110,7 @@ impl Tool for MemoryTool {
         json!({
             "type": "object",
             "properties": {
+                "intent": intent_schema_property(),
                 "action": {
                     "type": "string",
                     "enum": ["remember", "recall", "search", "list", "forget", "disable", "enable", "redact", "tag", "link", "related", "stats", "reembed", "reindex", "refresh_clusters", "rebuild_ann", "export", "import", "compact"],
