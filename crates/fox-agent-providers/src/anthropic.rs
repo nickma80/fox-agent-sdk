@@ -9,7 +9,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::time::Duration;
 
-use crate::config::ProviderConfig;
+use fox_agent_core::ProviderConfig;
 use crate::util::build_headers;
 
 // ── Provider ──

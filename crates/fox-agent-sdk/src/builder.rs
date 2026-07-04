@@ -4,10 +4,10 @@
 //! a chainable, discoverable builder that provides sensible defaults.
 
 use fox_agent_core::{
-    FoxAgentSdkConfig, Model, PermissionResult, PlanningStore, SafetyConfig, SessionStore,
-    WorkspaceSandbox, Tool, Skill,
+    FoxAgentSdkConfig, Model, PermissionResult, PlanningStore, ProviderConfig, SafetyConfig,
+    SessionStore, WorkspaceSandbox, Tool, Skill,
 };
-use fox_agent_providers::{AnthropicCompatibleProvider, DeepSeekProvider, OpenAiCompatibleProvider, ProviderConfig};
+use fox_agent_providers::{AnthropicCompatibleProvider, DeepSeekProvider, OpenAiCompatibleProvider};
 use fox_agent_swarm::SwarmCoordinator;
 use fox_agent_tools::register_default_tools_with_planning_store_and_skill_registry;
 use std::path::PathBuf;
@@ -298,7 +298,7 @@ impl AgentBuilder {
 
     /// Assemble an [`Agent`] from the accumulated config.
     pub async fn build(self) -> Result<Agent, String> {
-        let sdk_config = self.sdk_config.unwrap_or_default();
+        let mut sdk_config = self.sdk_config.unwrap_or_default();
         let budget_timeout = sdk_config.budget.provider_timeout_secs;
 
         let provider = if let Some(p) = self.provider {
@@ -306,12 +306,17 @@ impl AgentBuilder {
         } else if let Some(mut cfg) = self.provider_config {
             cfg.timeout_secs = budget_timeout;
             build_provider(cfg)
+        } else if let Some(ref mut cfg) = sdk_config.provider {
+            cfg.timeout_secs = budget_timeout;
+            build_provider(cfg.clone())
         } else {
-            return Err("provider or provider_config is required".to_string());
+            return Err("provider or provider_config is required. \
+                Set FoxAgentSdkConfig.provider or call AgentBuilder::provider_config().".to_string());
         };
 
         let model_id = self
             .model_id
+            .or(sdk_config.default_model.clone())
             .unwrap_or_else(|| "gpt-4o".to_string());
 
         let model: Arc<dyn Model> = Arc::new(fox_agent_core::DefaultModel::new(provider, model_id));

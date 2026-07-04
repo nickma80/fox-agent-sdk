@@ -286,13 +286,9 @@ impl FilePlanningStore {
         }
     }
 
-    fn session_dir(&self) -> PathBuf {
-        self.root_dir.join("sessions")
-    }
-
     fn snapshot_path(&self, session_id: &str, scope: PlanningScope) -> PathBuf {
         match scope {
-            PlanningScope::Session => self.session_dir().join(format!("{session_id}.json")),
+            PlanningScope::Session => self.root_dir.join(format!("{session_id}.json")),
             PlanningScope::Global => self.root_dir.join("global.json"),
         }
     }
@@ -339,7 +335,7 @@ impl PlanningStore for FilePlanningStore {
     }
 
     fn list_session_ids(&self) -> Result<Vec<String>, String> {
-        let dir = self.session_dir();
+        let dir = &self.root_dir;
         if !dir.exists() {
             return Ok(Vec::new());
         }

@@ -33,7 +33,7 @@ use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::RwLock;
 
-use crate::config::ProviderConfig;
+use fox_agent_core::ProviderConfig;
 use crate::util::build_headers;
 
 const SSE_CHUNK_TIMEOUT: Duration = Duration::from_secs(180);

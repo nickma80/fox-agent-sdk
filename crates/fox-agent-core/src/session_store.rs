@@ -129,7 +129,7 @@ impl FileSessionStore {
     }
 
     fn session_path(&self, session_id: &str) -> PathBuf {
-        self.root_dir.join("sessions").join(format!("{session_id}.json"))
+        self.root_dir.join(format!("{session_id}.json"))
     }
 }
 

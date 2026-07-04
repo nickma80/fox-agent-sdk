@@ -1,8 +1,93 @@
 /// SDK top-level configuration.
 use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Clone)]
+// ── Provider config ──
+
+/// Authentication configuration for an LLM provider.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum AuthConfig {
+    /// No authentication
+    None,
+    /// HTTP Bearer token (Authorization: Bearer <token>)
+    BearerToken(String),
+    /// Custom API-key header (e.g. x-api-key: <value>)
+    ApiKeyHeader { header_name: String, value: String },
+}
+
+/// Configuration for an LLM provider backend.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ProviderConfig {
+    /// Short name identifying this provider (e.g. "openai", "deepseek")
+    pub provider_name: String,
+    /// Base URL for the provider's API (e.g. https://api.openai.com/v1)
+    pub base_url: String,
+    /// Authentication method
+    pub auth: AuthConfig,
+    /// Request timeout in seconds
+    pub timeout_secs: u64,
+    /// Additional HTTP headers sent with every request
+    pub default_headers: Vec<(String, String)>,
+    /// Whether to use SSE streaming for responses
+    pub use_streaming_api: bool,
+}
+
+impl ProviderConfig {
+    pub fn openai(api_key: impl Into<String>) -> Self {
+        Self {
+            provider_name: "openai".to_string(),
+            base_url: "https://api.openai.com/v1".to_string(),
+            auth: AuthConfig::BearerToken(api_key.into()),
+            timeout_secs: 60,
+            default_headers: Vec::new(),
+            use_streaming_api: true,
+        }
+    }
+
+    pub fn anthropic(api_key: impl Into<String>) -> Self {
+        Self {
+            provider_name: "anthropic".to_string(),
+            base_url: "https://api.anthropic.com/v1".to_string(),
+            auth: AuthConfig::ApiKeyHeader {
+                header_name: "x-api-key".to_string(),
+                value: api_key.into(),
+            },
+            timeout_secs: 60,
+            default_headers: vec![("anthropic-version".to_string(), "2023-06-01".to_string())],
+            use_streaming_api: false,
+        }
+    }
+
+    /// DeepSeek Chat API configuration.
+    pub fn deepseek(api_key: impl Into<String>) -> Self {
+        Self {
+            provider_name: "deepseek".to_string(),
+            base_url: "https://api.deepseek.com/".to_string(),
+            auth: AuthConfig::BearerToken(api_key.into()),
+            timeout_secs: 120,
+            default_headers: Vec::new(),
+            use_streaming_api: true,
+        }
+    }
+}
+
+// ── SDK config ──
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FoxAgentSdkConfig {
+    /// LLM provider configuration.
+    ///
+    /// When `Some`, `AgentBuilder` auto-creates a provider from this config and
+    /// uses the `default_model` as the model id.  Ignored when
+    /// `AgentBuilder::provider_config()` or `AgentBuilder::with_provider()` is
+    /// called explicitly.
+    pub provider: Option<ProviderConfig>,
+
+    /// Default model id (e.g. `"deepseek-reasoner"`, `"gpt-4o"`).
+    ///
+    /// Ignored when `AgentBuilder::model_id()` is called explicitly.
+    /// Falls back to `"gpt-4o"` when neither is set (backward-compatible).
+    pub default_model: Option<String>,
+
     /// Memory system configuration
     pub memory: MemoryConfig,
     /// Context window compaction configuration
@@ -54,6 +139,8 @@ pub struct FoxAgentSdkConfig {
 impl Default for FoxAgentSdkConfig {
     fn default() -> Self {
         Self {
+            provider: None,
+            default_model: None,
             memory: MemoryConfig::default(),
             compaction: CompactionConfig::default(),
             safety: SafetyConfig::default(),
@@ -66,13 +153,89 @@ impl Default for FoxAgentSdkConfig {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// Error returned by [`FoxAgentSdkConfig::load_from_file`].
+#[derive(Debug, thiserror::Error)]
+pub enum ConfigError {
+    #[error("failed to read config file {path}: {source}")]
+    Io {
+        path: String,
+        #[source]
+        source: std::io::Error,
+    },
+    #[error("failed to parse config file {path}: {source}")]
+    Parse {
+        path: String,
+        #[source]
+        source: toml::de::Error,
+    },
+}
+
+impl FoxAgentSdkConfig {
+    /// Load configuration from a TOML file, returning a [`FoxAgentSdkConfig`].
+    ///
+    /// Fields not present in the file fall back to their [`Default`] values.
+    ///
+    /// Paths starting with `~` are expanded to the user's home directory.
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// let cfg = FoxAgentSdkConfig::load_from_file("agent.toml")?;
+    /// ```
+    pub fn load_from_file<P: AsRef<std::path::Path>>(path: P) -> Result<FoxAgentSdkConfig, ConfigError> {
+        let path = path.as_ref();
+        let content = std::fs::read_to_string(path)
+            .map_err(|e| ConfigError::Io { path: path.display().to_string(), source: e })?;
+        let mut cfg: FoxAgentSdkConfig = toml::from_str(&content)
+            .map_err(|e| ConfigError::Parse { path: path.display().to_string(), source: e })?;
+        
+        // Expand ~ in paths to user's home directory
+        cfg.expand_home_paths();
+        
+        Ok(cfg)
+    }
+    
+    /// Expand paths starting with `~` to the user's home directory.
+    fn expand_home_paths(&mut self) {
+        if let Some(home) = dirs::home_dir() {
+            // Expand storage_dir if it starts with "~"
+            if let Some(storage_str) = self.storage_dir.to_str() {
+                if storage_str.starts_with("~") {
+                    let rest = storage_str.strip_prefix("~").unwrap_or("");
+                    self.storage_dir = home.join(rest);
+                }
+            }
+            
+            // Expand global_agents_md_path
+            if let Some(ref path) = self.global_agents_md_path {
+                if let Some(path_str) = path.to_str() {
+                    if path_str.starts_with("~") {
+                        let rest = path_str.strip_prefix("~").unwrap_or("");
+                        self.global_agents_md_path = Some(home.join(rest));
+                    }
+                }
+            }
+            
+            // Expand memory.embedding_model_path
+            if let Some(ref path) = self.memory.embedding_model_path {
+                if let Some(path_str) = path.to_str() {
+                    if path_str.starts_with("~") {
+                        let rest = path_str.strip_prefix("~").unwrap_or("");
+                        self.memory.embedding_model_path = Some(home.join(rest));
+                    }
+                }
+            }
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum AutoExtractScope {
     Project,
     Global,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ContradictionPolicy {
     Ignore,
     Supersede,
@@ -84,7 +247,7 @@ pub enum ContradictionPolicy {
 ///
 /// The actual storage directory is inherited from the parent
 /// `FoxAgentSdkConfig.storage_dir` (→ `{storage_dir}/memory/`).
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MemoryConfig {
     /// Whether memory retrieval is enabled
     pub enabled: bool,
@@ -193,7 +356,7 @@ impl Default for MemoryConfig {
 }
 
 /// Context compaction configuration.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CompactionConfig {
     /// Whether automatic compaction is enabled
     pub enabled: bool,
@@ -231,7 +394,7 @@ impl Default for CompactionConfig {
 }
 
 /// Default policy for tools not in allowlist or denylist.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum DefaultSafetyPolicy {
     /// Require user confirmation
     Confirm,
@@ -242,7 +405,7 @@ pub enum DefaultSafetyPolicy {
 }
 
 /// Safety/permission configuration with allowlist/denylist support.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SafetyConfig {
     /// Tool allowlist. If set, only tools in this list are automatically allowed.
     /// None means allowlist mode is disabled.
@@ -276,7 +439,7 @@ impl Default for SafetyConfig {
 }
 
 /// File system operation type for sandbox validation.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum SandboxOperation {
     /// Read operation (e.g. read, glob, grep, ls)
     Read,
@@ -315,7 +478,7 @@ pub enum SandboxError {
 ///
 /// When configured on `ToolExecutor`, all file path operations from tools
 /// are validated against this sandbox before execution.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WorkspaceSandbox {
     /// Allowed root directory. All file path operations are limited to this directory
     /// and its subdirectories.

@@ -1,7 +1,7 @@
 use fox_agent_core::{Message, ProviderError};
 use reqwest::header::{AUTHORIZATION, CONTENT_TYPE, HeaderMap, HeaderName, HeaderValue};
 
-use crate::config::{AuthConfig, ProviderConfig};
+use fox_agent_core::{AuthConfig, ProviderConfig};
 
 /// Build HTTP headers from a provider configuration (auth + defaults).
 pub fn build_headers(cfg: &ProviderConfig) -> Result<HeaderMap, ProviderError> {

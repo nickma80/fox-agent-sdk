@@ -1,0 +1,164 @@
+# ─────────────────────────────────────────────────────────────
+# Fox Agent SDK Configuration (agent.toml)
+# ─────────────────────────────────────────────────────────────
+#
+# All fields are optional — missing fields fall back to
+# their Default values (shown in comments).
+#
+# Usage:
+#   let cfg = FoxAgentSdkConfig::load_from_file("agent.toml")?;
+#   let agent = AgentBuilder::new()
+#       .working_dir("./project")
+#       .with_config(cfg)
+#       .build().await?;
+#
+# ─────────────────────────────────────────────────────────────
+
+# ── Provider ────────────────────────────────────────────────
+# LLM provider configuration.  When set, the builder auto-creates
+# the provider from this block — no need to call .provider_config().
+#
+# Supported provider_name values: "openai", "anthropic", "deepseek"
+
+[provider]
+provider_name = "deepseek"
+base_url = "https://api.deepseek.com/"
+timeout_secs = 120              # default: 60 (openai/anthropic), 120 (deepseek)
+use_streaming_api = true        # default: true
+
+# Authentication — exactly one of:
+#   BearerToken = "sk-xxx"                    (OpenAI / DeepSeek)
+#   { header_name = "x-api-key", value = "xxx" }  (Anthropic)
+[provider.auth]
+BearerToken = "sk-your-api-key-here"
+
+# Optional: extra HTTP headers sent with every request
+# default_headers = []
+
+# ── Model ───────────────────────────────────────────────────
+
+# Default model id.  Ignored when AgentBuilder::model_id() is called.
+# Falls back to "gpt-4o" when neither is set.
+default_model = "deepseek-v4-flash"
+
+# ── Storage ─────────────────────────────────────────────────
+
+# Root directory for all persisted data.  Relative paths are resolved
+# against the working_dir provided to AgentBuilder.
+# Subdirectories: sessions/  planning/  memory/
+storage_dir = ".fox-agent-sdk"   # default
+
+# Persist session snapshots at key lifecycle points.
+auto_snapshot = true             # default
+
+# Optional path to a global AGENTS.md for domain-level instructions.
+# global_agents_md_path = "/path/to/AGENTS.md"
+
+# ── Memory ──────────────────────────────────────────────────
+
+[memory]
+enabled = false                  # default: false — cross-session memory
+
+# Embedding model (used for semantic recall)
+embedding_enabled = true         # default
+embedding_model_id = "Qwen/Qwen3-Embedding-0.6B"
+# embedding_model_path = "/local/path/to/model"  # pre-downloaded model
+# embedding_hf_endpoint = "https://hf-mirror.com/"  # HF mirror for China
+# embedding_cache_dir = "/path/to/hf-cache"
+# embedding_hf_token = "hf_xxx"  # for gated models
+auto_download_embedding_model = false  # default: false (don't auto-download)
+
+# ANN (Approximate Nearest Neighbor) index
+ann_enabled = false              # default
+ann_min_vectors = 256            # min embeddings before using ANN
+ann_candidate_multiplier = 8     # candidates = limit × multiplier
+
+# Retrieval
+max_candidates = 30              # max candidates before scoring
+max_results = 10                 # max results after scoring
+injection_max_chars = 1500       # max chars in injected memory prompt
+injection_max_per_category = 3   # max memories injected per category
+max_graph_depth = 2              # BFS depth in memory graph
+
+# Relevance verification (uses LLM)
+verify_relevance = false         # default
+# verify_model = "gpt-4o"       # None = use agent's default model
+
+# Auto-extraction from conversation
+auto_extract = false             # default
+auto_extract_scope = "Project"   # "Project" or "Global"
+auto_extract_message_window = 6  # recent messages for transcript
+auto_extract_max_items_per_turn = 4
+
+# Deduplication & clustering
+dedupe_similarity_threshold = 0.92
+cluster_similarity_threshold = 0.9
+cluster_min_members = 2
+
+# Contradiction handling
+contradiction_policy = "MarkContradictionEdge"  # Ignore | Supersede | DowngradeConfidence | MarkContradictionEdge
+contradiction_confidence_decay = 0.2
+
+# Retention
+# retention_days = 90            # auto-delete memories older than N days
+# memory_size_limit = 10_000     # max memories per scope on disk
+
+rebuild_on_model_change = false  # re-embed when model/version changes
+
+# ── Compaction ──────────────────────────────────────────────
+
+[compaction]
+enabled = true                   # default: false — enable for long sessions
+token_budget = 80_000            # default: 12_000 — char budget before compaction
+preserve_recent_messages = 10    # default: 20 — keep N most recent messages
+max_turns_before_compaction = 20 # fallback trigger
+context_limit_threshold = 0.85   # fraction of budget that triggers early compaction
+max_compaction_count = 10        # prevent infinite loops
+min_compaction_gap_turns = 3     # min turns between compactions
+
+# ── Safety ──────────────────────────────────────────────────
+
+[safety]
+# Tool allowlist — only these tools auto-allowed (None = disabled)
+# tool_allowlist = ["read", "grep", "ls", "glob", "edit", "write"]
+
+# Tool denylist — these tools always require confirmation
+# tool_denylist = ["bash", "webfetch"]
+
+# Default policy for tools not in allowlist or denylist
+default_policy = "Allow"         # "Confirm" | "Allow" | "Deny"
+
+# Permission timeout (0 = no timeout)
+approval_timeout_secs = 120      # default
+
+# Approval cache
+[safety.approval_cache]
+enabled = true                   # default
+ttl_secs = 3600                  # cache expiry (1 hour)
+max_entries = 100                # max cached entries
+
+# ── Budget ──────────────────────────────────────────────────
+
+[budget]
+# token_budget = 1_000_000       # max tokens per session (None = unlimited)
+# cost_budget_cents = 500        # max cost in USD cents (None = unlimited)
+provider_timeout_secs = 120      # default
+provider_retries = 2             # default
+tool_timeout_secs = 60           # default — tool execution timeout
+tool_concurrency_limit = 8       # default — max parallel tool calls
+max_turns = 0                    # default: 0 = unlimited
+
+# ── MCP ─────────────────────────────────────────────────────
+
+[mcp]
+enabled = false                  # default — MCP integration
+connect_timeout_secs = 30        # default
+tool_timeout_secs = 60           # default — per MCP tool call
+max_concurrent_tools = 4         # default
+auto_refresh_tools = false       # default
+tool_refresh_interval_secs = 0   # default: 0 = disabled
+max_reconnect_attempts = 3       # default
+reconnect_backoff_ms = 1000      # default
+default_risk_level = "High"      # "Low" | "Medium" | "High" | "Critical"
+expose_resources = false         # default
+max_resources_per_injection = 5  # default
