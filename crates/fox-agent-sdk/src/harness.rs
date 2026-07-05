@@ -64,6 +64,7 @@ impl Harness {
         }
         let plugin_marketplaces = cfg.plugins.as_ref().map(|p| p.marketplaces.clone()).unwrap_or_default();
         let plugin_dir_path = storage_root.join("plugins");
+        let plugin_proxy = cfg.proxy.clone();
         Self {
             cfg,
             session_state: session,
@@ -83,7 +84,7 @@ impl Harness {
             plugin_manager: Arc::new(RwLock::new(PluginManager::new(
                 plugin_dir_path,
                 plugin_marketplaces,
-            ))),
+            ).with_proxy(plugin_proxy))),
         }
     }
 
@@ -117,6 +118,7 @@ impl Harness {
         }
         let plugin_marketplaces = cfg.plugins.as_ref().map(|p| p.marketplaces.clone()).unwrap_or_default();
         let plugin_dir_path = storage_root.join("plugins");
+        let plugin_proxy = cfg.proxy.clone();
         Self {
             cfg,
             session_state: session,
@@ -136,7 +138,7 @@ impl Harness {
             plugin_manager: Arc::new(RwLock::new(PluginManager::new(
                 plugin_dir_path,
                 plugin_marketplaces,
-            ))),
+            ).with_proxy(plugin_proxy))),
         }
     }
 

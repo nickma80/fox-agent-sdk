@@ -492,17 +492,20 @@ fn scan_dir_for_skills(
 
 /// Configuration for the skills system.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
 pub struct SkillsConfig {
     /// Whether skills are enabled at all.
     pub enabled: bool,
 
     /// Additional directories to scan for skills (absolute paths).
+    #[serde(default)]
     pub additional_directories: Vec<PathBuf>,
 
     /// Whether to load global skills from `{storage_dir}/skills/`.
     pub load_global: bool,
 
     /// Reload strategy: auto (fs watcher) or manual (load once at build).
+    #[serde(default)]
     pub reload_strategy: ReloadStrategy,
 }
 

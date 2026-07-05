@@ -208,9 +208,17 @@ load_global = true               # default
 #
 # Claude Code compatible plugin system.
 # Plugins bundle skills + hooks and can be installed from marketplaces.
+#
+# The SDK automatically:
+#   1. git-clones marketplace repos to {storage_dir}/plugins/marketplaces/
+#   2. Reads .claude-plugin/marketplace.json (Claude Code standard format)
+#   3. Caches the index to {name}.json for fast subsequent access
+#   4. On `fox-code plugin install <name>`, searches cached indexes,
+#      refreshes any missing ones, git-clones the plugin repo, and
+#      loads its skills into the agent's skill registry.
 
 [plugins]
-enabled = false                  # default (set to true to enable)
+enabled = true                   # enable plugin system
 auto_update_hours = 0            # default: 0 = disabled
 
 # Plugin names to auto-install on startup (from configured marketplaces)
@@ -221,12 +229,29 @@ auto_update_hours = 0            # default: 0 = disabled
 #
 # Supported source types: "GitHub", "Git", "Http", "Local"
 #
-# Example GitHub marketplace:
+# Claude Code default marketplaces:
+[[plugins.marketplaces]]
+name = "claude-plugins-official"
+source = "GitHub"
+owner = "anthropics"
+repo = "claude-plugins-official"
+branch = "main"
+auto_update_hours = 12
+
+[[plugins.marketplaces]]
+name = "claude-plugins-community"
+source = "GitHub"
+owner = "anthropics"
+repo = "claude-plugins-community"
+branch = "main"
+auto_update_hours = 24
+
+# Example custom GitHub marketplace:
 # [[plugins.marketplaces]]
-# name = "official"
+# name = "my-team"
 # source = "GitHub"
 # owner = "your-org"
-# repo = "fox-agent-marketplace"
+# repo = "fox-agent-plugins"
 # branch = "main"
 # auto_update_hours = 12
 
@@ -236,4 +261,22 @@ auto_update_hours = 0            # default: 0 = disabled
 # source = "Http"
 # url = "https://plugins.example.com/index.json"
 # auto_update_hours = 24
+
+# ── Proxy ───────────────────────────────────────────────────
+#
+# Proxy all outbound connections through a proxy server.
+# Applies to:
+#   - Provider API calls (LLM requests)
+#   - MCP transport connections
+#   - HTTP tool calls (webfetch, websearch)
+#   - Git clone/fetch for marketplace repos and plugin installs
+#   - Marketplace HTTP index downloads
+#
+# Supports HTTP, HTTPS, and SOCKS5 proxies.
+
+# [proxy]
+# url = "http://127.0.0.1:7890"       # proxy URL (required)
+# username = ""                       # optional basic auth
+# password = ""                       # optional basic auth
+# no_proxy = ["localhost", "*.local"] # hosts to bypass
 

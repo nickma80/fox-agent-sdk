@@ -25,10 +25,13 @@ pub struct ProviderConfig {
     /// Authentication method
     pub auth: AuthConfig,
     /// Request timeout in seconds
+    #[serde(default)]
     pub timeout_secs: u64,
     /// Additional HTTP headers sent with every request
+    #[serde(default)]
     pub default_headers: Vec<(String, String)>,
     /// Whether to use SSE streaming for responses
+    #[serde(default = "default_true")]
     pub use_streaming_api: bool,
 }
 
@@ -69,11 +72,27 @@ impl ProviderConfig {
             use_streaming_api: true,
         }
     }
+
+    /// Build a [`reqwest::Client`] from this provider config, applying the
+    /// global proxy if one is provided.
+    ///
+    /// Call this in the builder when constructing provider instances.
+    pub fn build_http_client(&self, proxy: Option<&ProxyConfig>) -> Result<reqwest::Client, String> {
+        let mut builder = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(self.timeout_secs.max(60)));
+        if let Some(proxy_cfg) = proxy {
+            builder = builder.proxy(proxy_cfg.to_reqwest_proxy()?);
+        }
+        builder
+            .build()
+            .map_err(|e| format!("failed to build HTTP client for provider '{}': {e}", self.provider_name))
+    }
 }
 
 // ── SDK config ──
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
 pub struct FoxAgentSdkConfig {
     /// LLM provider configuration.
     ///
@@ -139,6 +158,13 @@ pub struct FoxAgentSdkConfig {
     /// marketplaces.
     pub plugins: Option<PluginsConfig>,
 
+    /// Proxy configuration for all outbound HTTP connections.
+    ///
+    /// When set, all HTTP clients (providers, MCP transports, tool calls,
+    /// marketplace refreshes) are routed through the specified proxy.
+    /// Supports HTTP, HTTPS, and SOCKS5 proxies.
+    pub proxy: Option<ProxyConfig>,
+
     /// Optional path to a global AGENTS.md file for domain-level instructions.
     ///
     /// When set, the SDK loads this file (in addition to the per-project
@@ -167,6 +193,7 @@ impl Default for FoxAgentSdkConfig {
             mcp: McpConfig::default(),
             hooks: None,
             plugins: None,
+            proxy: None,
             global_agents_md_path: None,
         }
     }
@@ -176,6 +203,7 @@ impl Default for FoxAgentSdkConfig {
 
 /// Hooks system configuration.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
 pub struct HooksConfig {
     /// Enable hooks.
     pub enabled: bool,
@@ -241,6 +269,7 @@ impl Default for PluginsConfig {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MarketplaceConfig {
     pub name: String,
+    #[serde(default)]
     pub url: String,
     pub source: String,               // "GitHub" | "Git" | "Http" | "Local"
     #[serde(default)]
@@ -253,6 +282,43 @@ pub struct MarketplaceConfig {
     pub branch: Option<String>,        // Git branch
     #[serde(default)]
     pub path: Option<std::path::PathBuf>, // Local path
+}
+
+// ── Proxy config ──
+
+/// Outbound HTTP proxy configuration.
+///
+/// Applies to all HTTP clients in the SDK: providers, MCP transports,
+/// tool calls (webfetch, websearch), and marketplace refreshes.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ProxyConfig {
+    /// Proxy URL, e.g. `http://127.0.0.1:7890`, `socks5://127.0.0.1:1080`.
+    pub url: String,
+    /// Optional basic auth: `username` portion.
+    #[serde(default)]
+    pub username: Option<String>,
+    /// Optional basic auth: `password` portion.
+    #[serde(default)]
+    pub password: Option<String>,
+    /// Host patterns to bypass the proxy for (e.g. `localhost`, `*.internal`).
+    #[serde(default)]
+    pub no_proxy: Vec<String>,
+}
+
+impl ProxyConfig {
+    /// Build a [`reqwest::Proxy`] from this configuration.
+    pub fn to_reqwest_proxy(&self) -> Result<reqwest::Proxy, String> {
+        let mut proxy = reqwest::Proxy::all(&self.url)
+            .map_err(|e| format!("invalid proxy URL '{}': {e}", self.url))?;
+        if let (Some(u), Some(p)) = (&self.username, &self.password) {
+            proxy = proxy.basic_auth(u, p);
+        }
+        if !self.no_proxy.is_empty() {
+            let no_proxy_str = self.no_proxy.join(",");
+            proxy = proxy.no_proxy(reqwest::NoProxy::from_string(&no_proxy_str));
+        }
+        Ok(proxy)
+    }
 }
 
 /// Error returned by [`FoxAgentSdkConfig::load_from_file`].
@@ -296,34 +362,58 @@ impl FoxAgentSdkConfig {
         
         Ok(cfg)
     }
+
+    /// Build a [`reqwest::Client`] with the configured proxy settings.
+    ///
+    /// Returns a plain client builder (with no proxy) when `self.proxy` is `None`.
+    pub fn build_reqwest_client(&self) -> Result<reqwest::Client, String> {
+        let mut builder = reqwest::Client::builder();
+        if let Some(ref proxy_cfg) = self.proxy {
+            builder = builder.proxy(proxy_cfg.to_reqwest_proxy()?);
+        }
+        builder
+            .build()
+            .map_err(|e| format!("failed to build reqwest client: {e}"))
+    }
     
     /// Expand paths starting with `~` to the user's home directory.
     fn expand_home_paths(&mut self) {
         if let Some(home) = dirs::home_dir() {
-            // Expand storage_dir if it starts with "~"
+            // Helper: replace ~/ with home dir
+            let expand = |s: &str| -> std::path::PathBuf {
+                let rest = s.strip_prefix("~").unwrap_or(s);
+                // Strip leading / or \ so Path::join works correctly on all platforms
+                let rest = rest.trim_start_matches('/').trim_start_matches('\\');
+                home.join(rest)
+            };
+
             if let Some(storage_str) = self.storage_dir.to_str() {
                 if storage_str.starts_with("~") {
-                    let rest = storage_str.strip_prefix("~").unwrap_or("");
-                    self.storage_dir = home.join(rest);
+                    self.storage_dir = expand(storage_str);
                 }
             }
             
-            // Expand global_agents_md_path
             if let Some(ref path) = self.global_agents_md_path {
                 if let Some(path_str) = path.to_str() {
                     if path_str.starts_with("~") {
-                        let rest = path_str.strip_prefix("~").unwrap_or("");
-                        self.global_agents_md_path = Some(home.join(rest));
+                        self.global_agents_md_path = Some(expand(path_str));
                     }
                 }
             }
             
-            // Expand memory.embedding_model_path
             if let Some(ref path) = self.memory.embedding_model_path {
                 if let Some(path_str) = path.to_str() {
                     if path_str.starts_with("~") {
-                        let rest = path_str.strip_prefix("~").unwrap_or("");
-                        self.memory.embedding_model_path = Some(home.join(rest));
+                        self.memory.embedding_model_path = Some(expand(path_str));
+                    }
+                }
+            }
+
+            // Also expand memory.embedding_cache_dir
+            if let Some(ref path) = self.memory.embedding_cache_dir {
+                if let Some(path_str) = path.to_str() {
+                    if path_str.starts_with("~") {
+                        self.memory.embedding_cache_dir = Some(expand(path_str));
                     }
                 }
             }
@@ -350,6 +440,7 @@ pub enum ContradictionPolicy {
 /// The actual storage directory is inherited from the parent
 /// `FoxAgentSdkConfig.storage_dir` (→ `{storage_dir}/memory/`).
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
 pub struct MemoryConfig {
     /// Whether memory retrieval is enabled
     pub enabled: bool,
@@ -459,6 +550,7 @@ impl Default for MemoryConfig {
 
 /// Context compaction configuration.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
 pub struct CompactionConfig {
     /// Whether automatic compaction is enabled
     pub enabled: bool,
@@ -508,6 +600,7 @@ pub enum DefaultSafetyPolicy {
 
 /// Safety/permission configuration with allowlist/denylist support.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
 pub struct SafetyConfig {
     /// Tool allowlist. If set, only tools in this list are automatically allowed.
     /// None means allowlist mode is disabled.
@@ -690,6 +783,7 @@ impl WorkspaceSandbox {
 /// When any limit is exceeded, the agent returns a structured error
 /// instead of silently continuing.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
 pub struct BudgetConfig {
     /// Maximum total tokens (input + output) per session.
     /// When exceeded, `ErrorKind::BudgetExceeded` is returned.
@@ -845,6 +939,7 @@ impl MetricsSnapshot {
 /// When `enabled` is true, connected MCP servers contribute their tool
 /// definitions to the agent's tool list at build time.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
 pub struct McpConfig {
     /// Global MCP enable/disable switch.
     #[serde(default = "default_enabled")]

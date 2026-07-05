@@ -1082,13 +1082,31 @@ Marketplace 安装。
 
 1. **从 GitHub 安装**（通过 Marketplace）：
 
+SDK 预配置了 Claude Code 的两个默认 marketplace：
+
+| Marketplace | GitHub 仓库 | 说明 |
+|-------------|------------|------|
+| `claude-plugins-official` | `anthropics/claude-plugins-official` | Anthropic 官方维护，审核严格 |
+| `claude-plugins-community` | `anthropics/claude-plugins-community` | 社区贡献，通过自动校验 |
+
+配置方式：
+
 ```toml
 [[plugins.marketplaces]]
-name = "official"
+name = "claude-plugins-official"
 source = "GitHub"
-owner = "your-org"
-repo = "fox-agent-marketplace"
+owner = "anthropics"
+repo = "claude-plugins-official"
 branch = "main"
+auto_update_hours = 12
+
+[[plugins.marketplaces]]
+name = "claude-plugins-community"
+source = "GitHub"
+owner = "anthropics"
+repo = "claude-plugins-community"
+branch = "main"
+auto_update_hours = 24
 ```
 
 SDK 会在 `build()` 时自动刷新 marketplace 索引并缓存到
@@ -1129,11 +1147,21 @@ enabled = true                # 启用插件系统
 auto_update_hours = 12        # 自动检查更新间隔（0 = 禁用）
 preinstall = ["code-review"]  # 启动时自动安装的插件名
 
+# Claude Code 官方 marketplace
 [[plugins.marketplaces]]
-name = "community"
+name = "claude-plugins-official"
 source = "GitHub"
-owner = "fox-agent-plugins"
-repo = "community-plugins"
+owner = "anthropics"
+repo = "claude-plugins-official"
+branch = "main"
+auto_update_hours = 12
+
+# Claude Code 社区 marketplace
+[[plugins.marketplaces]]
+name = "claude-plugins-community"
+source = "GitHub"
+owner = "anthropics"
+repo = "claude-plugins-community"
 branch = "main"
 auto_update_hours = 24
 ```
@@ -1165,12 +1193,20 @@ auto_update_hours = 0
 preinstall = ["code-review"]
 
 [[plugins.marketplaces]]
-name = "official"
+name = "claude-plugins-official"
 source = "GitHub"
-owner = "fox-agent-plugins"
-repo = "marketplace-index"
+owner = "anthropics"
+repo = "claude-plugins-official"
 branch = "main"
 auto_update_hours = 12
+
+[[plugins.marketplaces]]
+name = "claude-plugins-community"
+source = "GitHub"
+owner = "anthropics"
+repo = "claude-plugins-community"
+branch = "main"
+auto_update_hours = 24
 ```
 
 启动时 Builder 自动加载以上所有配置，无需额外代码：
