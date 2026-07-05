@@ -1,5 +1,5 @@
 use fox_agent_core::{
-    ContextInfo, FoxAgentSdkConfig, InterruptManager, InjectedInterrupt, MemoryStateEvent,
+    ContextInfo, FoxAgentSdkConfig, HooksConfig, InterruptManager, InjectedInterrupt, MemoryStateEvent,
     PermissionResult, PlanningStore, SessionStore, SkillInfo, SkillRegistry, SplitPrompt, Tool, ToolContext,
     ToolDefinition, ToolError, ToolOutput, WorkspaceSandbox, FilePlanningStore, FileSessionStore,
     set_default_planning_store,
@@ -11,7 +11,9 @@ use tokio::sync::RwLock;
 use tracing::{debug, info};
 
 use crate::compaction::CompactionManager;
+use crate::hooks::{HookContext, HookDecision, HookEvent, HookManager};
 use crate::memory::{MemoryInjection, MemoryInjectionState, MemoryManager};
+use crate::plugin::PluginManager;
 use crate::prompt_builder::PromptBuilder;
 use crate::safety::SafetySystem;
 use crate::session::SessionState;
@@ -30,6 +32,8 @@ pub struct Harness {
     pub session_store: Arc<dyn SessionStore>,
     pub skill_registry: Arc<RwLock<SkillRegistry>>,
     pub interrupt_manager: Arc<RwLock<InterruptManager>>,
+    pub hook_manager: Arc<RwLock<HookManager>>,
+    pub plugin_manager: Arc<RwLock<PluginManager>>,
 }
 
 impl Harness {
@@ -58,6 +62,8 @@ impl Harness {
         if let Some(ref path) = cfg.global_agents_md_path {
             prompt_builder = prompt_builder.with_global_agents_md_path(path.clone());
         }
+        let plugin_marketplaces = cfg.plugins.as_ref().map(|p| p.marketplaces.clone()).unwrap_or_default();
+        let plugin_dir_path = storage_root.join("plugins");
         Self {
             cfg,
             session_state: session,
@@ -71,6 +77,13 @@ impl Harness {
             session_store,
             skill_registry: Arc::new(RwLock::new(SkillRegistry::default())),
             interrupt_manager: Arc::new(RwLock::new(InterruptManager::default())),
+            hook_manager: Arc::new(RwLock::new(HookManager::new(
+                HooksConfig::default(),
+            ))),
+            plugin_manager: Arc::new(RwLock::new(PluginManager::new(
+                plugin_dir_path,
+                plugin_marketplaces,
+            ))),
         }
     }
 
@@ -102,6 +115,8 @@ impl Harness {
         if let Some(ref path) = cfg.global_agents_md_path {
             prompt_builder = prompt_builder.with_global_agents_md_path(path.clone());
         }
+        let plugin_marketplaces = cfg.plugins.as_ref().map(|p| p.marketplaces.clone()).unwrap_or_default();
+        let plugin_dir_path = storage_root.join("plugins");
         Self {
             cfg,
             session_state: session,
@@ -115,6 +130,13 @@ impl Harness {
             session_store,
             skill_registry: Arc::new(RwLock::new(SkillRegistry::default())),
             interrupt_manager: Arc::new(RwLock::new(InterruptManager::default())),
+            hook_manager: Arc::new(RwLock::new(HookManager::new(
+                HooksConfig::default(),
+            ))),
+            plugin_manager: Arc::new(RwLock::new(PluginManager::new(
+                plugin_dir_path,
+                plugin_marketplaces,
+            ))),
         }
     }
 
@@ -200,6 +222,99 @@ impl Harness {
 
     pub async fn is_graceful_shutdown_requested(&self) -> bool {
         self.interrupt_manager.read().await.is_graceful_shutdown_requested()
+    }
+
+    // ── Hook integration ──
+
+    /// Load all hooks from project + global directories.
+    pub async fn load_hooks(
+        &self,
+        storage_dir: &std::path::Path,
+    ) -> usize {
+        let config = self.cfg.hooks.clone().unwrap_or_default();
+        if !config.enabled {
+            return 0;
+        }
+        let mut hm = self.hook_manager.write().await;
+        hm.load_all(
+            storage_dir,
+            self.session_state.working_dir.as_deref(),
+            &config,
+        )
+    }
+
+    /// Run PreToolUse hooks before a tool is executed.
+    ///
+    /// Returns `(allowed, block_reason, modified_input)`.
+    pub async fn run_pre_tool_hooks(
+        &self,
+        tool_name: &str,
+        input: &serde_json::Value,
+    ) -> (bool, Option<String>, Option<serde_json::Value>) {
+        let session_id = self.session_state.id.clone();
+        let working_dir = self.session_state.working_dir
+            .as_ref()
+            .map(|p| p.to_string_lossy().to_string())
+            .unwrap_or_default();
+        let hm = self.hook_manager.read().await;
+        let ctx = HookContext {
+            session_id: &session_id,
+            event: "pre-tool-use",
+            working_dir: &working_dir,
+            tool_name: Some(tool_name),
+            tool_input: Some(input.clone()),
+            tool_output: None,
+            hook_event_name: "PreToolUse",
+        };
+        match hm.execute(HookEvent::PreToolUse, ctx).await {
+            Ok(HookDecision::Allow { modified_input }) => (true, None, modified_input),
+            Ok(HookDecision::Block { reason }) => (false, Some(reason), None),
+            Ok(HookDecision::InjectContext { .. }) => (true, None, None),
+            Err(e) => {
+                tracing::warn!(error = %e, "PreToolUse hook error — allowing");
+                (true, None, None)
+            }
+        }
+    }
+
+    /// Run PostToolUse hooks after a tool is executed.
+    ///
+    /// Returns `(allowed, block_reason)`.
+    pub async fn run_post_tool_hooks(
+        &self,
+        tool_name: &str,
+        tool_output_text: &str,
+    ) -> (bool, Option<String>) {
+        let session_id = self.session_state.id.clone();
+        let working_dir = self.session_state.working_dir
+            .as_ref()
+            .map(|p| p.to_string_lossy().to_string())
+            .unwrap_or_default();
+        let hm = self.hook_manager.read().await;
+        let ctx = HookContext {
+            session_id: &session_id,
+            event: "post-tool-use",
+            working_dir: &working_dir,
+            tool_name: Some(tool_name),
+            tool_input: None,
+            tool_output: Some(tool_output_text.to_string()),
+            hook_event_name: "PostToolUse",
+        };
+        match hm.execute(HookEvent::PostToolUse, ctx).await {
+            Ok(HookDecision::Allow { .. }) => (true, None),
+            Ok(HookDecision::Block { reason }) => (false, Some(reason)),
+            Ok(HookDecision::InjectContext { .. }) => (true, None),
+            Err(e) => {
+                tracing::warn!(error = %e, "PostToolUse hook error — allowing");
+                (true, None)
+            }
+        }
+    }
+
+    /// Get hook prompt section for system prompt injection.
+    pub async fn build_hook_prompt_section(&self) -> Option<String> {
+        let hm = self.hook_manager.read().await;
+        hm.build_prompt_section()
     }
 }
 

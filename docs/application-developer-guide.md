@@ -19,7 +19,8 @@ Agent 生命周期管理到高级配置的全部内容。
 10. [事件录制与回放](#10-事件录制与回放)
 11. [MCP 集成](#11-mcp-集成)
 12. [域自适应 — 让 Agent 适配任意领域](#12-域自适应--让-agent-适配任意领域)
-13. [故障排查](#13-故障排查)
+13. [Claude Code 兼容：Skills / Hooks / Plugins](#13-claude-code-兼容skills--hooks--plugins)
+14. [故障排查](#14-故障排查)
 
 ---
 
@@ -854,7 +855,357 @@ let mut agent = AgentBuilder::new()
 
 ---
 
-## 13. 故障排查
+## 13. Claude Code 兼容：Skills / Hooks / Plugins
+
+Fox Agent SDK 全面兼容 Claude Code 的三种扩展机制，让你可以直接复用 Claude Code
+生态中的 Skill、Hook 和 Plugin。
+
+### 13.1 Skills — 可插拔专家指令
+
+Skill 是包含 **YAML frontmatter + Markdown 正文** 的 `.md` 文件，定义某个特定
+领域的专家行为。Agent 在需要时可以按名激活 Skill，将其 prompt 注入上下文。
+
+**Skill 文件格式**（与 Claude Code 完全兼容）：
+
+```markdown
+---
+name: code-review
+description: Review code for bugs, performance, and style issues
+version: 1.0
+allowed-tools: [read, grep, glob, edit]
+model: claude-sonnet-4-20250514
+args:
+  - name: style-guide
+    description: Path to style guide (e.g. google, airbnb)
+    required: false
+disable-model-invocation: false
+---
+
+You are a senior code reviewer. Follow these rules:
+
+1. Check for correctness first, then style
+2. Reference {{WORKING_DIR}}/.style-guides/{{ARGS.style-guide}} when available
+3. Read template files from {{SKILL_DIR}}/templates/ for formatting conventions
+4. Always explain the *why* behind each suggestion
+
+## Process
+
+1. Run `grep` for common anti-patterns
+2. `read` critical files in full
+3. Summarize findings with severity: 🔴 critical / 🟡 warning / 🔵 info
+```
+
+**YAML 字段说明**：
+
+| 字段 | 必填 | 说明 |
+|------|------|------|
+| `name` | 是 | Skill 唯一标识符 |
+| `description` | 否 | 描述 Skill 用途（缺省 = name） |
+| `allowed-tools` | 否 | 激活后允许使用的工具列表 |
+| `model` | 否 | 推荐模型（如 `claude-sonnet-4-20250514`） |
+| `version` | 否 | 语义化版本号 |
+| `args` | 否 | 参数定义列表，每个参数含 `name`、`description`、`required` |
+| `disable-model-invocation` | 否 | 是否禁止模型自动调用此 Skill（默认 false） |
+
+**模板变量**（在 prompt 正文中使用）：
+
+| 变量 | 解析结果 |
+|------|---------|
+| `{{SKILL_DIR}}` | Skill 文件所在目录的绝对路径 |
+| `{{WORKING_DIR}}` | Agent 工作目录绝对路径 |
+| `{{ARGS.<name>}}` | 调用时传入的参数值 |
+
+**Skill 加载源与优先级**：
+
+SDK 从多个位置自动发现和加载 Skill（高优先级覆盖低优先级）：
+
+| 优先级 | 来源 | 路径 | 枚举值 |
+|--------|------|------|--------|
+| 1（最高） | 项目 | `<working_dir>/.claude/skills/` | `SkillSource::Project` |
+| 2 | 自定义 | 配置的 `additional_directories` | `SkillSource::Additional` |
+| 3 | 全局 | `{storage_dir}/skills/` | `SkillSource::Global` |
+| 4 | 插件 | 已安装的 Plugin skills 目录 | `SkillSource::Plugin` |
+
+**TOML 配置**：
+
+```toml
+[skills]
+enabled = true               # 启用 Skill 系统
+load_global = true           # 加载全局 Skill（{storage_dir}/skills/）
+reload_strategy = "Manual"   # "Manual" | "Auto"（Auto 未实现）
+# additional_directories = ["/path/to/custom/skills"]
+```
+
+---
+
+### 13.2 Hooks — 生命周期拦截器
+
+Hook 是在 Agent 生命周期的特定节点上自动执行的脚本，可以拦截、修改或增强 Agent
+行为。
+
+**支持的 12 个生命周期事件**：
+
+| 事件 | 触发时机 | 说明 |
+|------|---------|------|
+| `SessionStart` | 会话开始时 | 初始化环境、加载配置 |
+| `UserPromptSubmit` | 用户提交 prompt 后 | 预处理用户输入 |
+| `PreToolUse` | 工具调用前 | 阻止或修改工具输入 |
+| `PostToolUse` | 工具调用后 | 审查、格式化工具输出 |
+| `Notification` | 需要通知用户时 | 单向通知，不改变流程 |
+| `Stop` | Agent 停止时 | 异常/预算耗尽 |
+| `SubagentStop` | 子 Agent 完成时 | 子任务结果处理 |
+| `PreCompact` | 上下文压缩前 | 注入关键上下文，防止丢失 |
+| `PermissionPrompt` | 权限弹窗时 | 自定义权限决策 |
+| `PreFileWrite` | 文件写入前 | 备份、格式检查 |
+| `PostFileWrite` | 文件写入后 | Lint、format、git add |
+| `PreCompact` | 上下文压缩前 | 注入关键上下文，防止丢失 |
+
+**目前已集成到 Agent Loop 的事件**：
+
+| 事件 | 集成状态 | 行为 |
+|------|---------|------|
+| `PreToolUse` | 已集成 | hook 可返回 `Block { reason }` 阻止执行，或 `Allow { modified_input }` 修改输入 |
+| `PostToolUse` | 已集成 | hook 可返回 `Block { reason }` 阻止结果返回给 LLM |
+| `PreCompact` | 已集成 | hook 可返回 `InjectContext { context }` 注入额外上下文 |
+
+其余事件框架已就绪，等待后续版本接入 Agent Loop。
+
+**Hook 配置文件**（JSON 格式）：
+
+Hook 从以下路径自动加载：
+1. `<working_dir>/.claude/hooks/`（项目级）
+2. `{storage_dir}/hooks/`（全局级）
+3. `additional_directories` 中配置的自定义路径
+
+每个目录下的 JSON 文件定义一组 hook：
+
+```json
+{
+    "hooks": [
+        {
+            "event": "pre-tool-use",
+            "command": "python3",
+            "args": ["/path/to/security-check.py"],
+            "matcher": "bash"
+        },
+        {
+            "event": "post-tool-use",
+            "command": "bash",
+            "args": ["-c", "echo 'Tool completed' >> /tmp/audit.log"],
+            "matcher": null
+        },
+        {
+            "event": "pre-compact",
+            "command": "node",
+            "args": ["/path/to/save-context.js"]
+        }
+    ]
+}
+```
+
+**Hook 字段说明**：
+
+| 字段 | 说明 |
+|------|------|
+| `event` | 生命周期事件名（kebab-case，如 `"pre-tool-use"`） |
+| `command` | 执行的命令 |
+| `args` | 命令参数列表 |
+| `matcher` | 可选。匹配特定工具名称（如 `"bash"`、`"write"`），`null` 表示匹配所有 |
+
+**Hook 的 stdin 输入 / stdout 输出协议**：
+
+脚本通过 stdin 接收 JSON 格式的上下文信息：
+
+```json
+{
+    "session_id": "abc123",
+    "event": "pre-tool-use",
+    "working_dir": "/home/user/my-project",
+    "tool_name": "bash",
+    "tool_input": { "command": "rm -rf /" }
+}
+```
+
+脚本通过 stdout 返回 JSON 格式的决策：
+
+```json
+// 允许执行（可修改输入）
+{ "decision": "allow", "modified_input": { "command": "rm -rf ./tmp" } }
+
+// 阻止执行
+{ "decision": "block", "reason": "危险操作被拦截" }
+
+// 注入上下文（仅在 PreCompact 等事件中有意义）
+{ "decision": "inject_context", "context": "请保留此关键信息: ..." }
+```
+
+**TOML 配置**：
+
+```toml
+[hooks]
+enabled = true               # 启用 Hook 系统
+timeout_secs = 30            # 单个 hook 执行超时（秒）
+max_concurrent = 5           # 每个事件最多并行执行的 hook 数
+load_global = true           # 加载全局 Hook（{storage_dir}/hooks/）
+# additional_directories = ["/path/to/custom/hooks"]
+```
+
+---
+
+### 13.3 Plugins — 打包分发 Skill + Hook
+
+Plugin 是将 Skill、Hook 和相关资源打包在一起的分发机制，可以从 Git 仓库、
+Marketplace 安装。
+
+**`plugin.json` 格式**（插件根目录）：
+
+```json
+{
+    "name": "code-review",
+    "version": "1.0.0",
+    "description": "自动化代码审查插件",
+    "author": "your-team",
+    "repository": "https://github.com/your-org/code-review-plugin",
+    "license": "MIT",
+    "min_sdk_version": "0.1.0",
+    "entry": {
+        "skills": ["skills/"]
+    },
+    "dependencies": {}
+}
+```
+
+**`entry.skills`**：指定插件内包含 Skill 文件的子目录。SDK 会递归扫描这些目录，
+加载其中所有 `.md` 文件。
+
+**插件安装方式**：
+
+1. **从 GitHub 安装**（通过 Marketplace）：
+
+```toml
+[[plugins.marketplaces]]
+name = "official"
+source = "GitHub"
+owner = "your-org"
+repo = "fox-agent-marketplace"
+branch = "main"
+```
+
+SDK 会在 `build()` 时自动刷新 marketplace 索引并缓存到
+`{storage_dir}/plugins/marketplaces/`。
+
+2. **从本地路径安装**：
+
+```rust
+let mut plugin_mgr = PluginManager::new(
+    storage_dir.join("plugins"),
+    vec![],
+);
+plugin_mgr.install_from_path(&PathBuf::from("/path/to/my-plugin")).await?;
+```
+
+3. **自动预安装**（通过 TOML 配置）：
+
+```toml
+[plugins]
+enabled = true
+preinstall = ["code-review", "security-audit"]
+```
+
+**插件目录结构示例**：
+
+```
+{storage_dir}/plugins/code-review/
+├── plugin.json          # 插件元数据
+└── skills/
+    └── code-review.md   # Skill 文件
+```
+
+**TOML 完整配置**：
+
+```toml
+[plugins]
+enabled = true                # 启用插件系统
+auto_update_hours = 12        # 自动检查更新间隔（0 = 禁用）
+preinstall = ["code-review"]  # 启动时自动安装的插件名
+
+[[plugins.marketplaces]]
+name = "community"
+source = "GitHub"
+owner = "fox-agent-plugins"
+repo = "community-plugins"
+branch = "main"
+auto_update_hours = 24
+```
+
+---
+
+### 13.4 一站式 TOML 配置示例
+
+将以上三种扩展机制整合到 `agent.toml`：
+
+```toml
+# Skills
+[skills]
+enabled = true
+load_global = true
+reload_strategy = "Manual"
+
+# Hooks
+[hooks]
+enabled = true
+timeout_secs = 30
+max_concurrent = 5
+load_global = true
+
+# Plugins
+[plugins]
+enabled = true
+auto_update_hours = 0
+preinstall = ["code-review"]
+
+[[plugins.marketplaces]]
+name = "official"
+source = "GitHub"
+owner = "fox-agent-plugins"
+repo = "marketplace-index"
+branch = "main"
+auto_update_hours = 12
+```
+
+启动时 Builder 自动加载以上所有配置，无需额外代码：
+
+```rust
+let cfg = FoxAgentSdkConfig::load_from_file("agent.toml")?;
+let mut agent = AgentBuilder::new()
+    .with_config(cfg)
+    .provider_config(ProviderConfig::deepseek(key))
+    .build()
+    .await?;
+// Skills、Hooks、Plugins 已自动加载并生效
+```
+
+**加载日志示例**（`RUST_LOG=info`）：
+
+```
+INFO Loaded 3 project skills from .claude/skills/
+INFO Loaded 5 global skills from {storage_dir}/skills/
+INFO Loaded 2 hooks from .claude/hooks/
+INFO Loaded installed plugins (count=1)
+INFO Loaded 2 plugin skills
+```
+
+### 13.5 目录速查
+
+| 扩展 | 项目级路径 | 全局级路径 |
+|------|-----------|-----------|
+| Skills | `<working_dir>/.claude/skills/` | `{storage_dir}/skills/` |
+| Hooks | `<working_dir>/.claude/hooks/` | `{storage_dir}/hooks/` |
+| Plugins | — | `{storage_dir}/plugins/` |
+
+---
+
+## 14. 故障排查
 
 | 问题 | 可能原因 | 解决方案 |
 |------|---------|---------|

@@ -1,5 +1,6 @@
 /// SDK top-level configuration.
 use serde::{Deserialize, Serialize};
+use crate::SkillsConfig;
 
 // ── Provider config ──
 
@@ -117,11 +118,26 @@ pub struct FoxAgentSdkConfig {
     /// Whether to persist a fresh session snapshot at key lifecycle points.
     pub auto_snapshot: bool,
 
+    /// Skills system configuration (Claude Code compatible).
+    pub skills: SkillsConfig,
+
     /// Budget governance configuration.
     pub budget: BudgetConfig,
 
     /// MCP integration configuration.
     pub mcp: McpConfig,
+
+    /// Hooks system configuration (Claude Code compatible).
+    ///
+    /// When enabled, the SDK executes user-defined scripts at key lifecycle
+    /// events (PreToolUse, PostToolUse, PreCompact, etc.).
+    pub hooks: Option<HooksConfig>,
+
+    /// Plugin system configuration.
+    ///
+    /// When enabled, the SDK can install and manage plugins from configured
+    /// marketplaces.
+    pub plugins: Option<PluginsConfig>,
 
     /// Optional path to a global AGENTS.md file for domain-level instructions.
     ///
@@ -146,11 +162,97 @@ impl Default for FoxAgentSdkConfig {
             safety: SafetyConfig::default(),
             storage_dir: std::path::PathBuf::from(".fox-agent-sdk"),
             auto_snapshot: true,
+            skills: SkillsConfig::default(),
             budget: BudgetConfig::default(),
             mcp: McpConfig::default(),
+            hooks: None,
+            plugins: None,
             global_agents_md_path: None,
         }
     }
+}
+
+// ── Hooks & Plugins stubs (fully implemented as Phase 2/3) ──
+
+/// Hooks system configuration.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HooksConfig {
+    /// Enable hooks.
+    pub enabled: bool,
+    /// Hook execution timeout in seconds.
+    #[serde(default = "default_hooks_timeout")]
+    pub timeout_secs: u64,
+    /// Max concurrent hooks per event.
+    #[serde(default = "default_hooks_max_concurrent")]
+    pub max_concurrent: usize,
+    /// Additional hook directories.
+    #[serde(default)]
+    pub additional_directories: Vec<std::path::PathBuf>,
+    /// Load global hooks from `{storage_dir}/hooks/`.
+    #[serde(default = "default_true")]
+    pub load_global: bool,
+}
+
+fn default_hooks_timeout() -> u64 { 30 }
+fn default_hooks_max_concurrent() -> usize { 5 }
+fn default_true() -> bool { true }
+
+impl Default for HooksConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            timeout_secs: 30,
+            max_concurrent: 5,
+            additional_directories: Vec::new(),
+            load_global: true,
+        }
+    }
+}
+
+/// Plugin system configuration.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PluginsConfig {
+    /// Enable plugin system.
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+    /// Auto-update check interval in hours (0 = disabled).
+    #[serde(default)]
+    pub auto_update_hours: u64,
+    /// Plugin names to auto-install on startup.
+    #[serde(default)]
+    pub preinstall: Vec<String>,
+    /// Configured marketplaces.
+    #[serde(default)]
+    pub marketplaces: Vec<MarketplaceConfig>,
+}
+
+impl Default for PluginsConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            auto_update_hours: 0,
+            preinstall: Vec::new(),
+            marketplaces: Vec::new(),
+        }
+    }
+}
+
+/// A plugin marketplace source.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MarketplaceConfig {
+    pub name: String,
+    pub url: String,
+    pub source: String,               // "GitHub" | "Git" | "Http" | "Local"
+    #[serde(default)]
+    pub auto_update_hours: u64,        // 0 = disabled
+    #[serde(default)]
+    pub owner: Option<String>,         // GitHub: owner
+    #[serde(default)]
+    pub repo: Option<String>,          // GitHub: repo name
+    #[serde(default)]
+    pub branch: Option<String>,        // Git branch
+    #[serde(default)]
+    pub path: Option<std::path::PathBuf>, // Local path
 }
 
 /// Error returned by [`FoxAgentSdkConfig::load_from_file`].

@@ -162,3 +162,78 @@ reconnect_backoff_ms = 1000      # default
 default_risk_level = "High"      # "Low" | "Medium" | "High" | "Critical"
 expose_resources = false         # default
 max_resources_per_injection = 5  # default
+
+# ── Skills ──────────────────────────────────────────────────
+#
+# Claude Code compatible skill system.
+# Skills are YAML-frontmatter markdown files loaded from:
+#   1. <working_dir>/.claude/skills/  (project, highest priority)
+#   2. {storage_dir}/skills/          (global)
+#   3. additional_directories (custom)
+#   4. Installed plugins
+
+[skills]
+enabled = true                   # default
+load_global = true               # default — load from {storage_dir}/skills/
+
+# Additional skill directories (absolute paths)
+# additional_directories = ["/path/to/custom/skills"]
+
+# Reload strategy: "Auto" (fs watcher, not yet implemented) or "Manual" (load at build)
+reload_strategy = "Manual"       # default
+
+# ── Hooks ───────────────────────────────────────────────────
+#
+# Claude Code compatible hook system.
+# Hooks are shell scripts triggered at lifecycle events:
+#   PreToolUse, PostToolUse, PreCompact, SessionStart, Stop, etc.
+#
+# Hook JSON files are loaded from:
+#   1. <working_dir>/.claude/hooks/   (project)
+#   2. {storage_dir}/hooks/           (global)
+#   3. additional_directories (custom)
+
+[hooks]
+enabled = true                   # default
+timeout_secs = 30                # default — hook execution timeout
+max_concurrent = 5               # default — max concurrent hooks per event
+
+# Whether to load global hooks from {storage_dir}/hooks/
+load_global = true               # default
+
+# Additional hook directories (absolute paths)
+# additional_directories = ["/path/to/custom/hooks"]
+
+# ── Plugins ─────────────────────────────────────────────────
+#
+# Claude Code compatible plugin system.
+# Plugins bundle skills + hooks and can be installed from marketplaces.
+
+[plugins]
+enabled = false                  # default (set to true to enable)
+auto_update_hours = 0            # default: 0 = disabled
+
+# Plugin names to auto-install on startup (from configured marketplaces)
+# preinstall = ["code-review"]
+
+# ── Plugin Marketplaces ──
+# Each marketplace is a source of installable plugins.
+#
+# Supported source types: "GitHub", "Git", "Http", "Local"
+#
+# Example GitHub marketplace:
+# [[plugins.marketplaces]]
+# name = "official"
+# source = "GitHub"
+# owner = "your-org"
+# repo = "fox-agent-marketplace"
+# branch = "main"
+# auto_update_hours = 12
+
+# Example HTTP marketplace:
+# [[plugins.marketplaces]]
+# name = "internal"
+# source = "Http"
+# url = "https://plugins.example.com/index.json"
+# auto_update_hours = 24
+

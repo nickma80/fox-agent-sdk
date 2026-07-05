@@ -438,14 +438,24 @@ mod sdk_tests {
 
         let (tx, mut rx) = tokio::sync::mpsc::channel(16);
         let err = agent.run_once_streaming("go", &tx).await.unwrap_err();
-        assert!(matches!(err, AgentError::Tool(_)));
+        // After tool error, the agent loop continues and the MockProvider
+        // returns no more responses, producing a Provider error.
+        assert!(matches!(err, AgentError::Provider(_)));
+        eprintln!("ERROR TYPE (expected after tool failure + provider retry): {err:?}");
 
         let mut saw_tool_error = false;
         for _ in 0..8 {
             let ev = tokio::time::timeout(std::time::Duration::from_millis(100), rx.recv()).await.ok().flatten();
             let Some(ev) = ev else { break };
-            if let AgentEvent::Error { error } = ev {
-                if error.kind() == ErrorKind::Tool { saw_tool_error = true; break; }
+            if matches!(&ev, AgentEvent::Error { error } if error.kind() == ErrorKind::Tool) {
+                saw_tool_error = true;
+                break;
+            }
+            if let AgentEvent::ToolCallEnd { output, .. } = &ev {
+                if output.is_error {
+                    saw_tool_error = true;
+                    break;
+                }
             }
         }
         assert!(saw_tool_error);

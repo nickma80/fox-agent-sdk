@@ -20,5 +20,6 @@ fox-agent-mcp = { path = "../fox-agent-mcp" }
 fox-agent-providers = { path = "../fox-agent-providers" }
 fox-agent-swarm = { path = "../fox-agent-swarm" }
 fox-agent-tools = { path = "../fox-agent-tools" }
+reqwest.workspace = true
 
 [dev-dependencies]

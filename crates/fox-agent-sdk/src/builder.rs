@@ -13,6 +13,7 @@ use fox_agent_tools::register_default_tools_with_planning_store_and_skill_regist
 use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::sync::RwLock;
+use tracing::info;
 
 use crate::agent::Agent;
 use crate::governance::GovernanceGuard;
@@ -379,12 +380,55 @@ impl AgentBuilder {
         let mut agent = Agent::new(model, harness, self.active_skill.clone());
 
         if self.default_tools {
-            // Load skills from working directory (Claude Code compat: .claude/skills/)
+            // Load skills: project (.claude/skills/) + global ({storage_dir}/skills/) + additional
             let working_dir = agent.harness().session_state.working_dir.clone();
+            let storage_dir = resolve_storage_root_for_skills(
+                &sdk_config,
+                working_dir.as_deref(),
+            );
             {
                 let mut reg = agent.harness().skill_registry.write().await;
-                let _ = reg.load_from_working_dir(working_dir.as_deref());
+                if sdk_config.skills.enabled {
+                    let _ = reg.load_from_config(
+                        &storage_dir,
+                        working_dir.as_deref(),
+                        &sdk_config.skills,
+                    );
+                } else {
+                    // When skills are disabled, still load project skills for backward compat
+                    let _ = reg.load_from_working_dir(working_dir.as_deref());
+                }
             }
+
+            // ── Load hooks ──
+            agent.harness().load_hooks(&storage_dir).await;
+
+            // ── Load plugins ──
+            if let Some(ref plugins_cfg) = sdk_config.plugins {
+                if plugins_cfg.enabled {
+                    let mut pm = agent.harness().plugin_manager.write().await;
+                    if let Ok(count) = pm.discover_installed() {
+                        if count > 0 {
+                            info!(count, "Loaded installed plugins");
+                            // Load plugin skills into registry
+                            let plugin_skills = pm.active_skills();
+                            let plugin_skills_count = plugin_skills.len();
+                            if plugin_skills_count > 0 {
+                                // Drop pm lock before acquiring skill_registry lock
+                                drop(pm);
+                                let mut reg = agent.harness().skill_registry.write().await;
+                                // Re-acquire pm to read skills
+                                let pm2 = agent.harness().plugin_manager.read().await;
+                                for skill in pm2.active_skills() {
+                                    reg.insert(skill);
+                                }
+                                info!(count = plugin_skills_count, "Loaded plugin skills");
+                            }
+                        }
+                    }
+                }
+            }
+
             // Register default tools including skill tool for on-demand activation
             let planning_store = agent.harness().planning_store.clone();
             let skill_registry = agent.harness().skill_registry.clone();
@@ -448,7 +492,21 @@ impl AgentBuilder {
     }
 }
 
-// ── SwarmRuntimeBuilder ──
+// ── Helpers ──
+
+fn resolve_storage_root_for_skills(
+    cfg: &FoxAgentSdkConfig,
+    working_dir: Option<&std::path::Path>,
+) -> std::path::PathBuf {
+    if cfg.storage_dir.is_relative() {
+        if let Some(dir) = working_dir {
+            return dir.join(&cfg.storage_dir);
+        }
+    }
+    cfg.storage_dir.clone()
+}
+
+// ── SwarmRuntimeBuilder ────
 
 /// Builder for constructing a [`SwarmRuntime`].
 ///

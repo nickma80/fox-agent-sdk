@@ -19,6 +19,8 @@ mod replay_runner;
 mod scrub;
 mod agent;
 mod mcp;
+mod hooks;
+mod plugin;
 mod swarm_runtime;
 
 pub use session::*;
@@ -36,6 +38,8 @@ pub use scrub::*;
 pub use agent::*;
 pub use mcp::*;
 pub use swarm_runtime::*;
+pub use hooks::*;
+pub use plugin::*;
 
 #[cfg(test)]
 mod tests;

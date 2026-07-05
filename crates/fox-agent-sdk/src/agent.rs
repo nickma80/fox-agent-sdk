@@ -320,9 +320,26 @@ impl Agent {
                     .map(|g| std::time::Duration::from_secs(g.budget().tool_timeout_secs))
                     .unwrap_or(std::time::Duration::from_secs(60));
 
+                // ── PreToolUse hooks ──
+                let mut effective_input = pending.input.clone();
+                {
+                    let (allowed, block_reason, modified) = self.harness.run_pre_tool_hooks(&pending.name, &effective_input).await;
+                    if !allowed {
+                        let reason = block_reason.unwrap_or_else(|| "hook blocked".into());
+                        info!(tool = %pending.name, reason = %reason, "Tool blocked by PreToolUse hook");
+                        self.harness.session_state.messages.push(
+                            Message::tool_result(&pending.call_id, reason.clone(), true),
+                        );
+                        return Ok(());
+                    }
+                    if let Some(mod_input) = modified {
+                        effective_input = mod_input;
+                    }
+                }
+
                 let output = match tokio::time::timeout(
                     timeout_dur,
-                    self.harness.execute_tool(&pending.name, pending.input, ctx),
+                    self.harness.execute_tool(&pending.name, effective_input, ctx),
                 ).await {
                     Ok(Ok(output)) => {
                         if let Some(ref guard) = self.governance {
@@ -377,6 +394,29 @@ impl Agent {
                     }
                 };
                 let elapsed_ms = start.elapsed().as_millis() as u64;
+
+                // ── PostToolUse hooks ──
+                {
+                    let (allowed, block_reason) = self.harness.run_post_tool_hooks(&pending.name, &output.text).await;
+                    if !allowed {
+                        let reason = block_reason.unwrap_or_else(|| "hook blocked".into());
+                        info!(tool = %pending.name, reason = %reason, "Tool result blocked by PostToolUse hook");
+                        self.harness.session_state.messages.push(
+                            Message::tool_result(&pending.call_id, reason.clone(), true),
+                        );
+                        let _ = event_tx
+                            .send(AgentEvent::ToolCallEnd {
+                                call_id: pending.call_id.clone(),
+                                output: ToolOutput {
+                                    text: reason,
+                                    is_error: true,
+                                    json: None,
+                                },
+                            })
+                            .await;
+                        return Ok(());
+                    }
+                }
 
                 debug!(
                     tool = %pending.name,
@@ -454,6 +494,35 @@ impl Agent {
             }
 
             if let Some(compaction) = self.harness.maybe_compact_messages().await {
+                // ── PreCompact hooks: inject context before compaction ──
+                {
+                    let hm = self.harness.hook_manager.read().await;
+                    let session_id = self.harness.session_state.id.clone();
+                    let working_dir = self.harness.session_state.working_dir
+                        .as_ref()
+                        .map(|p| p.to_string_lossy().to_string())
+                        .unwrap_or_default();
+                    let ctx = crate::hooks::HookContext {
+                        session_id: &session_id,
+                        event: "pre-compact",
+                        working_dir: &working_dir,
+                        tool_name: None,
+                        tool_input: None,
+                        tool_output: None,
+                        hook_event_name: "PreCompact",
+                    };
+                    if let Ok(decision) = hm.execute(crate::hooks::HookEvent::PreCompact, ctx).await {
+                        if let crate::hooks::HookDecision::InjectContext { context } = decision {
+                            if !context.is_empty() {
+                                info!(chars = context.len(), "PreCompact hook injected context");
+                                self.harness.session_state.messages.push(
+                                    Message::user(format!("[PreCompact hook context]\n{context}")),
+                                );
+                            }
+                        }
+                    }
+                }
+
                 info!(
                     trigger = ?compaction.trigger,
                     removed = compaction.removed_messages,
@@ -554,6 +623,34 @@ impl Agent {
                             "Context limit detected, compacting and retrying"
                         );
                         if let Some(compaction) = self.harness.maybe_compact_messages().await {
+                            // ── PreCompact hooks ──
+                            {
+                                let hm = self.harness.hook_manager.read().await;
+                                let session_id = self.harness.session_state.id.clone();
+                                let working_dir = self.harness.session_state.working_dir
+                                    .as_ref()
+                                    .map(|p| p.to_string_lossy().to_string())
+                                    .unwrap_or_default();
+                                let ctx = crate::hooks::HookContext {
+                                    session_id: &session_id,
+                                    event: "pre-compact",
+                                    working_dir: &working_dir,
+                                    tool_name: None,
+                                    tool_input: None,
+                                    tool_output: None,
+                                    hook_event_name: "PreCompact",
+                                };
+                                if let Ok(decision) = hm.execute(crate::hooks::HookEvent::PreCompact, ctx).await {
+                                    if let crate::hooks::HookDecision::InjectContext { context } = decision {
+                                        if !context.is_empty() {
+                                            self.harness.session_state.messages.push(
+                                                Message::user(format!("[PreCompact hook context]\n{context}")),
+                                            );
+                                        }
+                                    }
+                                }
+                            }
+
                             if let Some(ref guard) = self.governance {
                                 guard.record_compaction().await;
                             }
@@ -887,10 +984,27 @@ impl Agent {
                     .map(|g| std::time::Duration::from_secs(g.budget().tool_timeout_secs))
                     .unwrap_or(std::time::Duration::from_secs(60));
 
+                // ── PreToolUse hooks ──
+                let mut effective_input = input.clone();
+                {
+                    let (allowed, block_reason, modified) = self.harness.run_pre_tool_hooks(&name, &effective_input).await;
+                    if !allowed {
+                        let reason = block_reason.unwrap_or_else(|| "hook blocked".into());
+                        info!(tool = %name, reason = %reason, "Tool blocked by PreToolUse hook");
+                        self.harness.session_state.messages.push(
+                            Message::tool_result(&call_id, reason.clone(), true),
+                        );
+                        continue;
+                    }
+                    if let Some(mod_input) = modified {
+                        effective_input = mod_input;
+                    }
+                }
+
                 debug!(tool = %name, "Executing tool");
                 let output = match tokio::time::timeout(
                     timeout_dur,
-                    self.harness.execute_tool(&name, input, ctx),
+                    self.harness.execute_tool(&name, effective_input, ctx),
                 ).await {
                     Ok(Ok(output)) => {
                         if let Some(ref guard) = self.governance {
@@ -982,6 +1096,29 @@ impl Agent {
                     }
                 };
                 let elapsed_ms = start.elapsed().as_millis() as u64;
+
+                // ── PostToolUse hooks ──
+                {
+                    let (allowed, block_reason) = self.harness.run_post_tool_hooks(&name, &output.text).await;
+                    if !allowed {
+                        let reason = block_reason.unwrap_or_else(|| "hook blocked".into());
+                        info!(tool = %name, reason = %reason, "Tool result blocked by PostToolUse hook");
+                        self.harness.session_state.messages.push(
+                            Message::tool_result(&call_id, reason.clone(), true),
+                        );
+                        let _ = event_tx
+                            .send(AgentEvent::ToolCallEnd {
+                                call_id: call_id.clone(),
+                                output: ToolOutput {
+                                    text: reason,
+                                    is_error: true,
+                                    json: None,
+                                },
+                            })
+                            .await;
+                        continue;
+                    }
+                }
 
                 let _ = event_tx
                     .send(AgentEvent::ToolCallEnd {
