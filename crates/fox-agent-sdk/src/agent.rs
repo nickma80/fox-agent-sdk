@@ -38,6 +38,21 @@ const CTRL_LIMIT_KEYWORDS: &[&str] = &[
     "context_overflow",
 ];
 
+// ── Network / provider retry configuration ──
+
+/// Number of fast retries with exponential backoff (250ms → 8s) for
+/// transient provider errors (connection refused, timeout, 5xx, DNS).
+const FAST_RETRY_MAX: u32 = 5;
+/// Maximum backoff for the fast-retry phase (milliseconds).
+const FAST_RETRY_MAX_BACKOFF_MS: u64 = 8_000;
+
+/// After the fast-retry budget is exhausted, we switch to slow retries
+/// that wait this many seconds between attempts — long enough for a
+/// temporary network outage or DNS propagation to resolve.
+const SLOW_RETRY_INTERVAL_SECS: u64 = 30;
+/// Maximum number of slow retries before giving up permanently.
+const SLOW_RETRY_MAX: u32 = 10;
+
 // ---------------------------------------------------------------------------
 // Internal state: a tool call awaiting user permission
 // ---------------------------------------------------------------------------
@@ -660,26 +675,63 @@ impl Agent {
                         }
                         continue;
                     }
-                    // Provider transient error retry (network, 5xx, etc.)
-                    let max_retries = self.governance.as_ref()
-                        .map(|g| g.budget().provider_retries)
-                        .unwrap_or(2);  // default to 2 retries even without GovernanceGuard
-                    if provider_retry_count < max_retries {
+                    // ── Provider transient error retry (network, 5xx, etc.) ──
+                    //
+                    // Two-phase strategy:
+                    //   Phase 1 (fast): up to FAST_RETRY_MAX quick retries with
+                    //     exponential backoff (250ms → 8s).  Handles brief
+                    //     hiccups like connection resets or 503 spikes.
+                    //   Phase 2 (slow): after fast retries are exhausted, wait
+                    //     SLOW_RETRY_INTERVAL_SECS between attempts for up to
+                    //     SLOW_RETRY_MAX iterations.  This gives the network time
+                    //     to recover from an outage (VPN drop, DNS propagation,
+                    //     proxy restart, etc.) without the agent permanently
+                    //     entering a "graceful shutdown" state.
+                    //
+                    // Non-retryable errors (4xx auth, model-not-found, etc.)
+                    // are NOT retried — they fail immediately.
+                    if !err.is_retryable() {
+                        warn!(error = %err_str, "Non-retryable provider error — giving up");
+                        return Err(self.handle_error(event_tx, turn_id, AgentError::Provider(err)));
+                    }
+
+                    // Phase 1 — fast retries
+                    if provider_retry_count < FAST_RETRY_MAX {
                         provider_retry_count += 1;
-                        let backoff_ms = (250u64 * (1u64 << provider_retry_count.min(4))).min(5000);
+                        let backoff_ms = (250u64 * (1u64 << provider_retry_count.min(6)))
+                            .min(FAST_RETRY_MAX_BACKOFF_MS);
                         warn!(
                             retry = provider_retry_count,
-                            max_retries = max_retries,
+                            max_fast = FAST_RETRY_MAX,
                             backoff_ms = backoff_ms,
                             error = %err_str,
-                            "Provider error, retrying"
+                            "Provider transient error, fast retry"
                         );
                         tokio::time::sleep(std::time::Duration::from_millis(backoff_ms)).await;
                         continue;
                     }
+
+                    // Phase 2 — slow retries (waiting for network recovery)
+                    let slow_attempt = provider_retry_count - FAST_RETRY_MAX;
+                    if slow_attempt < SLOW_RETRY_MAX {
+                        provider_retry_count += 1;
+                        warn!(
+                            slow_attempt = slow_attempt,
+                            max_slow = SLOW_RETRY_MAX,
+                            wait_secs = SLOW_RETRY_INTERVAL_SECS,
+                            error = %err_str,
+                            "Network appears down — waiting for recovery before retry"
+                        );
+                        tokio::time::sleep(
+                            std::time::Duration::from_secs(SLOW_RETRY_INTERVAL_SECS)
+                        ).await;
+                        continue;
+                    }
+
                     warn!(
                         retry_count = provider_retry_count,
-                        max_retries = max_retries,
+                        fast_max = FAST_RETRY_MAX,
+                        slow_max = SLOW_RETRY_MAX,
                         error = %err_str,
                         "Provider retries exhausted, giving up"
                     );
@@ -860,7 +912,7 @@ impl Agent {
                     continue;
                 }
                 // P0: Check for degenerate (empty) response
-                if maybe_continue_degenerate(&final_text, &mut incomplete_continuations, &mut self.harness) {
+                if maybe_continue_degenerate(&final_text, &thinking_text, &mut incomplete_continuations, &mut self.harness) {
                     info!("Requesting continuation for degenerate response");
                     continue;
                 }
@@ -1303,23 +1355,67 @@ fn maybe_continue_incomplete(
 }
 
 /// Check if the model produced a degenerate (empty) response and retry.
+///
+/// A "degenerate" response is one that provides no real value:
+/// - Completely empty text.
+/// - Text-only response where thinking contains planned but unexecuted
+///   tool usage (`<bash>`, `<grep>`, `<write>`, `<read>`, etc.).
+///   The text length is irrelevant — a 600-char response describing
+///   what the model "found" is still hollow if no tools were actually run.
+///   This catches the common pattern where reasoning planned concrete
+///   actions but the output was only speculating about the codebase.
 fn maybe_continue_degenerate(
     text: &str,
+    thinking: &str,
     attempts: &mut u32,
     harness: &mut Harness,
 ) -> bool {
     if *attempts >= MAX_INCOMPLETE_CONTINUATION_ATTEMPTS {
         return false;
     }
-    if text.trim().is_empty() {
+    let trimmed = text.trim();
+    if trimmed.is_empty() {
         *attempts += 1;
         harness.session_state.messages.push(
             Message::user("Your response was empty. Please try again."),
         );
-        true
-    } else {
-        false
+        return true;
     }
+    // Text-only response where the model planned to use tools
+    // in thinking but never executed them.  Regardless of how long
+    // the text is, the answer is based on speculation rather than
+    // actual tool results.
+    if thinking_contains_tool_plan(thinking) {
+        *attempts += 1;
+        harness.session_state.messages.push(
+            Message::user(
+                "Your response did not include any tool calls, but your \
+                 thinking shows you planned to inspect the codebase or \
+                 execute commands. Please actually issue the tool calls \
+                 now — do not speculate about what the code does without \
+                 checking it first."
+            ),
+        );
+        return true;
+    }
+    false
+}
+
+/// Check whether the thinking text contains planned but unexecuted tool usage.
+fn thinking_contains_tool_plan(thinking: &str) -> bool {
+    let lower = thinking.to_lowercase();
+    lower.contains("<bash")
+        || lower.contains("<read")
+        || lower.contains("<write")
+        || lower.contains("<edit")
+        || lower.contains("<grep")
+        || lower.contains("<glob")
+        || lower.contains("<web_search")
+        || lower.contains("<web_fetch")
+        || lower.contains("<task")
+        || lower.contains("<run")
+        || lower.contains("<ls")
+        || lower.contains("<cat")
 }
 
 // ── P2 helper: tool result message with duration ──

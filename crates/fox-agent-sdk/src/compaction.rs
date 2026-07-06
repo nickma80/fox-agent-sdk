@@ -138,11 +138,14 @@ fn summarize_messages(messages: &[Message]) -> String {
                 ContentBlock::ToolResult { text, .. } => text.as_str(),
                 ContentBlock::ToolUse { .. } | ContentBlock::Image { .. } => "",
             };
-            // Truncate long content
-            if text.len() > MAX_CONTENT_LEN {
-                format!("{}...[truncated {} chars]", &text[..MAX_CONTENT_LEN], text.len() - MAX_CONTENT_LEN)
-            } else {
+            // Safe truncation: uses char_indices() to find the byte offset
+            // of the MAX_CONTENT_LEN-th character, guaranteeing we never
+            // slice in the middle of a multi-byte UTF-8 codepoint.
+            let (truncated, overflow) = fox_agent_core::format_truncated(text, MAX_CONTENT_LEN);
+            if overflow.is_empty() {
                 text.to_string()
+            } else {
+                format!("{truncated}{overflow}")
             }
         }).collect::<Vec<_>>().join(" ");
         

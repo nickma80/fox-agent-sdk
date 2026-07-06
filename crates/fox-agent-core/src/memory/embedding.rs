@@ -8,12 +8,17 @@ use std::fs;
 use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, OnceLock, mpsc};
+use std::time::Duration;
 #[cfg(test)]
 use std::sync::Mutex;
 use std::thread;
 use tracing::{info, warn};
 
 const DEFAULT_HF_ENDPOINT: &str = "https://hf-mirror.com/";
+
+/// How long to wait for a single `generate_embeddings()` call before assuming
+/// the mistralrs engine is hung and reloading the model.
+const EMBED_GEN_TIMEOUT: Duration = Duration::from_secs(90);
 
 pub trait EmbeddingProvider: Send + Sync {
     fn model_name(&self) -> &str;
@@ -28,6 +33,10 @@ pub trait EmbeddingProvider: Send + Sync {
             .ok_or_else(|| "embedding provider returned no vectors".to_string())
     }
 }
+
+/// Timeout for the caller side — must exceed [`EMBED_GEN_TIMEOUT`] because
+/// the worker may reload the model on the first failure and retry.
+const CALLER_TIMEOUT: Duration = Duration::from_secs(300);
 
 #[derive(Debug, Clone)]
 pub struct EmbeddingModelDescriptor {
@@ -130,10 +139,12 @@ impl EmbeddingProvider for MistralEmbeddingProvider {
             })
             .map_err(|e| format!("failed to send embedding request: {e}"))?;
         response_rx
-            .recv()
-            .map_err(|e| format!("failed to receive embedding response: {e}"))?
+            .recv_timeout(CALLER_TIMEOUT)
+            .map_err(|e| format!("embedding request timed out ({CALLER_TIMEOUT:?}): {e}"))?
     }
 }
+
+// ── Worker thread ──────────────────────────────────────────────────────────
 
 fn worker_loop(
     descriptor: EmbeddingModelDescriptor,
@@ -154,21 +165,12 @@ fn worker_loop(
         }
     };
 
-    let model = runtime.block_on(async {
-        let model_dir = prepare_model_dir(&descriptor).await?;
-        info!(path = %model_dir.display(), model = %descriptor.model_id, "Loading embedding model");
-        EmbeddingModelBuilder::new(model_dir.to_string_lossy().to_string())
-            .build()
-            .await
-            .map_err(anyhow::Error::from)
-    });
-
-    let model = match model {
-        Ok(model) => model,
+    // Load the initial model.
+    let mut model = match load_embedding_model(&runtime, &descriptor) {
+        Ok(m) => m,
         Err(err) => {
-            let message = format!("failed to load embedding model {}: {err}", descriptor.model_id);
             while let Ok(WorkerRequest::Embed { response_tx, .. }) = rx.recv() {
-                let _ = response_tx.send(Err(message.clone()));
+                let _ = response_tx.send(Err(err.clone()));
             }
             return;
         }
@@ -180,24 +182,96 @@ fn worker_loop(
                 inputs,
                 response_tx,
             } => {
-                let result = runtime.block_on(async {
-                    let request = build_request(&inputs);
-                    model
-                        .generate_embeddings(request)
-                        .await
-                        .map_err(|e| anyhow::anyhow!(e.to_string()))
-                });
-                let result = result.map(|vectors| {
-                    if let Some(first) = vectors.first() {
-                        let _ = dimension.set(first.len());
+                match process_embed_request(&runtime, &descriptor, &mut model, &inputs) {
+                    Ok(vectors) => {
+                        if let Some(first) = vectors.first() {
+                            let _ = dimension.set(first.len());
+                        }
+                        if response_tx.send(Ok(vectors)).is_err() {
+                            warn!("embedding result dropped: receiver timed out");
+                        }
                     }
-                    vectors
-                });
-                let _ = response_tx.send(result.map_err(|e| e.to_string()));
+                    Err(e) => {
+                        if response_tx.send(Err(e)).is_err() {
+                            warn!("embedding error dropped: receiver timed out");
+                        }
+                    }
+                }
             }
         }
     }
 }
+
+/// Process a single embedding request, with timeout and model-reload on failure.
+///
+/// `mistralrs` engines can crash; `generate_embeddings()` may hang indefinitely
+/// on a dead engine instead of returning an error.  We guard against this with
+/// a per-call timeout, and reload the model from scratch on any failure.
+fn process_embed_request(
+    runtime: &tokio::runtime::Runtime,
+    descriptor: &EmbeddingModelDescriptor,
+    model: &mut mistralrs::Model,
+    inputs: &[String],
+) -> Result<Vec<Vec<f32>>, String> {
+    let request = build_request(inputs);
+
+    // 1) First attempt with timeout
+    let result = runtime.block_on(async {
+        tokio::time::timeout(EMBED_GEN_TIMEOUT, model.generate_embeddings(request))
+            .await
+            .map_err(|_elapsed| {
+                anyhow::anyhow!("embedding model inference timed out after {EMBED_GEN_TIMEOUT:?}")
+            })?
+            .map_err(|e| anyhow::anyhow!(e.to_string()))
+    });
+
+    match result {
+        Ok(vectors) => return Ok(vectors),
+        Err(e) => {
+            warn!(
+                error = %e,
+                "embedding generation failed — reloading model"
+            );
+        }
+    }
+
+    // 2) Reload model
+    *model = load_embedding_model(runtime, descriptor)?;
+
+    // 3) Retry
+    let retry_request = build_request(inputs);
+    let result = runtime.block_on(async {
+        tokio::time::timeout(EMBED_GEN_TIMEOUT, model.generate_embeddings(retry_request))
+            .await
+            .map_err(|_elapsed| {
+                anyhow::anyhow!("embedding model inference timed out after {EMBED_GEN_TIMEOUT:?}")
+            })?
+            .map_err(|e| anyhow::anyhow!(e.to_string()))
+    });
+
+    match result {
+        Ok(vectors) => Ok(vectors),
+        Err(e) => Err(format!(
+            "embedding failed after model reload: {e}"
+        )),
+    }
+}
+
+fn load_embedding_model(
+    runtime: &tokio::runtime::Runtime,
+    descriptor: &EmbeddingModelDescriptor,
+) -> Result<mistralrs::Model, String> {
+    runtime.block_on(async {
+        let model_dir = prepare_model_dir(descriptor).await.map_err(|e| e.to_string())?;
+        info!(path = %model_dir.display(), model = %descriptor.model_id, "Loading embedding model");
+        EmbeddingModelBuilder::new(model_dir.to_string_lossy().to_string())
+            .build()
+            .await
+            .map_err(|e| format!("failed to build embedding model: {e}"))
+    })
+}
+
+// ── HTTP helpers ────────────────────────────────────────────────────────────
 
 fn build_request(inputs: &[String]) -> EmbeddingRequestBuilder {
     let mut builder = EmbeddingRequest::builder();
@@ -210,8 +284,24 @@ fn build_request(inputs: &[String]) -> EmbeddingRequestBuilder {
 async fn prepare_model_dir(descriptor: &EmbeddingModelDescriptor) -> Result<PathBuf> {
     let model_dir = descriptor.resolved_model_dir();
     if let Some(local) = &descriptor.local_model_dir {
+        // User specified a local model directory — create it if missing
+        // and let download_repo_snapshot populate it.
         if !local.exists() {
-            anyhow::bail!("embedding model directory does not exist: {}", local.display());
+            info!(
+                "creating embedding model directory: {}",
+                local.display()
+            );
+            fs::create_dir_all(local)
+                .with_context(|| format!("failed to create model directory {}", local.display()))?;
+        }
+        // If the directory exists but has no snapshot yet, download the model.
+        if !has_model_snapshot(local) {
+            info!(
+                model_id = %descriptor.model_id,
+                dir = %local.display(),
+                "downloading embedding model to configured directory"
+            );
+            download_repo_snapshot(descriptor, local).await?;
         }
         return Ok(local.clone());
     }

@@ -14,6 +14,56 @@ pub enum ProviderError {
     Message { message: String },
 }
 
+impl ProviderError {
+    /// Check whether this error is likely transient (retryable).
+    ///
+    /// Returns `true` for network errors, timeouts, 5xx server errors,
+    /// rate-limit responses, and DNS failures.  Returns `false` for
+    /// permanent errors like 4xx client errors (except 429), auth
+    /// failures, and model-not-found.
+    pub fn is_retryable(&self) -> bool {
+        let msg = self.to_string().to_lowercase();
+
+        // ── Network-level failures ──
+        let network = msg.contains("timeout")
+            || msg.contains("connection")
+            || msg.contains("dns")
+            || msg.contains("refused")
+            || msg.contains("reset")
+            || msg.contains("broken pipe")
+            || msg.contains("eof")
+            || msg.contains("unreachable")
+            || msg.contains("network")
+            || msg.contains("tls")
+            || msg.contains("ssl")
+            || msg.contains("resolve")
+            || msg.contains("connect");
+
+        // ── Server-side (5xx, overload) ──
+        let server = msg.contains("503")
+            || msg.contains("502")
+            || msg.contains("504")
+            || msg.contains("500")
+            || msg.contains("529")
+            || msg.contains("server")
+            || msg.contains("service unavailable")
+            || msg.contains("overloaded")
+            || msg.contains("capacity")
+            || msg.contains("busy")
+            || msg.contains("internal server error")
+            || msg.contains("bad gateway")
+            || msg.contains("gateway timeout");
+
+        // ── Rate limiting (429) ──
+        let rate = msg.contains("429")
+            || msg.contains("rate")
+            || msg.contains("too many")
+            || msg.contains("throttl");
+
+        network || server || rate
+    }
+}
+
 /// A boxed, fallible stream of events from a provider.
 pub type EventStream = BoxStream<'static, Result<StreamEvent, ProviderError>>;
 

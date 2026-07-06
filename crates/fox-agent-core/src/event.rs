@@ -161,6 +161,17 @@ impl AgentError {
             AgentError::Mcp { .. } => ErrorKind::Mcp,
         }
     }
+
+    /// Whether this error is likely transient and worth retrying.
+    ///
+    /// Delegates to [`ProviderError::is_retryable`] for provider errors.
+    /// All other error kinds are considered permanent.
+    pub fn is_retryable(&self) -> bool {
+        match self {
+            AgentError::Provider(e) => e.is_retryable(),
+            _ => false,
+        }
+    }
 }
 
 /// Lightweight error kind label used in AgentEvent::Error.

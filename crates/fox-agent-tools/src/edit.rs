@@ -238,14 +238,7 @@ fn build_file_touch_preview(diff: &str) -> Option<String> {
 }
 
 fn truncate_str(s: &str, max_len: usize) -> &str {
-    if s.len() <= max_len {
-        return s;
-    }
-    let mut idx = max_len;
-    while idx > 0 && !s.is_char_boundary(idx) {
-        idx -= 1;
-    }
-    &s[..idx]
+    fox_agent_core::truncate_to_bytes(s, max_len)
 }
 
 /// Extract lines around the edited region, returns (start_line, end_line, content)

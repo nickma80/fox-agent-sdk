@@ -272,15 +272,7 @@ impl Tool for ReadTool {
 }
 
 fn truncate_str(s: &str, max_len: usize) -> &str {
-    if s.len() <= max_len {
-        return s;
-    }
-    // Find the nearest char boundary before max_len
-    let mut idx = max_len;
-    while idx > 0 && !s.is_char_boundary(idx) {
-        idx -= 1;
-    }
-    &s[..idx]
+    fox_agent_core::truncate_to_bytes(s, max_len)
 }
 
 fn is_binary_file(path: &Path) -> bool {

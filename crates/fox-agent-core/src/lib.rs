@@ -10,6 +10,7 @@ mod planning;
 mod prompt;
 mod session_store;
 mod skill;
+mod utils;
 
 // event depends on most of the above
 mod event;
@@ -22,6 +23,7 @@ pub use tool::*;
 pub use compaction::*;
 pub use interrupt::*;
 pub use planning::*;
+pub use utils::*;
 // Re-export memory types, but not `prompt` submodule (conflicts with crate-level prompt module)
 pub use memory::graph::{self, MemoryGraph, Edge, EdgeKind, TagEntry, ClusterEntry};
 pub use memory::embedding::{self, EmbeddingProvider, MistralEmbeddingProvider};

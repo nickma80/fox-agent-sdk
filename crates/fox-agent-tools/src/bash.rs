@@ -13,8 +13,11 @@ const BASH_TOOL_DESCRIPTION: &str =
 fn build_shell_command(cmd_str: &str) -> TokioCommand {
     #[cfg(windows)]
     {
+        use std::os::windows::process::CommandExt;
+        const CREATE_NO_WINDOW: u32 = 0x08000000;
         let mut cmd = TokioCommand::new("cmd.exe");
         cmd.arg("/C").arg(cmd_str);
+        cmd.creation_flags(CREATE_NO_WINDOW);
         cmd
     }
     #[cfg(not(windows))]
@@ -335,14 +338,7 @@ fn summarize_background_command(description: Option<&str>, command: &str) -> Str
 }
 
 fn truncate_str(s: &str, max_len: usize) -> &str {
-    if s.len() <= max_len {
-        return s;
-    }
-    let mut idx = max_len;
-    while idx > 0 && !s.is_char_boundary(idx) {
-        idx -= 1;
-    }
-    &s[..idx]
+    fox_agent_core::truncate_to_bytes(s, max_len)
 }
 
 #[cfg(test)]
