@@ -3,6 +3,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::process::Command;
+use tracing::Instrument;
 
 // ── Hook event ──
 
@@ -272,10 +273,13 @@ impl HookManager {
             let timeout = self.config.timeout_secs;
             let sem = semaphore.clone();
 
-            tasks.push(tokio::spawn(async move {
-                let _permit = sem.acquire().await;
-                execute_script_hook(&hook, &ctx_json, timeout).await
-            }));
+            tasks.push(tokio::spawn(
+                async move {
+                    let _permit = sem.acquire().await;
+                    execute_script_hook(&hook, &ctx_json, timeout).await
+                }
+                .in_current_span(),
+            ));
         }
 
         let mut modified_input: Option<serde_json::Value> = None;

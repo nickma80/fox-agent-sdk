@@ -20,7 +20,8 @@ Agent 生命周期管理到高级配置的全部内容。
 11. [MCP 集成](#11-mcp-集成)
 12. [域自适应 — 让 Agent 适配任意领域](#12-域自适应--让-agent-适配任意领域)
 13. [Claude Code 兼容：Skills / Hooks / Plugins](#13-claude-code-兼容skills--hooks--plugins)
-14. [故障排查](#14-故障排查)
+14. [进度事件与 TUI 集成](#14-进度事件与-tui-集成)
+15. [故障排查](#15-故障排查)
 
 ---
 
@@ -164,14 +165,31 @@ loop {
 
 | 事件 | 时机 | 关键字段 |
 |------|------|---------|
-| `TextDelta` | Provider 返回文本块 | `text`、`turn_id` |
-| `ThinkingDelta` | 推理模型思考过程 | `text`、`turn_id` |
+| `TurnStart` | 轮次开始 | `turn_id` |
+| `TurnEnd` | 轮次结束 | `turn_id`、`outcome` |
+| `ModelMessageStart` | 模型开始生成 | `message_id` |
+| `ModelTextDelta` | Provider 返回文本块 | `text` |
+| `ModelThinkingDelta` | 推理模型思考过程 | `text` |
+| `ModelMessageEnd` | 模型生成完毕 | `message_id` |
+| `WaitingForModel` | 模型流暂停（心跳） | `elapsed_secs` |
+| `ModelUsage` | Token 用量统计 | `usage` |
 | `ToolCallStart` | 工具调用开始 | `call_id`、`name`、`input` |
-| `ToolCallEnd` | 工具调用结束 | `call_id`、`name`、`output` |
-| `Usage` | 每轮结束 | `input_tokens`、`output_tokens` |
-| `Compacting` | 上下文压缩开始 | `trigger` |
-| `Error` | 发生错误 | `message`、`fatal` |
-| `TurnComplete` | 轮次完全结束 | `outcome` |
+| `ToolInputDelta` | 工具参数流式生成 | `index`、`call_id`、`tool_name`、`delta` |
+| `ToolCallEnd` | 工具调用结束 | `call_id`、`output` |
+| `ToolExecutionProgress` | 工具执行心跳（≥5s） | `call_id`、`tool_name`、`elapsed_secs` |
+| `PlanProgress` | Plan 进度更新 | `completed`、`total`、`current_item` |
+| `PermissionRequest` | 需要用户授权 | `request_id`、`tool_name`、`prompt`、`risk_level` |
+| `Compaction` | 上下文压缩 | `event`（trigger/removed/kept） |
+| `MemoryStateChanged` | 记忆状态变更 | `event` |
+| `MemoryInjected` | 记忆注入 prompt | `count`、`memory_ids` |
+| `SoftInterruptInjected` | 软中断注入 | `interrupt` |
+| `Error` | 发生错误 | `error` |
+| `McpServerConnected` | MCP 服务器连接 | `server_name` |
+| `McpServerDisconnected` | MCP 服务器断开 | `server_name`、`error` |
+
+**新增事件（v0.2+）**：
+- `ToolExecutionProgress` — 工具执行超过 5 秒后每 3 秒发送一次，TUI 用于显示"正在执行 bash... (12s)"
+- `PlanProgress` — 当 Agent 通过 `plan` 工具更新计划时自动发送，TUI 用于显示步骤进度条
 
 ### 2.3 TurnOutcome 结果类型
 
@@ -408,8 +426,28 @@ pub struct SafetyConfig {
     pub tool_denylist: Option<Vec<String>>,     // 黑名单工具
     pub tool_allowlist: Option<Vec<String>>,    // 白名单工具
     pub custom_hook: Option<Arc<dyn PermissionHook>>,
-    pub approval_timeout_secs: Option<u64>,     // 审批超时（默认 120 秒）
+    pub productive_tool_confirm: bool,            // 产出工具确认（默认 true）
 }
+```
+
+### 5.1a Productive Tool Confirm（产出工具确认）
+
+当启用时，write/edit/bash（非只读）始终需要用户确认，不分析用户消息内容。
+这是一种简单可靠的防护：修改类工具本身就是危险的，总该确认。
+
+**只读 bash 命令自动放行**：`ls`、`grep`、`cat`、`find`、`git log`、`cargo check` 等。
+
+**配置**：
+```toml
+[safety]
+productive_tool_confirm = true   # 默认开启
+```
+
+```rust
+let safety = SafetyConfig {
+    productive_tool_confirm: false,  // 关闭产出工具确认
+    ..Default::default()
+};
 ```
 
 ### 5.2 策略评估流程
@@ -493,16 +531,35 @@ let mem_config = MemoryConfig {
 ```rust
 pub struct MemoryEntry {
     pub id: String,
-    pub session_id: Option<String>,
     pub content: String,
-    pub category: MemoryCategory,       // Fact / Preference / Todo / QAPair
-    pub scope: MemoryScope,            // Session / Global
+    pub category: MemoryCategory,       // Fact / Preference / Entity / Correction / Narrative
+    pub scope: MemoryScope,            // Session / Project / Global / All
     pub trust_level: TrustLevel,       // Low / Medium / High
-    pub created_at: u64,
+    pub created_at: DateTime<Utc>,
     pub tags: Vec<String>,
     pub embeddings: Option<Vec<f32>>,
 }
 ```
+
+### 6.3a Narrative 叙事记忆
+
+`MemoryCategory::Narrative` 是一种特殊分类——存储的不是单个事实，而是**会话的"叙事结构"**：
+用户要求了什么、Agent 做了什么、结果是什么、做出了什么决策。
+
+每条 Narrative 记忆由 compaction 自动生成，格式为结构化 JSON：
+
+```json
+{
+  "user_intent": "分析 Sprint 3 完成度",
+  "actions_taken": ["read docs/plan.md", "grep Sprint 3", "read 5 files"],
+  "findings": ["Sprint 3.1 已完成", "Sprint 3.4 有编译错误"],
+  "files_modified": [],
+  "decisions": ["需要先修复编译错误再继续"],
+  "pending_work": ["Sprint 3.4 修复", "Sprint 3.5 集成测试"]
+}
+```
+
+叙事记忆在后续 turn 的 prompt 中自动注入为 `## Session History` section，提供结构化的对话历史。
 
 ### 6.4 召回模式
 
@@ -588,22 +645,61 @@ Agent 通过以下工具管理规划：
 | `Provider` | Provider 原生通知 | 如 Anthropic |
 | `Manual` | 手动触发 | API 调用 |
 
-### 8.2 压缩行为
+### 8.2 压缩行为：叙事结构提取
 
-1. 保留最近 `preserve_recent_messages` 条消息
-2. 将更早的消息汇总为 `[Conversation summary]` 注记
-3. 注入到 system 消息中
-4. 记录 `CompactionEvent`（触发原因、删除/保留条数等）
+压缩时，SDK 将被丢弃的消息转化为**结构化的叙事记录**（NarrativeRecord），存储在 MemoryGraph 中：
+
+```
+被丢弃的消息
+  → LLM 提取 JSON 叙事记录
+  → 存入 MemoryGraph（Session scope）
+  → 注入 "## Session History" 到后续 turn 的 dynamic prompt
+```
+
+每条 `NarrativeRecord` 包含：
+- `user_intent` — 用户要求了什么
+- `actions_taken` — Agent 调用了哪些工具
+- `findings` — 关键发现/结果
+- `files_modified` — 修改/创建的文件
+- `decisions` — 做出的决策
+- `pending_work` — 未完成的工作
+
+叙事记录跨 session 持久化——restore 时自动可见，无需加载全部历史消息。
+
+### 8.2a 智能截断（Tool Output Guard）
+
+当单个工具输出过大或累计上下文接近预算时，SDK 自动截断工具输出，采用 **head+tail** 策略：
+- 保留文件**前 25%**（结构信息：imports、类型定义）
+- 保留文件**后 60%**（核心逻辑：最近的业务代码）
+- 被省略的部分标注精确的行号范围，Agent 可按需定向读取
+
+截断会同时触发 **Context 压力反馈**（Soft Interrupt），提醒 Agent 停止读取大文件、
+改用 grep 等定向搜索。压力等级：
+- **MODERATE**（>50%）：温和提醒
+- **HIGH**（>70%）：强调警告
+- **CRITICAL**（>90%）：紧急，标记为 urgent
+
+截断后的输出示例：
+```
+[文件头部：imports + struct 定义]
+─── Lines 26-472 omitted (447 lines) ───
+[Use offset=26 limit=300 to read this section]
+
+[文件尾部：核心业务逻辑]
+[OUTPUT TRUNCATED: 45k → 24k chars | Context 72% full (57600/80000)]
+```
 
 ### 8.3 配置
 
 ```rust
 let compaction = CompactionConfig {
-    token_budget: Some(60_000),               // 字符数阈值
-    max_turns_before_compaction: 15,
-    context_limit_threshold: 0.85,            // 85% 时触发
-    preserve_recent_messages: 10,
-    max_compaction_count: 5,
+    token_budget: 3_200_000,              // 字符数阈值（≈800K tokens）
+    max_turns_before_compaction: 500,     // 轮次后备触发
+    context_limit_threshold: 0.90,        // 90% 时预压缩
+    preserve_recent_messages: 80,         // 保留最近消息数
+    max_compaction_count: 10,             // 压缩次数上限
+    min_compaction_gap_turns: 20,         // 两次压缩最小间隔
+    llm_summary_enabled: true,            // LLM 结构化叙事提取
     ..Default::default()
 };
 ```
@@ -1241,7 +1337,124 @@ INFO Loaded 2 plugin skills
 
 ---
 
-## 14. 故障排查
+## 14. 进度事件与 TUI 集成
+
+SDK 提供丰富的事件流，应用层（如 TUI）可通过 `AgentEvent` channel 订阅实时进度。
+
+### 14.1 ToolExecutionProgress — 工具执行心跳
+
+当工具执行超过 **5 秒**后，SDK 每 **3 秒**发送一次 `ToolExecutionProgress` 事件。
+TUI 可据此显示"正在执行 bash... (12s)"。
+
+```rust
+loop {
+    match rx.recv().await {
+        Some(AgentEvent::ToolExecutionProgress { call_id, tool_name, elapsed_secs }) => {
+            // 更新 TUI 状态栏
+            status_bar.set(format!("⏳ {tool_name} (running {elapsed_secs}s)"));
+        }
+        Some(AgentEvent::ToolCallEnd { call_id, .. }) => {
+            status_bar.clear();
+        }
+        _ => {}
+    }
+}
+```
+
+### 14.2 bash stdout 流式输出
+
+`ToolContext` 包含可选 `progress_tx` 通道，bash 工具会将 stdout/stderr 逐行通过该通道发送。
+TUI 可在工具执行区域实时滚动显示最新输出。
+
+```rust
+// 在 ToolContext 中注入 progress channel
+let (progress_tx, mut progress_rx) = tokio::sync::mpsc::channel::<ToolProgressEvent>(64);
+let ctx = ToolContext {
+    // ... 其他字段 ...
+    progress_tx: Some(progress_tx),
+};
+
+// TUI 侧消费流式输出
+tokio::spawn(async move {
+    while let Some(ev) = progress_rx.recv().await {
+        match ev {
+            ToolProgressEvent::StdoutLine { line, stream } => {
+                // 追加到终端输出区域
+                terminal_output.push(line);
+            }
+            ToolProgressEvent::Progress { message, current, total } => {
+                // 自定义进度（如文件处理进度）
+            }
+        }
+    }
+});
+```
+
+### 14.3 PlanProgress — 整体任务进度
+
+当 Agent 通过 `plan` 工具更新计划状态时，SDK 自动发送 `PlanProgress` 事件。
+TUI 可渲染步骤进度条。
+
+```rust
+Some(AgentEvent::PlanProgress { completed, total, current_item }) => {
+    let pct = if total > 0 { (completed * 100 / total) as u32 } else { 0 };
+    progress_bar.set(pct, format!("Step {completed}/{total}"));
+    if let Some(item) = current_item {
+        status_bar.set(format!("Current: {item}"));
+    }
+}
+```
+
+TUI 渲染效果示例：
+```
+╭─ Plan Progress ──────────────────────────╮
+│ [████████████░░░░░░░░░░░░] 3/7 steps (42%)│
+│ Current: Implementing cache layer         │
+╰──────────────────────────────────────────╯
+```
+
+### 14.4 WaitingForModel — 模型等待心跳
+
+当模型响应缓慢时，SDK 每 **8 秒**发送一次 `WaitingForModel` 事件。
+比之前的 30 秒间隔大幅缩短，TUI 可据此显示"等待模型中... (8s)"而非静态 spinner。
+
+```rust
+Some(AgentEvent::WaitingForModel { elapsed_secs }) => {
+    status_bar.set(format!("Waiting for model... ({}s)", elapsed_secs));
+}
+```
+
+### 14.5 Intent Anchor — 意图锚点
+
+从 Agent 收到的首条用户消息自动作为 Intent Anchor 注入到每轮 dynamic prompt 中，
+确保 Agent 不会在多轮对话中"忘记"原始任务。同时驱动 Intent Guard（见 §5.1a）。
+
+应用层无需额外操作——Intent Anchor 由 Harness 自动管理。可通过 Harness 访问：
+
+```rust
+let anchor = agent.harness().intent_anchor_text().await;
+if let Some(msg) = anchor {
+    println!("Current task: {msg}");
+}
+```
+
+### 14.6 Drift Detection — 意图漂移检测
+
+当 Agent 连续 5 轮以上没有收到新的用户消息时（即 Agent 在自行探索），SDK 每 3 轮
+自动注入一条"焦点提醒"软中断，让 Agent 重新审视当前工作是否仍在原始任务范围内。
+
+应用层可通过 `SoftInterruptInjected` 事件感知：
+```rust
+Some(AgentEvent::SoftInterruptInjected { interrupt }) => {
+    if interrupt.urgent {
+        notification.show("⚠ Agent may be drifting off-task");
+    }
+}
+```
+
+---
+
+## 15. 故障排查
 
 | 问题 | 可能原因 | 解决方案 |
 |------|---------|---------|
@@ -1251,3 +1464,8 @@ INFO Loaded 2 plugin skills
 | 工具调用挂起 | 工具超时 | 设置 `budget.tool_timeout_secs` |
 | 记忆不持久化 | `storage_dir` 未设置 | 设置 `FoxAgentSdkConfig.storage_dir` |
 | 编译错误：找不到 `enum` | 工具名未注册 | 调用 `.with_default_tools()` 或 `.with_tool(...)` |
+| Agent 擅自修改代码（偏离意图） | Intent Guard 未启用或策略过宽 | 确保 `enable_intent_guard: true`；使用"分析"类动词限范围 |
+| 长会话后 Agent 忘记原始任务 | Drift Detection 间隔过长 | 调整 `DRIFT_DETECTION_THRESHOLD` / `DRIFT_DETECTION_INTERVAL` |
+| TUI 显示卡死无进度 | 工具执行无心跳事件 | 确保订阅 `ToolExecutionProgress` 事件；检查 bash 是否使用流式模式 |
+| 大文件读取后 Context 被占满 | read 默认上限仍偏大 | 降低 `DEFAULT_LIMIT`；调整 compaction `token_budget` |
+| 工具输出被截断后信息不完整 | 智能截断保留了头部 | 使用 `offset` + `limit` 定向读取被省略的中间段落 |

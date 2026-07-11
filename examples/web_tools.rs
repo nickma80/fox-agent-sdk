@@ -240,5 +240,6 @@ fn dummy_ctx() -> ToolContext {
         working_dir: None,
         execution_mode: fox_agent_sdk::ToolExecutionMode::Foreground,
         graceful_shutdown_requested: false,
+        progress_tx: None,
     }
 }

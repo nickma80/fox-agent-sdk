@@ -1103,7 +1103,7 @@ approval.record_audit(&request, &PermissionResult::Allow, turn_number).await;
 | `ThisSession` | 跨 turn 持久 |
 | `ThisWorkspace` | 跨 session 重启持久 |
 
-超时拒绝：超过 `approval_timeout_secs` 的请求自动返回 `Deny`，审计来源标记为 `timeout`。
+无审批超时：等待用户审批决策的请求永不超时，会一直保持挂起，直到用户显式允许或拒绝。
 
 ---
 

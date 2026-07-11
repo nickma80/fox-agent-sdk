@@ -423,6 +423,10 @@ impl FoxAgentSdkConfig {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum AutoExtractScope {
+    /// Store auto-extracted memories in the session-local scope first.
+    /// Combine with `auto_promote_enabled` to let frequently-reinforced
+    /// session memories graduate to the project scope automatically.
+    Session,
     Project,
     Global,
 }
@@ -489,6 +493,15 @@ pub struct MemoryConfig {
     pub auto_extract: bool,
     /// Scope to store auto-extracted memories into.
     pub auto_extract_scope: AutoExtractScope,
+    /// Enable automatic promotion of frequently-reinforced session memories
+    /// to a longer-lived scope (project/global).
+    pub auto_promote_enabled: bool,
+    /// Strength (reinforcement count) threshold at which a session memory is
+    /// automatically promoted. A memory starts at strength 1 and gains +1 per
+    /// reinforcement, so a threshold of 3 promotes after 2 reinforcements.
+    pub auto_promote_strength_threshold: u32,
+    /// Target scope for auto-promotion (must be Project or Global).
+    pub auto_promote_target: AutoExtractScope,
     /// How many recent messages should be used to build the ingestion transcript.
     pub auto_extract_message_window: usize,
     /// Max number of extracted memories to process per turn.
@@ -534,6 +547,9 @@ impl Default for MemoryConfig {
             verify_model: None,
             auto_extract: false,
             auto_extract_scope: AutoExtractScope::Project,
+            auto_promote_enabled: false,
+            auto_promote_strength_threshold: 3,
+            auto_promote_target: AutoExtractScope::Project,
             auto_extract_message_window: 6,
             auto_extract_max_items_per_turn: 4,
             dedupe_similarity_threshold: 0.92,
@@ -571,18 +587,27 @@ pub struct CompactionConfig {
     /// Prevents compaction from firing every turn when the agent
     /// reads large files that immediately fill the budget again.
     pub min_compaction_gap_turns: u32,
+    /// Whether to use an LLM to produce a structured narrative summary
+    /// of the compacted messages. When enabled, the summarizer asks the
+    /// LLM to output a JSON NarrativeRecord (user intent → actions →
+    /// findings → decisions). Falls back to mechanical truncation if the
+    /// LLM call fails. The resulting narratives are stored in MemoryGraph
+    /// and injected as "## Session History" on subsequent turns.
+    pub llm_summary_enabled: bool,
 }
 
 impl Default for CompactionConfig {
     fn default() -> Self {
         Self {
             enabled: false,
-            token_budget: 12_000,
-            preserve_recent_messages: 20,       // keep more context to avoid frequent re-compaction
-            max_turns_before_compaction: 20,
-            context_limit_threshold: 0.85,
+            // 3,200,000 chars ≈ 800K tokens (80% of DeepSeek's 1M context).
+            token_budget: 3_200_000,
+            preserve_recent_messages: 80,
+            max_turns_before_compaction: 500,
+            context_limit_threshold: 0.90,
             max_compaction_count: 10,
-            min_compaction_gap_turns: 3,
+            min_compaction_gap_turns: 20,
+            llm_summary_enabled: true,
         }
     }
 }
@@ -616,9 +641,12 @@ pub struct SafetyConfig {
     /// Approval cache configuration.
     pub approval_cache: crate::event::ApprovalCacheConfig,
 
-    /// Timeout in seconds before a pending permission request is auto-denied.
-    /// 0 means no timeout.
-    pub approval_timeout_secs: u64,
+    /// When enabled, productive tools (write, edit, non-readonly bash) always
+    /// require user confirmation — regardless of the user's message content.
+    /// This is a simple, reliable gate: modification tools are dangerous by
+    /// nature and should be confirmed. Read-only bash commands (ls, grep, cat,
+    /// etc.) are still allowed automatically.
+    pub productive_tool_confirm: bool,
 }
 
 impl Default for SafetyConfig {
@@ -628,7 +656,7 @@ impl Default for SafetyConfig {
             tool_denylist: None,
             default_policy: DefaultSafetyPolicy::Allow,
             approval_cache: crate::event::ApprovalCacheConfig::default(),
-            approval_timeout_secs: 120,
+            productive_tool_confirm: true,
         }
     }
 }

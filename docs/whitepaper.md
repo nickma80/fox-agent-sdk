@@ -281,7 +281,7 @@ Fox Agent SDK 内建了一套完整的记忆管理子系统，支持跨会话的
 ```mermaid
 graph TD
     ME[MemoryEntry] --> MC[MemoryCategory]
-    ME --> MS[MemoryScope: Session / Global]
+    ME --> MS[MemoryScope: Session / Project / Global]
     ME --> MT[TrustLevel]
     MG[MemoryGraph] --> ME
     MG --> Edge
@@ -331,7 +331,7 @@ SafetySystem (策略引擎)
 | Session Cache | 会话结束清空 | 用户确认一次，同会话生效 |
 | Workspace Cache | 跨会话持久 | 工作区级别信任（如"总是允许 read"） |
 
-超时自动拒绝：`approval_timeout_secs` 配置后，超时未处理的审批请求自动返回 Deny。
+无审批超时：等待用户审批决策的行为永不超时，待处理的审批请求会一直保持挂起，直到用户显式允许或拒绝。
 
 #### 风险分级
 

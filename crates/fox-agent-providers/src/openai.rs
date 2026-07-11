@@ -353,12 +353,16 @@ struct PartialToolCall {
 struct ToolCallAccumulator(Vec<PartialToolCall>);
 
 impl ToolCallAccumulator {
-    fn apply_chunks(&mut self, chunks: Vec<ChatCompletionChunkToolCall>) {
+    /// Apply streaming tool-call chunks, returning `ToolInputDelta` events for
+    /// any argument fragments seen (for progress display).
+    fn apply_chunks(&mut self, chunks: Vec<ChatCompletionChunkToolCall>) -> Vec<StreamEvent> {
+        let mut deltas = Vec::new();
         for chunk in chunks {
-            if self.0.len() <= chunk.index {
-                self.0.resize_with(chunk.index + 1, PartialToolCall::default);
+            let index = chunk.index;
+            if self.0.len() <= index {
+                self.0.resize_with(index + 1, PartialToolCall::default);
             }
-            let state = &mut self.0[chunk.index];
+            let state = &mut self.0[index];
             if let Some(id) = chunk.id {
                 state.id = Some(id);
             }
@@ -367,10 +371,19 @@ impl ToolCallAccumulator {
                     state.name = Some(name);
                 }
                 if let Some(arguments) = function.arguments {
-                    state.arguments.push_str(&arguments);
+                    if !arguments.is_empty() {
+                        state.arguments.push_str(&arguments);
+                        deltas.push(StreamEvent::ToolInputDelta {
+                            index,
+                            id: state.id.clone(),
+                            name: state.name.clone(),
+                            delta: arguments,
+                        });
+                    }
                 }
             }
         }
+        deltas
     }
 
     fn flush_as_events(&mut self) -> Result<Vec<StreamEvent>, ProviderError> {
@@ -445,7 +458,9 @@ fn parse_openai_stream(response: reqwest::Response) -> EventStream {
                 }
 
                 if let Some(chunks) = choice.delta.tool_calls {
-                    tool_calls.apply_chunks(chunks);
+                    for delta_event in tool_calls.apply_chunks(chunks) {
+                        yield delta_event;
+                    }
                 }
 
                 if matches!(choice.finish_reason.as_deref(), Some("tool_calls")) {

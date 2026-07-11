@@ -28,6 +28,7 @@ mod tools_tests {
                     working_dir: Some(dir.clone()),
                     execution_mode: ToolExecutionMode::Foreground,
                     graceful_shutdown_requested: false,
+            progress_tx: None,
                 },
             )
             .await
@@ -49,6 +50,7 @@ mod tools_tests {
             working_dir: Some(dir.clone()),
             execution_mode: ToolExecutionMode::Foreground,
             graceful_shutdown_requested: false,
+            progress_tx: None,
         };
 
         let output = tool
@@ -83,6 +85,7 @@ mod tools_tests {
                     working_dir: Some(dir.clone()),
                     execution_mode: ToolExecutionMode::Foreground,
                     graceful_shutdown_requested: false,
+            progress_tx: None,
                 },
             )
             .await
@@ -106,6 +109,7 @@ mod tools_tests {
                     working_dir: None,
                     execution_mode: ToolExecutionMode::Foreground,
                     graceful_shutdown_requested: false,
+            progress_tx: None,
                 },
             )
             .await;
@@ -131,6 +135,7 @@ mod tools_tests {
                     working_dir: Some(dir.clone()),
                     execution_mode: ToolExecutionMode::Foreground,
                     graceful_shutdown_requested: false,
+            progress_tx: None,
                 },
             )
             .await
@@ -159,6 +164,7 @@ mod tools_tests {
                     working_dir: Some(dir.clone()),
                     execution_mode: ToolExecutionMode::Foreground,
                     graceful_shutdown_requested: false,
+            progress_tx: None,
                 },
             )
             .await
@@ -189,6 +195,7 @@ mod tools_tests {
                     working_dir: Some(dir.clone()),
                     execution_mode: ToolExecutionMode::Foreground,
                     graceful_shutdown_requested: false,
+            progress_tx: None,
                 },
             )
             .await
@@ -237,6 +244,7 @@ mod tools_tests {
             working_dir: None,
             execution_mode: ToolExecutionMode::Foreground,
             graceful_shutdown_requested: false,
+            progress_tx: None,
         };
         let tool = TodoTool::default();
         let output = tool
@@ -282,6 +290,7 @@ mod tools_tests {
             working_dir: None,
             execution_mode: ToolExecutionMode::Foreground,
             graceful_shutdown_requested: false,
+            progress_tx: None,
         };
         let tool = PlanTool::default();
         let output = tool
@@ -311,6 +320,7 @@ mod tools_tests {
             working_dir: None,
             execution_mode: ToolExecutionMode::Foreground,
             graceful_shutdown_requested: false,
+            progress_tx: None,
         };
         let tool = GoalTool::default();
         let created = tool
@@ -357,6 +367,7 @@ mod tools_tests {
                     working_dir: None,
                     execution_mode: ToolExecutionMode::Foreground,
                     graceful_shutdown_requested: false,
+            progress_tx: None,
                 },
             )
             .await;
@@ -399,6 +410,7 @@ mod tools_tests {
                     working_dir: None,
                     execution_mode: ToolExecutionMode::Foreground,
                     graceful_shutdown_requested: false,
+            progress_tx: None,
                 },
             )
             .await
@@ -425,6 +437,7 @@ mod tools_tests {
                     working_dir: Some(dir.clone()),
                     execution_mode: ToolExecutionMode::Foreground,
                     graceful_shutdown_requested: false,
+            progress_tx: None,
                 },
             )
             .await
@@ -443,6 +456,7 @@ mod tools_tests {
             working_dir: None,
             execution_mode: ToolExecutionMode::Foreground,
             graceful_shutdown_requested: false,
+            progress_tx: None,
         };
 
         let goal_tool = GoalTool::default();
@@ -480,6 +494,7 @@ mod tools_tests {
             working_dir: None,
             execution_mode: ToolExecutionMode::Foreground,
             graceful_shutdown_requested: false,
+            progress_tx: None,
         };
         let todo_tool = TodoTool::new(store.clone());
         let plan_tool = PlanTool::new(store.clone());
@@ -524,6 +539,7 @@ mod tools_tests {
             working_dir: None,
             execution_mode: ToolExecutionMode::Foreground,
             graceful_shutdown_requested: false,
+            progress_tx: None,
         };
         let out = tool.execute(json!({"action":"remember","content":"test memory entry","category":"fact"}), ctx.clone()).await.unwrap();
         assert!(out.text.contains("Remembered"));
@@ -541,6 +557,7 @@ mod tools_tests {
             session_id: "mem-stats".into(), message_id: "m1".into(), tool_call_id: "t1".into(),
             working_dir: None, execution_mode: ToolExecutionMode::Foreground,
             graceful_shutdown_requested: false,
+            progress_tx: None,
         };
         let stats = tool.execute(json!({"action":"stats"}), ctx).await.unwrap();
         assert!(stats.text.contains("Memories: 0"));
@@ -553,6 +570,7 @@ mod tools_tests {
             session_id: "mem-maint".into(), message_id: "m1".into(), tool_call_id: "t1".into(),
             working_dir: None, execution_mode: ToolExecutionMode::Foreground,
             graceful_shutdown_requested: false,
+            progress_tx: None,
         };
         tool.execute(json!({"action":"remember","content":"reindex me"}), ctx.clone()).await.unwrap();
 
@@ -573,6 +591,7 @@ mod tools_tests {
             working_dir: None,
             execution_mode: ToolExecutionMode::Foreground,
             graceful_shutdown_requested: false,
+            progress_tx: None,
         };
 
         let remembered = tool
@@ -641,6 +660,7 @@ mod tools_tests {
             working_dir: Some(source_project.clone()),
             execution_mode: ToolExecutionMode::Foreground,
             graceful_shutdown_requested: false,
+            progress_tx: None,
         };
 
         source_tool
@@ -690,6 +710,7 @@ mod tools_tests {
             working_dir: Some(target_project),
             execution_mode: ToolExecutionMode::Foreground,
             graceful_shutdown_requested: false,
+            progress_tx: None,
         };
 
         let imported = target_tool
@@ -726,6 +747,7 @@ mod tools_tests {
             working_dir: Some(project_dir.clone()),
             execution_mode: ToolExecutionMode::Foreground,
             graceful_shutdown_requested: false,
+            progress_tx: None,
         };
 
         tool.execute(

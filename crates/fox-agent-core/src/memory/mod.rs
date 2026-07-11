@@ -26,8 +26,9 @@ pub use relevance::{ExtractedMemory, MemoryExtractor, MemoryRelevanceChecker};
 pub use storage::{GCResult, MemoryGraphCache, cache_graph, cached_graph, default_storage_dir, gc_memory_files, invalidate_cache, project_hash, read_json, write_json};
 #[allow(unused_imports)]
 pub use types::{
-    MemoryCategory, MemoryEntry, MemoryScope, RecallMode, Reinforcement, TrustLevel,
-    memory_matches_search, memory_score, normalize_memory_search_text, normalize_search_text,
+    MemoryCategory, MemoryEntry, MemoryScope, NarrativeRecord, RecallMode, Reinforcement,
+    TrustLevel, memory_matches_search, memory_score, normalize_memory_search_text,
+    normalize_search_text,
 };
 
 use crate::config::{AutoExtractScope, ContradictionPolicy, MemoryConfig};
@@ -59,6 +60,8 @@ pub enum MemoryStateEvent {
 pub struct MemoryManager {
     storage_dir: PathBuf,
     project_dir: Option<PathBuf>,
+    /// Active session ID for Session-scoped memory isolation.
+    session_id: Option<String>,
     test_mode: bool,
     cfg: MemoryConfig,
     embedding_provider: Option<Arc<dyn EmbeddingProvider>>,
@@ -139,6 +142,9 @@ pub struct MemoryExportBundle {
     /// Project-scoped memory graph (omitted if not included in export).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub project: Option<MemoryGraph>,
+    /// Session-scoped memory graph (omitted if not included in export).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session: Option<MemoryGraph>,
     /// Global-scoped memory graph (omitted if not included in export).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub global: Option<MemoryGraph>,
@@ -149,6 +155,8 @@ pub struct MemoryExportBundle {
 pub struct ExportStats {
     /// Number of project memories exported.
     pub project_memories: usize,
+    /// Number of session memories exported.
+    pub session_memories: usize,
     /// Number of global memories exported.
     pub global_memories: usize,
 }
@@ -158,6 +166,8 @@ pub struct ExportStats {
 pub struct ImportStats {
     /// Number of project memories imported (or merged).
     pub project_memories: usize,
+    /// Number of session memories imported (or merged).
+    pub session_memories: usize,
     /// Number of global memories imported (or merged).
     pub global_memories: usize,
 }
@@ -167,6 +177,8 @@ pub struct ImportStats {
 pub struct AnnRebuildStats {
     /// Number of vectors indexed for the project scope.
     pub project_vectors: usize,
+    /// Number of vectors indexed for the session scope.
+    pub session_vectors: usize,
     /// Number of vectors indexed for the global scope.
     pub global_vectors: usize,
 }
@@ -185,6 +197,8 @@ pub struct ClusterRefreshStats {
 pub struct CompactStats {
     /// Memories removed from the project graph.
     pub project_removed: usize,
+    /// Memories removed from the session graph.
+    pub session_removed: usize,
     /// Memories removed from the global graph.
     pub global_removed: usize,
     /// Stale memory files deleted from disk (via GC).
@@ -222,6 +236,7 @@ impl MemoryManager {
         Self {
             storage_dir: default_storage_dir(),
             project_dir: None,
+            session_id: None,
             test_mode: false,
             cfg: config.clone(),
             embedding_provider: if config.embedding_enabled {
@@ -238,6 +253,17 @@ impl MemoryManager {
         self
     }
 
+    /// Set the session ID for Session-scoped memory isolation.
+    ///
+    /// Session memories are stored in `{storage}/sessions/{session_id}.json`
+    /// and are not shared with other sessions.  They are intended for
+    /// temporary / task-scoped notes, intermediate hypotheses, and
+    /// scratchpad entries that should not pollute cross-session recall.
+    pub fn with_session_id(mut self, id: impl Into<String>) -> Self {
+        self.session_id = Some(id.into());
+        self
+    }
+
     /// Create in test mode (uses temp directory).
     pub fn new_test() -> Self {
         let temp = std::env::temp_dir().join(format!("fox-memory-test-{}", uuid::Uuid::new_v4()));
@@ -245,6 +271,7 @@ impl MemoryManager {
         Self {
             storage_dir: temp.clone(),
             project_dir: None,
+            session_id: None,
             test_mode: true,
             cfg: MemoryConfig::default(),
             embedding_provider: None,
@@ -301,6 +328,21 @@ impl MemoryManager {
         dir.join("global.json")
     }
 
+    fn session_memory_path(&self) -> Result<PathBuf, String> {
+        let sid = self.session_id.as_ref()
+            .ok_or_else(|| "no session ID set — call with_session_id() first".to_string())?;
+        // Sanitize: replace path separators to prevent directory traversal
+        let safe_id = sid.replace(['/', '\\', ':', '<', '>', '|', '?', '*', '"'], "_");
+        let dir = if self.test_mode {
+            self.storage_dir.clone()
+        } else {
+            self.storage_dir.join("sessions")
+        };
+        std::fs::create_dir_all(&dir)
+            .map_err(|e| format!("failed to create sessions dir: {e}"))?;
+        Ok(dir.join(format!("{safe_id}.json")))
+    }
+
     // ── Graph load/save ──
 
     fn load_graph(&self, path: &Path) -> Result<MemoryGraph, String> {
@@ -353,6 +395,16 @@ impl MemoryManager {
         self.save_graph(&path, graph)
     }
 
+    fn load_session_graph(&self) -> Result<MemoryGraph, String> {
+        let path = self.session_memory_path()?;
+        self.load_graph(&path)
+    }
+
+    fn save_session_graph(&self, graph: &MemoryGraph) -> Result<(), String> {
+        let path = self.session_memory_path()?;
+        self.save_graph(&path, graph)
+    }
+
     // ── CRUD: remember ──
 
     /// Store a memory in the project scope.
@@ -383,12 +435,116 @@ impl MemoryManager {
         Ok(id)
     }
 
+    /// Store a memory in the session-local scope.
+    ///
+    /// Requires `with_session_id()` to have been called.
+    pub fn remember_session(&self, entry: MemoryEntry) -> Result<String, String> {
+        let mut graph = self.load_session_graph()?;
+        if let Some(provider) = &self.embedding_provider {
+            self.maybe_rebuild_graph_for_model_change(&mut graph, provider.as_ref())?;
+        }
+        let entry = self.prepare_entry_for_storage(entry);
+        let id = graph.add_memory(entry);
+        self.refresh_graph_embedding_metadata(&mut graph);
+        self.apply_governance_policies(&mut graph);
+        self.save_session_graph(&graph)?;
+        Ok(id)
+    }
+
     /// Store a memory in the appropriate scope.
     pub fn remember(&self, entry: MemoryEntry, scope: MemoryScope) -> Result<String, String> {
         match scope {
-            MemoryScope::Project | MemoryScope::All => self.remember_project(entry),
+            MemoryScope::Session => self.remember_session(entry),
+            MemoryScope::Project => self.remember_project(entry),
             MemoryScope::Global => self.remember_global(entry),
+            MemoryScope::All => self.remember_project(entry), // default to project for All
         }
+    }
+
+    /// Promote a memory from one scope to a longer-lived scope.
+    ///
+    /// Copies the entry into the target scope (preserving its content, tags,
+    /// category, strength and confidence), then removes it from the source
+    /// scope. Used to graduate valuable session-local memories to the project
+    /// or global scope so they survive beyond the current session.
+    ///
+    /// Returns the ID of the promoted memory in the target scope.
+    pub fn promote_memory(
+        &self,
+        id: &str,
+        from: MemoryScope,
+        to: MemoryScope,
+    ) -> Result<String, String> {
+        if from == to {
+            return Err("promote: source and target scope are identical".to_string());
+        }
+        if matches!(to, MemoryScope::Session) {
+            return Err("promote: cannot promote INTO session scope".to_string());
+        }
+
+        // Extract the entry from the source scope.
+        let mut source_graph = self.load_write_scope_graph(from)?;
+        let mut entry = source_graph
+            .get_memory(id)
+            .ok_or_else(|| format!("promote: memory '{id}' not found in {} scope", scope_name(from)))?
+            .clone();
+
+        // Record provenance so the promotion is auditable.
+        entry.source = Some(format!("promoted_from:{}", scope_name(from)));
+        entry.updated_at = chrono::Utc::now();
+
+        // Write the copy into the target scope.
+        let mut target_graph = self.load_write_scope_graph(to)?;
+        if let Some(provider) = &self.embedding_provider {
+            self.maybe_rebuild_graph_for_model_change(&mut target_graph, provider.as_ref())?;
+        }
+        let new_id = target_graph.add_memory(entry);
+        self.refresh_graph_embedding_metadata(&mut target_graph);
+        self.apply_governance_policies(&mut target_graph);
+        self.save_write_scope_graph(to, &target_graph)?;
+
+        // Remove from the source scope only after the target write succeeds.
+        source_graph.remove_memory(id);
+        self.save_write_scope_graph(from, &source_graph)?;
+
+        Ok(new_id)
+    }
+
+    // ── CRUD: narratives ──
+
+    /// Store a narrative record in session scope.
+    pub fn remember_narrative(&self, record: &NarrativeRecord, session_id: &str) -> Result<String, String> {
+        let entry = record.to_memory_entry(session_id);
+        self.remember_session(entry)
+    }
+
+    /// List narrative records for the current session, ordered by turn range.
+    pub fn list_narratives(&self, limit: usize) -> Result<Vec<NarrativeRecord>, String> {
+        let all = self.list(MemoryScope::Session)?;
+        let mut records: Vec<NarrativeRecord> = all
+            .into_iter()
+            .filter(|e| e.category == MemoryCategory::Narrative && e.active)
+            .filter_map(|e| NarrativeRecord::from_json(&e.content).ok())
+            .collect();
+        records.sort_by_key(|r| r.turn_range.0);
+        if limit > 0 && records.len() > limit {
+            records = records.into_iter().rev().take(limit).rev().collect();
+        }
+        Ok(records)
+    }
+
+    /// Build a "Session History" prompt section from stored narratives.
+    pub fn build_narrative_prompt(&self, limit: usize) -> Option<String> {
+        let records = self.list_narratives(limit).ok()?;
+        if records.is_empty() {
+            return None;
+        }
+        let mut text = String::from("## Session History\n\n");
+        for r in &records {
+            text.push_str(&r.to_prompt_line());
+            text.push('\n');
+        }
+        Some(text)
     }
 
     // ── CRUD: recall ──
@@ -502,6 +658,12 @@ impl MemoryManager {
                 apply_cascade_results(&mut merged, &entry_map, cascaded);
             }
         }
+        if scope.includes_session() {
+            if let Ok(graph) = self.load_session_graph() {
+                let cascaded = graph.cascade_retrieve(&seed_ids, &seed_scores, self.cfg.max_graph_depth.max(1), limit * 3);
+                apply_cascade_results(&mut merged, &entry_map, cascaded);
+            }
+        }
         if scope.includes_global() {
             if let Ok(graph) = self.load_global_graph() {
                 let cascaded = graph.cascade_retrieve(&seed_ids, &seed_scores, self.cfg.max_graph_depth.max(1), limit * 3);
@@ -546,6 +708,15 @@ impl MemoryManager {
             self.save_global_graph(&global)?;
             self.append_audit_event("forget", Some(MemoryScope::Global), Some(id), json!({}))?;
             return Ok(true);
+        }
+        // Try session
+        if self.session_id.is_some() {
+            let mut session = self.load_session_graph()?;
+            if session.remove_memory(id).is_some() {
+                self.save_session_graph(&session)?;
+                self.append_audit_event("forget", Some(MemoryScope::Session), Some(id), json!({}))?;
+                return Ok(true);
+            }
         }
         Ok(false)
     }
@@ -736,6 +907,11 @@ impl MemoryManager {
             stats.project_removed = self.apply_governance_policies(&mut graph);
             self.save_project_graph(&graph)?;
         }
+        if scope.includes_session() && self.session_id.is_some() {
+            let mut graph = self.load_session_graph()?;
+            stats.session_removed = self.apply_governance_policies(&mut graph);
+            self.save_session_graph(&graph)?;
+        }
         if scope.includes_global() {
             let mut graph = self.load_global_graph()?;
             stats.global_removed = self.apply_governance_policies(&mut graph);
@@ -750,6 +926,7 @@ impl MemoryManager {
             None,
             json!({
                 "project_removed": stats.project_removed,
+                "session_removed": stats.session_removed,
                 "global_removed": stats.global_removed,
                 "removed_files": stats.removed_files,
                 "total_scanned": stats.total_scanned,
@@ -769,6 +946,12 @@ impl MemoryManager {
             updated += self.reembed_graph(&mut graph, provider.as_ref())?;
             self.apply_governance_policies(&mut graph);
             self.save_project_graph(&graph)?;
+        }
+        if scope.includes_session() && self.session_id.is_some() {
+            let mut graph = self.load_session_graph()?;
+            updated += self.reembed_graph(&mut graph, provider.as_ref())?;
+            self.apply_governance_policies(&mut graph);
+            self.save_session_graph(&graph)?;
         }
         if scope.includes_global() {
             let mut graph = self.load_global_graph()?;
@@ -816,6 +999,22 @@ impl MemoryManager {
                 stats.project_vectors = ann.vectors_indexed;
             }
         }
+        if scope.includes_session() && self.session_id.is_some() {
+            let graph_path = self.session_memory_path()?;
+            self.ensure_scope_embeddings_current(MemoryScope::Session)?;
+            let graph = self.load_graph(&graph_path)?;
+            if graph.metadata.total_embeddings == 0 {
+                ann::invalidate_ann_index(&graph_path);
+            } else {
+                let ann = ann::rebuild_ann_index(
+                    &graph_path,
+                    &graph,
+                    graph.metadata.embedding_model.as_deref(),
+                    graph.metadata.embedding_version.as_deref(),
+                )?;
+                stats.session_vectors = ann.vectors_indexed;
+            }
+        }
         if scope.includes_global() {
             let graph_path = self.global_memory_path();
             self.ensure_scope_embeddings_current(MemoryScope::Global)?;
@@ -838,6 +1037,7 @@ impl MemoryManager {
             None,
             json!({
                 "project_vectors": stats.project_vectors,
+                "session_vectors": stats.session_vectors,
                 "global_vectors": stats.global_vectors,
             }),
         )?;
@@ -849,6 +1049,11 @@ impl MemoryManager {
             bundle_version: 1,
             project: if scope.includes_project() {
                 Some(self.load_project_graph()?)
+            } else {
+                None
+            },
+            session: if scope.includes_session() && self.session_id.is_some() {
+                Some(self.load_session_graph()?)
             } else {
                 None
             },
@@ -871,6 +1076,7 @@ impl MemoryManager {
         storage::write_json(path, &bundle)?;
         let stats = ExportStats {
             project_memories: bundle.project.as_ref().map(|g| g.memory_count()).unwrap_or(0),
+            session_memories: bundle.session.as_ref().map(|g| g.memory_count()).unwrap_or(0),
             global_memories: bundle.global.as_ref().map(|g| g.memory_count()).unwrap_or(0),
         };
         self.append_audit_event(
@@ -880,6 +1086,7 @@ impl MemoryManager {
             json!({
                 "path": path.display().to_string(),
                 "project_memories": stats.project_memories,
+                "session_memories": stats.session_memories,
                 "global_memories": stats.global_memories,
             }),
         )?;
@@ -906,6 +1113,21 @@ impl MemoryManager {
             stats.project_memories = graph.memory_count();
             self.save_project_graph(&graph)?;
         }
+        if let Some(session) = bundle.session
+            && self.session_id.is_some()
+        {
+            let mut graph = if merge { self.load_session_graph()? } else { MemoryGraph::new() };
+            if merge {
+                merge_graph(&mut graph, session);
+            } else {
+                graph = session;
+            }
+            normalize_graph_after_import(&mut graph);
+            self.refresh_graph_embedding_metadata(&mut graph);
+            self.apply_governance_policies(&mut graph);
+            stats.session_memories = graph.memory_count();
+            self.save_session_graph(&graph)?;
+        }
         if let Some(global) = bundle.global {
             let mut graph = if merge { self.load_global_graph()? } else { MemoryGraph::new() };
             if merge {
@@ -926,6 +1148,7 @@ impl MemoryManager {
             json!({
                 "merge": merge,
                 "project_memories": stats.project_memories,
+                "session_memories": stats.session_memories,
                 "global_memories": stats.global_memories,
             }),
         )?;
@@ -943,10 +1166,7 @@ impl MemoryManager {
         }
 
         let existing_scope = MemoryScope::All;
-        let write_scope = match self.cfg.auto_extract_scope {
-            AutoExtractScope::Project => MemoryScope::Project,
-            AutoExtractScope::Global => MemoryScope::Global,
-        };
+        let write_scope = auto_extract_scope_to_memory_scope(self.cfg.auto_extract_scope);
 
         let existing = self.list(existing_scope)?;
         let existing_texts: Vec<String> = existing
@@ -1013,6 +1233,11 @@ impl MemoryManager {
         let mut all = Vec::new();
         if scope.includes_project() {
             if let Ok(graph) = self.load_project_graph() {
+                all.extend(graph.all_memories().cloned());
+            }
+        }
+        if scope.includes_session() {
+            if let Ok(graph) = self.load_session_graph() {
                 all.extend(graph.all_memories().cloned());
             }
         }
@@ -1091,6 +1316,35 @@ impl MemoryManager {
 
     fn reinforce_memory(&self, scope: MemoryScope, id: &str) -> Result<(), String> {
         match scope {
+            MemoryScope::Session => {
+                let mut graph = self.load_session_graph()?;
+                if let Some(entry) = graph.get_memory_mut(id) {
+                    entry.reinforce("auto_extract", 0);
+                    entry.boost_confidence(0.05);
+                    let strength = entry.strength;
+                    self.save_session_graph(&graph)?;
+                    // Auto-promote frequently-reinforced session memories to a
+                    // longer-lived scope so valuable knowledge survives the session.
+                    if self.cfg.auto_promote_enabled
+                        && strength >= self.cfg.auto_promote_strength_threshold
+                    {
+                        let target = auto_extract_scope_to_memory_scope(self.cfg.auto_promote_target);
+                        if !matches!(target, MemoryScope::Session) {
+                            if let Err(e) = self.promote_memory(id, MemoryScope::Session, target) {
+                                tracing::warn!(error = %e, memory_id = %id, "auto-promote failed");
+                            } else {
+                                tracing::info!(
+                                    memory_id = %id,
+                                    strength,
+                                    target = %scope_name(target),
+                                    "auto-promoted session memory"
+                                );
+                            }
+                        }
+                    }
+                    return Ok(());
+                }
+            }
             MemoryScope::Project | MemoryScope::All => {
                 let mut graph = self.load_project_graph()?;
                 if let Some(entry) = graph.get_memory_mut(id) {
@@ -1140,6 +1394,7 @@ impl MemoryManager {
 
     fn load_write_scope_graph(&self, scope: MemoryScope) -> Result<MemoryGraph, String> {
         match scope {
+            MemoryScope::Session => self.load_session_graph(),
             MemoryScope::Project | MemoryScope::All => self.load_project_graph(),
             MemoryScope::Global => self.load_global_graph(),
         }
@@ -1147,6 +1402,7 @@ impl MemoryManager {
 
     fn save_write_scope_graph(&self, scope: MemoryScope, graph: &MemoryGraph) -> Result<(), String> {
         match scope {
+            MemoryScope::Session => self.save_session_graph(graph),
             MemoryScope::Project | MemoryScope::All => self.save_project_graph(graph),
             MemoryScope::Global => self.save_global_graph(graph),
         }
@@ -1217,6 +1473,25 @@ impl MemoryManager {
 
         if scope.includes_project() {
             let graph_path = self.project_memory_path()?;
+            let graph = self.load_graph(&graph_path)?;
+            let hits = ann::ann_search_candidates(
+                &self.cfg,
+                &graph_path,
+                &graph,
+                query_embedding,
+                ann_k,
+                Some(embedding_model),
+                Some(embedding_version),
+            )?;
+            for hit in hits {
+                if let Some(entry) = graph.get_memory(&hit.memory_id) {
+                    candidates.push(entry.clone());
+                }
+            }
+        }
+
+        if scope.includes_session() && self.session_id.is_some() {
+            let graph_path = self.session_memory_path()?;
             let graph = self.load_graph(&graph_path)?;
             let hits = ann::ann_search_candidates(
                 &self.cfg,
@@ -1400,6 +1675,19 @@ impl MemoryManager {
                 )?;
             }
         }
+        if scope.includes_session() && self.session_id.is_some() {
+            let mut graph = self.load_session_graph()?;
+            let rebuilt = self.maybe_rebuild_graph_for_model_change(&mut graph, provider.as_ref())?;
+            if rebuilt > 0 {
+                self.save_session_graph(&graph)?;
+                self.append_audit_event(
+                    "reembed_on_model_change",
+                    Some(MemoryScope::Session),
+                    None,
+                    json!({ "updated": rebuilt }),
+                )?;
+            }
+        }
         if scope.includes_global() {
             let mut graph = self.load_global_graph()?;
             let rebuilt = self.maybe_rebuild_graph_for_model_change(&mut graph, provider.as_ref())?;
@@ -1530,9 +1818,19 @@ fn normalize_memory_score(entry: &MemoryEntry) -> f32 {
 
 fn scope_name(scope: MemoryScope) -> String {
     match scope {
+        MemoryScope::Session => "session".to_string(),
         MemoryScope::Project => "project".to_string(),
         MemoryScope::Global => "global".to_string(),
         MemoryScope::All => "all".to_string(),
+    }
+}
+
+/// Map an `AutoExtractScope` config value to the corresponding `MemoryScope`.
+fn auto_extract_scope_to_memory_scope(scope: AutoExtractScope) -> MemoryScope {
+    match scope {
+        AutoExtractScope::Session => MemoryScope::Session,
+        AutoExtractScope::Project => MemoryScope::Project,
+        AutoExtractScope::Global => MemoryScope::Global,
     }
 }
 
@@ -2555,5 +2853,89 @@ mod tests {
 
         assert!(report.created_ids.is_empty());
         assert_eq!(report.skipped_irrelevant, 1);
+    }
+
+    // ── Session scope + promotion ──
+
+    fn session_test_manager() -> MemoryManager {
+        let temp = std::env::temp_dir().join(format!("fox-memory-session-{}", uuid::Uuid::new_v4()));
+        MemoryManager::new_test()
+            .with_storage_dir(temp)
+            .with_session_id("test-session-1")
+    }
+
+    #[test]
+    fn session_memory_is_isolated_from_project() {
+        let mgr = session_test_manager();
+        let sid = mgr
+            .remember_session(MemoryEntry::new(MemoryCategory::Fact, "session-only note"))
+            .unwrap();
+
+        // Present in session scope.
+        let session_list = mgr.list(MemoryScope::Session).unwrap();
+        assert!(session_list.iter().any(|e| e.id == sid));
+
+        // Absent from project scope.
+        let project_list = mgr.list(MemoryScope::Project).unwrap();
+        assert!(project_list.is_empty());
+    }
+
+    #[test]
+    fn manual_promote_moves_session_memory_to_project() {
+        let mgr = session_test_manager();
+        let sid = mgr
+            .remember_session(MemoryEntry::new(MemoryCategory::Fact, "valuable finding"))
+            .unwrap();
+
+        let new_id = mgr
+            .promote_memory(&sid, MemoryScope::Session, MemoryScope::Project)
+            .unwrap();
+
+        // Gone from session, present in project.
+        let session_list = mgr.list(MemoryScope::Session).unwrap();
+        assert!(!session_list.iter().any(|e| e.id == sid));
+        let project_list = mgr.list(MemoryScope::Project).unwrap();
+        assert!(project_list.iter().any(|e| e.id == new_id));
+        // Provenance recorded.
+        let promoted = project_list.iter().find(|e| e.id == new_id).unwrap();
+        assert_eq!(promoted.source.as_deref(), Some("promoted_from:session"));
+    }
+
+    #[test]
+    fn promote_into_session_is_rejected() {
+        let mgr = session_test_manager();
+        let sid = mgr
+            .remember_project(MemoryEntry::new(MemoryCategory::Fact, "x"))
+            .unwrap();
+        let err = mgr.promote_memory(&sid, MemoryScope::Project, MemoryScope::Session);
+        assert!(err.is_err());
+    }
+
+    #[test]
+    fn auto_promote_triggers_at_strength_threshold() {
+        let temp = std::env::temp_dir().join(format!("fox-memory-autopromo-{}", uuid::Uuid::new_v4()));
+        let mut cfg = MemoryConfig::default();
+        cfg.auto_promote_enabled = true;
+        cfg.auto_promote_strength_threshold = 3;
+        cfg.auto_promote_target = AutoExtractScope::Project;
+        let mgr = MemoryManager::new(&cfg)
+            .with_storage_dir(temp)
+            .with_session_id("test-session-auto");
+
+        let sid = mgr
+            .remember_session(MemoryEntry::new(MemoryCategory::Fact, "repeated finding"))
+            .unwrap();
+
+        // strength starts at 1. Reinforce once → 2 (no promote yet).
+        mgr.reinforce_memory(MemoryScope::Session, &sid).unwrap();
+        assert!(mgr.list(MemoryScope::Session).unwrap().iter().any(|e| e.id == sid));
+        assert!(mgr.list(MemoryScope::Project).unwrap().is_empty());
+
+        // Reinforce again → 3 → auto-promoted to project.
+        mgr.reinforce_memory(MemoryScope::Session, &sid).unwrap();
+        assert!(!mgr.list(MemoryScope::Session).unwrap().iter().any(|e| e.id == sid));
+        let project = mgr.list(MemoryScope::Project).unwrap();
+        assert_eq!(project.len(), 1);
+        assert_eq!(project[0].source.as_deref(), Some("promoted_from:session"));
     }
 }

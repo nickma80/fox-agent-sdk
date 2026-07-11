@@ -53,7 +53,7 @@ graph TD
 |------|------|------|
 | `MemoryEntry` | 实体 | 一条长期记忆（内容、类别、置信度、embedding） |
 | `MemoryGraph` | 聚合 | 记忆图（记忆节点 + 标签 + 聚类 + 边 + 元数据） |
-| `MemoryScope` | 值对象 | 作用域：Project（项目级）/ Global（用户级）/ All |
+| `MemoryScope` | 值对象 | 作用域：Session（会话级，隔离）/ Project（项目级）/ Global（用户级）/ All |
 | `RecallMode` | 值对象 | 召回策略：Recent / Keyword / Semantic / Cascade |
 | `EmbeddingProvider` | 领域服务 | 文本向量化接口（默认：Mistral + HuggingFace/本地模型） |
 | `RecallHit` | 值对象 | 单条召回结果（条目 + 分数 + 分项得分 + 来源） |
@@ -73,7 +73,7 @@ MemoryEntry
 ├── search_text: String           # 规范化搜索文本（自动生成）
 ├── created_at / updated_at       # 时间戳
 ├── access_count: u32             # 访问计数
-├── source: Option<String>        # 来源（auto_extract / manual）
+├── source: Option<String>        # 来源（auto_extract / manual / promoted_from:session）
 ├── trust: TrustLevel             # High | Medium | Low
 ├── strength: u32                 # 强化次数
 ├── active: bool                  # 启用状态
@@ -123,6 +123,8 @@ MemoryGraph
 
 ```
 {storage_dir}/
+├── sessions/
+│   └── {session_id}.json    # 会话级 MemoryGraph（会话隔离，不跨 session 共享）
 ├── projects/
 │   └── {hash}.json         # 项目级 MemoryGraph
 │   └── {hash}.ann.bin      # HNSW 索引（可选）
@@ -131,6 +133,17 @@ MemoryGraph
 ├── models/                  # embedding 模型缓存
 └── memory.audit.jsonl       # 审计日志（JSONL）
 ```
+
+**作用域隔离模型**：
+
+| 作用域 | 存储路径 | Key | 共享范围 |
+|--------|---------|-----|---------|
+| `Session` | `sessions/{session_id}.json` | session_id（已做路径安全净化）| 仅当前会话，会话间隔离 |
+| `Project` | `projects/{hash}.json` | 工作目录哈希 | 同一项目目录的所有会话 |
+| `Global` | `global.json` | 无 | 所有项目、所有会话 |
+
+- **Session 作用域**用于任务态临时记忆、中间假设、草稿，避免污染跨会话召回。需通过 `with_session_id()` 绑定会话 ID
+- **记忆提升**：Session 记忆可通过手动 `promote_memory()` 或自动提升（`auto_promote_enabled` + strength 阈值）沉淀到 Project/Global，避免有价值的知识随会话结束丢失。提升为单向：不能提升 INTO Session
 
 - **存储格式**：MemoryGraph v2，HashMap-based JSON（清晰、可人工阅读）
 - **缓存策略**：全局 LRU 缓存（`MemoryGraphCache`），减少重复 I/O
@@ -394,7 +407,8 @@ CoreMemoryManager::ingest_transcript(transcript, extractor, checker)
 
 | 操作 | 方法 | 说明 |
 |------|------|------|
-| 写入 | `remember(entry, scope)` | 自动 embed + 持久化 |
+| 写入 | `remember(entry, scope)` | 自动 embed + 持久化（scope 支持 Session/Project/Global）|
+| 提升 | `promote_memory(id, from, to)` | 将记忆从一个作用域提升到更长生命周期的作用域（如 Session→Project）|
 | 召回 | `recall(query, limit, mode, scope)` | 4 种策略 |
 | 搜索 | `search(text, scope)` | 精确关键词搜索 |
 | 列表 | `list(scope)` | 按更新时间排序 |
@@ -484,9 +498,12 @@ pub struct MemoryConfig {
     pub verify_relevance: bool,                 // LLM 相关性验证
     pub verify_model: Option<String>,            // 验证模型 ID
     pub auto_extract: bool,                     // 自动抽取
-    pub auto_extract_scope: AutoExtractScope,    // 存储作用域
+    pub auto_extract_scope: AutoExtractScope,    // 存储作用域（Session/Project/Global）
     pub auto_extract_message_window: usize,      // 抽取窗口
     pub auto_extract_max_items_per_turn: usize,  // 每轮最大抽取数
+    pub auto_promote_enabled: bool,              // 启用 Session 记忆自动提升
+    pub auto_promote_strength_threshold: u32,    // 提升阈值（strength ≥ 该值触发，默认 3）
+    pub auto_promote_target: AutoExtractScope,   // 自动提升目标作用域（Project/Global）
     pub dedupe_similarity_threshold: f32,        // 去重相似度阈值
     pub cluster_similarity_threshold: f32,       // 聚类相似度阈值
     pub cluster_min_members: usize,              // 聚类最小成员
@@ -524,6 +541,10 @@ pub struct MemoryConfig {
 | `test_compact_applies_retention_and_size_limit` | 保留 + 大小限制 |
 | `test_rebuild_on_model_change_reembeds` | 模型变化自动重嵌 |
 | `test_regression_dataset_covers_keyword_semantic_and_cascade` | 三模式回归 |
+| `session_memory_is_isolated_from_project` | Session 作用域隔离 |
+| `manual_promote_moves_session_memory_to_project` | 手动提升 Session→Project + 溯源 |
+| `promote_into_session_is_rejected` | 拒绝反向提升 INTO Session |
+| `auto_promote_triggers_at_strength_threshold` | 强化达阈值自动提升 |
 | `test_ingest_transcript_reinforces_duplicates` | 重复强化 |
 | `test_ingest_transcript_marks_contradictions` | 冲突标记 |
 | `test_ingest_transcript_skips_irrelevant_candidates` | 不相关过滤 |
@@ -632,6 +653,24 @@ Memory 层是**完全领域无关**的基础设施。无论 Agent 在 coding、�
 项目 B（不同目录）:
   → list(MemoryScope::Global) → 能读到 tabs 偏好
   → 注入 prompt
+```
+
+### 会话隔离与记忆提升
+
+```
+会话 A: "排查断连原因"（诊断任务）
+  → remember(scope=Session) → sessions/{A}.json（任务态临时记忆）
+  → 探索中记录的中间假设不会污染其他会话
+
+会话 B: "重构支付模块"（并行任务）
+  → recall(scope=Session) → 只召回会话 B 自己的记忆
+  → 看不到会话 A 的诊断假设，避免任务干扰
+
+有价值内容沉淀:
+  → 手动: promote_memory(id, Session, Project)  → 显式提升到项目级
+  → 自动: auto_promote_enabled=true 时，会话记忆被反复强化
+          （strength ≥ auto_promote_strength_threshold）自动提升
+  → 提升后记忆带 source="promoted_from:session"，可审计
 ```
 
 ### 运维清理

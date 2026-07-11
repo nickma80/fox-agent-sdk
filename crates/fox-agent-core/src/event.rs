@@ -205,10 +205,20 @@ pub enum AgentEvent {
     ModelThinkingDelta { text: String },
     /// Model finished generating the current message
     ModelMessageEnd { message_id: String },
+    /// Heartbeat emitted while the agent is still waiting for the next event
+    /// from the model stream (e.g. a slow first byte or a stalled provider).
+    /// Purely informational so the UI can show "still waiting" instead of
+    /// appearing frozen; it does not affect turn control flow.
+    WaitingForModel { elapsed_secs: u64 },
     /// Token usage statistics from the provider
     ModelUsage { usage: TokenUsage },
     /// A tool call has been initiated by the model
     ToolCallStart { call_id: String, name: String, input: Value },
+    /// A partial chunk of a tool call's input JSON, streamed while the model is
+    /// still generating the arguments. Enables the UI to show progress like
+    /// "generating edit repository.rs…" for large write/edit inputs. Purely
+    /// informational; the executable call arrives as `ToolCallStart`.
+    ToolInputDelta { index: usize, call_id: Option<String>, tool_name: Option<String>, delta: String },
     /// A tool call completed (contains the tool output)
     ToolCallEnd { call_id: String, output: ToolOutput },
     /// Agent needs user permission before executing a tool
@@ -227,6 +237,13 @@ pub enum AgentEvent {
     McpServerConnected { server_name: String },
     /// An MCP server disconnected
     McpServerDisconnected { server_name: String, error: Option<String> },
+    /// Tool is still executing (periodic heartbeat for progress UI).
+    /// Emitted every 3s after the first 5s of tool execution. Purely
+    /// informational; the TUI can use this to show elapsed time.
+    ToolExecutionProgress { call_id: String, tool_name: String, elapsed_secs: u64 },
+    /// Plan progress updated. Emitted when the plan tool detects a change
+    /// in completed/total ratios. Enables TUI to show overall progress.
+    PlanProgress { completed: usize, total: usize, current_item: Option<String> },
 }
 
 /// Type alias for the sender side of the agent event channel.
@@ -273,8 +290,10 @@ pub enum EnvelopePayload {
     ModelTextDelta { text: String },
     ModelThinkingDelta { text: String },
     ModelMessageEnd { message_id: String },
+    WaitingForModel { elapsed_secs: u64 },
     ModelUsage { usage: TokenUsage },
     ToolCallStart { call_id: String, name: String, input: Value },
+    ToolInputDelta { index: usize, call_id: Option<String>, tool_name: Option<String>, delta: String },
     ToolCallEnd { call_id: String, output: ToolOutput },
     PermissionRequest { request_id: String, tool_name: String, prompt: String, risk_level: String, policy_source: String, tool_summary: String },
     Compaction { removed_messages: u64, kept_messages: u64, summary_chars: u64 },
@@ -283,6 +302,8 @@ pub enum EnvelopePayload {
     SoftInterruptInjected { content: String, urgent: bool },
     McpServerConnected { server_name: String },
     McpServerDisconnected { server_name: String, error: Option<String> },
+    ToolExecutionProgress { call_id: String, tool_name: String, elapsed_secs: u64 },
+    PlanProgress { completed: usize, total: usize, current_item: Option<String> },
     Error { kind: String, message: String },
 }
 
@@ -346,6 +367,9 @@ impl From<&AgentEvent> for EnvelopePayload {
             AgentEvent::ModelMessageEnd { message_id } => EnvelopePayload::ModelMessageEnd {
                 message_id: message_id.clone(),
             },
+            AgentEvent::WaitingForModel { elapsed_secs } => EnvelopePayload::WaitingForModel {
+                elapsed_secs: *elapsed_secs,
+            },
             AgentEvent::ModelUsage { usage } => EnvelopePayload::ModelUsage {
                 usage: usage.clone(),
             },
@@ -353,6 +377,12 @@ impl From<&AgentEvent> for EnvelopePayload {
                 call_id: call_id.clone(),
                 name: name.clone(),
                 input: input.clone(),
+            },
+            AgentEvent::ToolInputDelta { index, call_id, tool_name, delta } => EnvelopePayload::ToolInputDelta {
+                index: *index,
+                call_id: call_id.clone(),
+                tool_name: tool_name.clone(),
+                delta: delta.clone(),
             },
             AgentEvent::ToolCallEnd { call_id, output } => EnvelopePayload::ToolCallEnd {
                 call_id: call_id.clone(),
@@ -393,6 +423,20 @@ impl From<&AgentEvent> for EnvelopePayload {
                 EnvelopePayload::McpServerDisconnected {
                     server_name: server_name.clone(),
                     error: error.clone(),
+                }
+            }
+            AgentEvent::ToolExecutionProgress { call_id, tool_name, elapsed_secs } => {
+                EnvelopePayload::ToolExecutionProgress {
+                    call_id: call_id.clone(),
+                    tool_name: tool_name.clone(),
+                    elapsed_secs: *elapsed_secs,
+                }
+            }
+            AgentEvent::PlanProgress { completed, total, current_item } => {
+                EnvelopePayload::PlanProgress {
+                    completed: *completed,
+                    total: *total,
+                    current_item: current_item.clone(),
                 }
             }
             AgentEvent::Error { error } => EnvelopePayload::Error {

@@ -59,6 +59,16 @@ impl InterruptManager {
         self.graceful_shutdown_requested = true;
     }
 
+    /// Clear the graceful-shutdown flag.
+    ///
+    /// Called when a new user-initiated turn begins — a fresh user message
+    /// means the user wants to continue working, so a shutdown requested to
+    /// cancel a *previous* turn must not carry over and immediately cancel
+    /// the new one.
+    pub fn clear_graceful_shutdown(&mut self) {
+        self.graceful_shutdown_requested = false;
+    }
+
     pub fn is_graceful_shutdown_requested(&self) -> bool {
         self.graceful_shutdown_requested
     }

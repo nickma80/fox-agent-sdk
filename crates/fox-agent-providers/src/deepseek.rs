@@ -468,7 +468,16 @@ async fn parse_sse_stream(
                             tool_calls[idx].name = Some(fn_name.to_string());
                         }
                         if let Some(args) = tc.get("function").and_then(|v| v.get("arguments")).and_then(|v| v.as_str()) {
-                            tool_calls[idx].arguments.push_str(args);
+                            if !args.is_empty() {
+                                tool_calls[idx].arguments.push_str(args);
+                                // Stream the partial input for progress display.
+                                send_ok(&tx, StreamEvent::ToolInputDelta {
+                                    index: idx,
+                                    id: tool_calls[idx].id.clone(),
+                                    name: tool_calls[idx].name.clone(),
+                                    delta: args.to_string(),
+                                });
+                            }
                         }
                     }
                 }

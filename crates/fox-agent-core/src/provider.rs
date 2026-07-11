@@ -77,6 +77,18 @@ pub enum StreamEvent {
     ThinkingDelta { text: String },
     /// A tool-use request from the model
     ToolUse { id: String, name: String, input: Value },
+    /// A partial chunk of a tool-use request's input JSON, emitted while the
+    /// arguments are still being streamed by the provider. `index` correlates
+    /// deltas belonging to the same tool call within one response; `id` and
+    /// `name` are populated once known (usually on the first delta). The full,
+    /// parsed input still arrives later as a `ToolUse` event — these deltas
+    /// are purely for progress display and do not drive tool execution.
+    ToolInputDelta {
+        index: usize,
+        id: Option<String>,
+        name: Option<String>,
+        delta: String,
+    },
     /// Token usage information (may appear mid-stream or at end)
     Usage { usage: TokenUsage },
     /// End of the response stream, with optional stop reason

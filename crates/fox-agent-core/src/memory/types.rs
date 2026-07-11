@@ -25,6 +25,9 @@ pub enum MemoryCategory {
     Preference,
     Entity,
     Correction,
+    /// A structured narrative record: user asked X → agent did Y → result was Z.
+    /// Used by compaction to preserve turn-by-turn conversational history.
+    Narrative,
     Custom(String),
 }
 
@@ -36,6 +39,7 @@ impl MemoryCategory {
             "preference" | "preferences" | "pref" => MemoryCategory::Preference,
             "correction" | "corrections" | "fix" | "bug" => MemoryCategory::Correction,
             "entity" | "entities" => MemoryCategory::Entity,
+            "narrative" | "narratives" => MemoryCategory::Narrative,
             "observation" | "lesson" | "learning" => MemoryCategory::Fact,
             other => MemoryCategory::Custom(other.into()),
         }
@@ -49,6 +53,7 @@ impl std::fmt::Display for MemoryCategory {
             MemoryCategory::Preference => write!(f, "preference"),
             MemoryCategory::Entity => write!(f, "entity"),
             MemoryCategory::Correction => write!(f, "correction"),
+            MemoryCategory::Narrative => write!(f, "narrative"),
             MemoryCategory::Custom(s) => write!(f, "{s}"),
         }
     }
@@ -57,12 +62,25 @@ impl std::fmt::Display for MemoryCategory {
 /// Scope for memory retrieval.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MemoryScope {
+    /// Session-local memory, not shared across sessions.
+    /// Temporary / task-scoped notes, intermediate hypotheses, scratchpad.
+    /// Stored in `{storage}/sessions/{session_id}.json`, deleted when session ends.
+    Session,
+    /// Project-wide memory, shared across all sessions working on the same project.
+    /// Long-lived facts, conventions, preferences specific to the project.
     Project,
+    /// Global memory, shared across all projects and sessions.
+    /// Cross-project preferences, global conventions.
     Global,
+    /// All scopes combined (Session + Project + Global).
+    /// Used for broad searches; recall will merge and rank across all layers.
     All,
 }
 
 impl MemoryScope {
+    pub fn includes_session(self) -> bool {
+        matches!(self, Self::Session | Self::All)
+    }
     pub fn includes_project(self) -> bool {
         matches!(self, Self::Project | Self::All)
     }
@@ -191,6 +209,7 @@ impl MemoryEntry {
             MemoryCategory::Preference => 90.0,
             MemoryCategory::Fact => 30.0,
             MemoryCategory::Entity => 60.0,
+            MemoryCategory::Narrative => 30.0,
             MemoryCategory::Custom(_) => 45.0,
         };
         let decay = f32::exp(-age_days / half_life * 0.693);
@@ -261,6 +280,115 @@ impl MemoryEntry {
     }
 }
 
+// ── Narrative record ──
+
+/// A structured record of "what happened" in a conversation turn or group
+/// of turns. Unlike a `MemoryEntry` (which stores a single fact/preference),
+/// a `NarrativeRecord` captures the full arc: user's request → agent's
+/// actions → key findings → decisions made.
+///
+/// These are produced by compaction and stored in the `MemoryGraph` as
+/// `MemoryCategory::Narrative` entries (with the record serialized as JSON
+/// in the `content` field). They serve as a compact, structured alternative
+/// to raw message history, enabling:
+///
+/// - Fast session restore (load narratives instead of full messages)
+/// - Cross-session context (previous session's work visible to the model)
+/// - Semantic search over past tasks ("what did I ask about last time?")
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct NarrativeRecord {
+    /// Turn range this record covers (inclusive).
+    pub turn_range: (u64, u64),
+
+    /// What the user asked for.
+    pub user_intent: String,
+
+    /// What the agent did (tool-level summary).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub actions_taken: Vec<String>,
+
+    /// Key findings, discoveries, or results.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub findings: Vec<String>,
+
+    /// Files that were created or modified.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub files_modified: Vec<String>,
+
+    /// Decisions made or conclusions reached.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub decisions: Vec<String>,
+
+    /// Unfinished work remaining from this narrative.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub pending_work: Vec<String>,
+
+    /// When this record was created.
+    #[serde(default = "chrono::Utc::now")]
+    pub created_at: DateTime<Utc>,
+}
+
+impl NarrativeRecord {
+    /// Create a minimal record with just the user's intent.
+    pub fn new(turn_range: (u64, u64), user_intent: impl Into<String>) -> Self {
+        Self {
+            turn_range,
+            user_intent: user_intent.into(),
+            actions_taken: Vec::new(),
+            findings: Vec::new(),
+            files_modified: Vec::new(),
+            decisions: Vec::new(),
+            pending_work: Vec::new(),
+            created_at: Utc::now(),
+        }
+    }
+
+    /// Format as a compact markdown line for prompt injection.
+    pub fn to_prompt_line(&self) -> String {
+        let t = self.turn_range;
+        let turn = if t.0 == t.1 {
+            format!("Turn {}", t.0)
+        } else {
+            format!("Turns {}-{}", t.0, t.1)
+        };
+        let mut line = format!("- **{turn}**: {}", self.user_intent);
+        if !self.actions_taken.is_empty() {
+            line.push_str(&format!(" → {}", self.actions_taken.join(", ")));
+        }
+        if !self.findings.is_empty() {
+            line.push_str(&format!(". Findings: {}", self.findings.join("; ")));
+        }
+        if !self.decisions.is_empty() {
+            line.push_str(&format!(". Decided: {}", self.decisions.join("; ")));
+        }
+        line
+    }
+
+    /// Serialize to JSON for storage as MemoryEntry.content.
+    pub fn to_json(&self) -> Result<String, serde_json::Error> {
+        serde_json::to_string(self)
+    }
+
+    /// Deserialize from MemoryEntry.content.
+    pub fn from_json(json: &str) -> Result<Self, serde_json::Error> {
+        serde_json::from_str(json)
+    }
+
+    /// Convert to a MemoryEntry for storage in MemoryGraph.
+    pub fn to_memory_entry(&self, session_id: &str) -> MemoryEntry {
+        let content = self.to_json().unwrap_or_default();
+        let mut entry = MemoryEntry::new(MemoryCategory::Narrative, content);
+        entry.tags = vec![
+            format!("session:{session_id}"),
+            format!("turn:{}", self.turn_range.0),
+            "narrative".to_string(),
+        ];
+        entry.trust = TrustLevel::High;
+        entry.confidence = 0.95;
+        entry
+    }
+}
+
 // ── Text normalization ──
 
 /// Normalize text for search: lowercase, collapse whitespace, normalize separators.
@@ -317,6 +445,7 @@ pub fn memory_score(entry: &MemoryEntry) -> f64 {
         MemoryCategory::Preference => 30.0,
         MemoryCategory::Fact => 20.0,
         MemoryCategory::Entity => 10.0,
+        MemoryCategory::Narrative => 25.0,
         MemoryCategory::Custom(_) => 5.0,
     };
     score *= match entry.trust {

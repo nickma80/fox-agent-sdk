@@ -123,10 +123,10 @@ mod sdk_tests {
 
         let model: Arc<dyn Model> = Arc::new(DefaultModel::new(Arc::new(provider), "mock-1"));
         let mut harness = Harness::new(FoxAgentSdkConfig {
-            compaction: CompactionConfig { enabled: true, token_budget: 10, preserve_recent_messages: 2, max_turns_before_compaction: 100, ..Default::default() },
+            compaction: CompactionConfig { enabled: true, token_budget: 10, preserve_recent_messages: 2, max_turns_before_compaction: 100, llm_summary_enabled: false, ..Default::default() },
             ..Default::default()
         }, None);
-        harness.session_state.messages.extend([
+        harness.session_state.write().await.messages.extend([
             Message::user("this is a very long old message"),
             Message::assistant("this is a very long assistant answer"),
             Message::user("keep me"),
@@ -305,7 +305,7 @@ mod sdk_tests {
         );
 
         let builder = crate::prompt_builder::PromptBuilder::new("1.0.0", "abc123");
-        let (split, _) = builder.build_split(&session_id, &planning_store, None, &[], None, None);
+        let (split, _) = builder.build_split(&session_id, &planning_store, None, &[], None, None, None, None);
         assert!(split.dynamic_part.contains("implement phase4"));
         assert!(split.dynamic_part.contains("implement phase4"), "dynamic part should contain todo items: {}", split.dynamic_part);
         assert!(split.dynamic_part.contains("spawn worker"));
@@ -333,7 +333,7 @@ mod sdk_tests {
             Some(working_dir.clone()),
         );
         let mut agent = Agent::new(model.clone(), harness, Arc::new(tokio::sync::RwLock::new(None)));
-        let session_id = agent.harness().session_state.id.clone();
+        let session_id = agent.harness().session_id().to_string();
 
         let (tx, _rx) = tokio::sync::mpsc::channel(8);
         let outcome = agent.run_once_streaming("persist this session", &tx).await.unwrap();
@@ -359,8 +359,8 @@ mod sdk_tests {
         let restored = Agent::load_from_store(model, restore_harness, &session_id)
             .unwrap()
             .expect("agent should restore from snapshot");
-        assert_eq!(restored.harness().session_state.id, session_id);
-        assert!(restored.harness().session_state.messages.len() >= 2);
+        assert_eq!(restored.harness().session_id(), session_id);
+        assert!(restored.harness().session_messages().await.len() >= 2);
 
         let _ = tokio::fs::remove_dir_all(&working_dir).await;
     }
@@ -407,10 +407,15 @@ mod sdk_tests {
         let model: Arc<dyn Model> = Arc::new(DefaultModel::new(Arc::new(provider), "mock-1"));
         let harness = Harness::new(FoxAgentSdkConfig::default(), None);
         let mut agent = Agent::new(model, harness, Arc::new(tokio::sync::RwLock::new(None)));
+
+        // Simulate an in-progress turn: request graceful shutdown, then run
+        // a turn directly via the test helper (which bypasses run_once_streaming's
+        // flag-clearing). This mirrors the real scenario where the user cancels
+        // a turn that is already running.
         agent.harness().request_graceful_shutdown().await;
 
         let (tx, mut rx) = tokio::sync::mpsc::channel(16);
-        let outcome = agent.run_once_streaming("go", &tx).await.unwrap();
+        let outcome = agent.run_turn_for_test("go", &tx).await.unwrap();
         assert!(matches!(outcome, TurnOutcome::Cancelled));
 
         let mut saw_cancel_error = false;
@@ -422,6 +427,29 @@ mod sdk_tests {
             }
         }
         assert!(saw_cancel_error);
+    }
+
+    #[tokio::test]
+    async fn new_user_message_clears_stale_graceful_shutdown() {
+        // Regression test: a graceful shutdown requested to cancel a previous
+        // turn must NOT carry over and immediately cancel the next turn started
+        // by a fresh user message.
+        let provider = MockProvider::new("mock");
+        provider.push_script(vec![
+            StreamEvent::TextDelta { text: "hello from a fresh turn".into() },
+            StreamEvent::MessageStop { stop_reason: Some("stop".into()) },
+        ]);
+        let model: Arc<dyn Model> = Arc::new(DefaultModel::new(Arc::new(provider), "mock-1"));
+        let harness = Harness::new(FoxAgentSdkConfig::default(), None);
+        let mut agent = Agent::new(model, harness, Arc::new(tokio::sync::RwLock::new(None)));
+
+        // Stale shutdown flag left over from a cancelled previous turn.
+        agent.harness().request_graceful_shutdown().await;
+
+        let (tx, _rx) = tokio::sync::mpsc::channel(16);
+        let outcome = agent.run_once_streaming("go", &tx).await.unwrap();
+        // Should complete, NOT be cancelled.
+        assert!(matches!(outcome, TurnOutcome::Completed { .. }));
     }
 
     #[tokio::test]
@@ -570,7 +598,7 @@ mod sdk_tests {
             .expect("build should succeed");
 
         assert_eq!(
-            agent.harness().session_state.working_dir.as_deref(),
+            agent.harness().session_working_dir().map(|p| p.as_path()),
             Some(tmp.as_path())
         );
 
@@ -594,6 +622,7 @@ mod sdk_tests {
             working_dir: Some(tmp.clone()),
             execution_mode: fox_agent_core::ToolExecutionMode::Foreground,
             graceful_shutdown_requested: false,
+            progress_tx: None,
         };
         // Read outside sandbox → should fail
         let result = harness

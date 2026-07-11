@@ -1,4 +1,37 @@
-use fox_agent_core::{CompactionConfig, CompactionEvent, CompactionTrigger, ContentBlock, Message, Role};
+use fox_agent_core::{
+    CompactionConfig, CompactionEvent, CompactionTrigger, ContentBlock, Message, NarrativeRecord,
+    Role,
+};
+use std::future::Future;
+use std::pin::Pin;
+
+/// Async summarizer callback: given the messages being dropped, optionally
+/// returns an LLM-generated semantic summary. Returning `None` (or an empty
+/// string) makes compaction fall back to mechanical truncation.
+pub type SummarizerFuture = Pin<Box<dyn Future<Output = Option<String>> + Send>>;
+
+/// When/why `maybe_compact` is being invoked, which controls how aggressive
+/// the trigger is.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CompactionMode {
+    /// Called right before sending the context to the model. Acts purely as
+    /// an overflow safety net: compacts ONLY when the context is strictly
+    /// over `token_budget`, and bypasses the anti-thrash gap gate (an
+    /// overflow must be resolved before the request can succeed). This is
+    /// also what protects the first turn after a session restore, where the
+    /// restored working context may already exceed the budget.
+    ///
+    /// It deliberately does NOT fire on the "approaching"/turn-count
+    /// triggers, so a follow-up question that is still within budget keeps
+    /// the full, un-summarized evidence from previous turns.
+    PreSend,
+    /// Called after a user-visible turn completes (or on restore warm-up).
+    /// Preemptively converges the context so the NEXT turn starts small and
+    /// the compaction latency is hidden from the user. Fires on budget,
+    /// "approaching" threshold, or turn count, and is gap-gated to avoid
+    /// thrashing.
+    Proactive,
+}
 
 #[derive(Debug, Clone)]
 pub struct CompactionManager {
@@ -18,29 +51,52 @@ impl CompactionManager {
     }
 
     /// Auto-compact based on token budget / turn count triggers.
-    pub fn maybe_compact(&mut self, messages: &mut Vec<Message>) -> Option<CompactionEvent> {
+    ///
+    /// `mode` selects the trigger aggressiveness (see [`CompactionMode`]).
+    /// `summarizer` is invoked with the dropped messages to produce a
+    /// semantic summary; if it returns `None` the manager falls back to
+    /// mechanical truncation.
+    pub async fn maybe_compact<F>(
+        &mut self,
+        messages: &mut Vec<Message>,
+        summarizer: F,
+        mode: CompactionMode,
+        turn_start: u64,
+        turn_end: u64,
+    ) -> Option<(CompactionEvent, Vec<NarrativeRecord>)>
+    where
+        F: FnOnce(Vec<Message>) -> SummarizerFuture,
+    {
         if !self.cfg.enabled || messages.len() <= self.cfg.preserve_recent_messages {
             return None;
         }
 
-        self.turns_since_last_compaction += 1;
-
-        // Enforce minimum gap between compactions to avoid thrashing
-        if self.compaction_count > 0
-            && self.turns_since_last_compaction <= self.cfg.min_compaction_gap_turns
-        {
-            return None;
-        }
-
         let total_chars = message_chars(messages);
-        let turn_trigger = messages.len() > self.cfg.max_turns_before_compaction;
         let token_trigger = total_chars > self.cfg.token_budget;
 
-        // ContextLimitApproaching: context is above threshold but not yet over budget
-        let threshold_chars = (self.cfg.token_budget as f64 * self.cfg.context_limit_threshold) as usize;
-        let approaching_trigger = total_chars > threshold_chars && total_chars <= self.cfg.token_budget;
+        let threshold_chars =
+            (self.cfg.token_budget as f64 * self.cfg.context_limit_threshold) as usize;
+        let approaching_trigger = total_chars > threshold_chars && !token_trigger;
+        let turn_trigger = messages.len() > self.cfg.max_turns_before_compaction;
 
-        if !(turn_trigger || token_trigger || approaching_trigger) {
+        let should_compact = match mode {
+            // Overflow safety net only. Bypasses the gap gate: if we're over
+            // budget the request cannot proceed, so we must compact now.
+            CompactionMode::PreSend => token_trigger,
+            // Preemptive convergence. Count this as a turn for gap-gating and
+            // fire on any of the three triggers.
+            CompactionMode::Proactive => {
+                self.turns_since_last_compaction += 1;
+                if self.compaction_count > 0
+                    && self.turns_since_last_compaction <= self.cfg.min_compaction_gap_turns
+                {
+                    return None;
+                }
+                token_trigger || approaching_trigger || turn_trigger
+            }
+        };
+
+        if !should_compact {
             return None;
         }
 
@@ -52,16 +108,31 @@ impl CompactionManager {
             CompactionTrigger::TurnCount
         };
 
-        Some(self.do_compact(messages, trigger))
+        Some(self.do_compact(messages, trigger, Some(summarizer), turn_start, turn_end).await)
     }
 
     /// Force compaction immediately (e.g. Manual trigger or context-limit retry).
-    pub fn force_compact(&mut self, messages: &mut Vec<Message>, trigger: CompactionTrigger) -> CompactionEvent {
-        self.do_compact(messages, trigger)
+    /// Uses mechanical summarization only (no LLM).
+    pub async fn force_compact(&mut self, messages: &mut Vec<Message>, trigger: CompactionTrigger, turn_start: u64, turn_end: u64) -> (CompactionEvent, Vec<NarrativeRecord>) {
+        self.do_compact(messages, trigger, None::<fn(Vec<Message>) -> SummarizerFuture>, turn_start, turn_end).await
     }
 
     /// Perform the actual compaction operation.
-    fn do_compact(&mut self, messages: &mut Vec<Message>, trigger: CompactionTrigger) -> CompactionEvent {
+    ///
+    /// Returns the CompactionEvent and any NarrativeRecords extracted from
+    /// the dropped messages. The caller should store these narratives in
+    /// the MemoryGraph for cross-turn and cross-session persistence.
+    async fn do_compact<F>(
+        &mut self,
+        messages: &mut Vec<Message>,
+        trigger: CompactionTrigger,
+        summarizer: Option<F>,
+        turn_start: u64,
+        turn_end: u64,
+    ) -> (CompactionEvent, Vec<fox_agent_core::NarrativeRecord>)
+    where
+        F: FnOnce(Vec<Message>) -> SummarizerFuture,
+    {
         self.compaction_count += 1;
         self.turns_since_last_compaction = 0;
         let preserve = self.cfg.preserve_recent_messages.min(messages.len());
@@ -80,15 +151,23 @@ impl CompactionManager {
         let summary_text = if old_messages.is_empty() {
             String::new()
         } else {
-            summarize_messages(&old_messages)
+            // Prefer an LLM semantic summary with structured narrative format;
+            // fall back to mechanical transcript if disabled or unavailable.
+            let llm_summary = match summarizer {
+                Some(f) => f(old_messages.clone()).await,
+                None => None,
+            };
+            match llm_summary {
+                Some(s) if !s.trim().is_empty() => s,
+                _ => mechanical_transcript(&old_messages),
+            }
         };
         let summary_chars = summary_text.len();
 
         if !summary_text.is_empty() {
-            // Replace (or insert) the summary so repeated compactions don't
-            // stack many conversation-summary system messages on top of each
-            // other.  The summary already captures previous summaries (via the
-            // truncation logic), keeping a single one avoids unbounded growth.
+            // Replace or insert a single "Conversation summary:" system block.
+            // Repeated compactions replace (not stack) this block — the new
+            // summary subsumes previous ones.
             if let Some(existing) = messages.iter_mut().find(|m| {
                 m.role == Role::System
                     && m.content.first().map_or(false, |b| {
@@ -108,18 +187,93 @@ impl CompactionManager {
             }
         }
 
-        CompactionEvent {
+        // Extract narrative records from the summary for structured memory
+        let narratives: Vec<NarrativeRecord> = if !summary_text.is_empty() && summary_chars > 0 {
+            extract_narrative_records(&summary_text, turn_start, turn_end)
+        } else {
+            Vec::new()
+        };
+
+        (CompactionEvent {
             trigger,
             removed_messages: old_messages.len(),
             kept_messages: messages.len(),
             summary_chars,
+        }, narratives)
+    }
+}
+
+/// Build the summarization prompt sent to the LLM for a set of dropped messages.
+///
+/// The prompt asks the LLM to produce a structured narrative record covering:
+/// what the user wanted, what the agent did, what was found, and what decisions
+/// were made. This structured format survives compaction and session restore.
+pub(crate) fn build_summarization_prompt(messages: &[Message]) -> String {
+    let transcript = mechanical_transcript(messages);
+    format!(
+        "You are compacting a long agent conversation to save context space. \
+         Extract the following structured information from the conversation \
+         segment below. Output ONLY a JSON object with these fields:\n\n\
+         ```json\n\
+         {{\n\
+           \"user_intent\": \"<what the user asked for, one sentence>\",\n\
+           \"actions_taken\": [\"<tool name>: <brief description>\", ...],\n\
+           \"findings\": [\"<key discovery or result>\", ...],\n\
+           \"files_modified\": [\"<file path that was created or edited>\", ...],\n\
+           \"decisions\": [\"<decision or conclusion reached>\", ...],\n\
+           \"pending_work\": [\"<unfinished task that still needs to be done>\", ...]\n\
+         }}\n\
+         ```\n\n\
+         Rules:\n\
+         - user_intent: capture what the USER asked for (not what the assistant did)\n\
+         - actions_taken: list the main tools used and what they did (e.g. \"read: docs/plan.md\", \"grep: Sprint 4\", \"write: src/main.rs\")\n\
+         - findings: key results, discoveries, evidence from tool outputs\n\
+         - files_modified: ONLY files that were actually created or edited (not read)\n\
+         - decisions: conclusions the assistant reached, next steps committed to\n\
+         - pending_work: tasks the assistant started but did NOT finish\n\
+         - Keep arrays concise (max 5 items each). Be specific, not generic.\n\n\
+         ## Conversation segment\n{transcript}\n\n## JSON Output"
+    )
+}
+
+/// Parse structured narrative records from a compaction summary.
+///
+/// Tries JSON parsing first (for LLM-generated summaries), falls back to
+/// building a single narrative record from the raw summary text.
+pub(crate) fn extract_narrative_records(
+    summary_text: &str,
+    turn_start: u64,
+    turn_end: u64,
+) -> Vec<fox_agent_core::NarrativeRecord> {
+    // Try structured JSON first
+    if let Ok(record) = serde_json::from_str::<fox_agent_core::NarrativeRecord>(summary_text.trim()) {
+        return vec![record];
+    }
+    // Try extracting JSON from within markdown code fences
+    if let Some(json_start) = summary_text.find("```json") {
+        let after_fence = &summary_text[json_start + 7..];
+        if let Some(json_end) = after_fence.find("```") {
+            let json_str = after_fence[..json_end].trim();
+            if let Ok(record) = serde_json::from_str::<fox_agent_core::NarrativeRecord>(json_str) {
+                return vec![record];
+            }
         }
     }
+    // Fallback: wrap the raw summary as a single narrative record
+    let text = summary_text.trim();
+    if text.is_empty() || text.len() < 20 {
+        return Vec::new();
+    }
+    let mut record = NarrativeRecord::new((turn_start, turn_end), format!("(compacted conversation, turns {turn_start}-{turn_end})"));
+    record.findings = vec![text.to_string()];
+    vec![record]
 }
 
 // ── Internal helpers (moved from util.rs) ──
 
-fn summarize_messages(messages: &[Message]) -> String {
+/// Mechanical (non-LLM) transcript builder used both as the LLM prompt input
+/// and as the fallback summary when the LLM is unavailable.
+fn mechanical_transcript(messages: &[Message]) -> String {
     const MAX_CONTENT_LEN: usize = 500; // Truncate each content block to 500 chars
     const MAX_SUMMARY_LEN: usize = 4000; // Truncate total summary to 4KB
     
@@ -172,6 +326,22 @@ pub(crate) fn message_chars(messages: &[Message]) -> usize {
     }).sum()
 }
 
+// ── Compaction artifact detection ──
+
+/// Whether a message is the leading "Conversation summary:" System block.
+fn is_summary_block(m: &Message) -> bool {
+    m.role == Role::System
+        && m.content.first().map_or(false, |b| {
+            matches!(b, ContentBlock::Text { text } if text.starts_with("Conversation summary:"))
+        })
+}
+
+/// Whether a message is a compaction-generated artifact.
+fn is_compaction_artifact(m: &Message) -> bool {
+    is_summary_block(m)
+}
+
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -204,8 +374,8 @@ mod tests {
     /// when the split point cuts between an Assistant(tool_calls) and its
     /// Tool result(s).  DeepSeek/OpenAI reject such messages with:
     /// "Messages with role 'tool' must be a response to a preceding message with 'tool_calls'"
-    #[test]
-    fn do_compact_never_leaves_orphaned_tool_results() {
+    #[tokio::test]
+    async fn do_compact_never_leaves_orphaned_tool_results() {
         let mut messages = vec![
             build_user("do task A"),
             build_assistant_with_tool_calls("ok, running tools", &[("c1", "read")]),
@@ -225,7 +395,7 @@ mod tests {
             ..Default::default()
         };
         let mut mgr = CompactionManager::new(cfg);
-        let event = mgr.do_compact(&mut messages, CompactionTrigger::TokenBudget);
+        let (event, _) = mgr.force_compact(&mut messages, CompactionTrigger::TokenBudget, 1, 1).await;
 
         // verify no Tool messages appear without preceding Assistant(tool_calls)
         let mut last_was_tool_calls = false;
@@ -253,8 +423,8 @@ mod tests {
 
     /// When the split boundary is safe (before a User message), the orphan
     /// guard should NOT drain extra messages.
-    #[test]
-    fn do_compact_preserves_when_boundary_is_safe() {
+    #[tokio::test]
+    async fn do_compact_preserves_when_boundary_is_safe() {
         let mut messages = vec![
             build_user("task 1"),
             build_assistant_with_tool_calls("", &[("c1", "read")]),
@@ -275,7 +445,7 @@ mod tests {
             ..Default::default()
         };
         let mut mgr = CompactionManager::new(cfg);
-        mgr.do_compact(&mut messages, CompactionTrigger::TokenBudget);
+        let (_, _) = mgr.force_compact(&mut messages, CompactionTrigger::TokenBudget, 1, 1).await;
 
         // After compaction, first non-system message should be User
         let has_non_system = messages.iter().find(|m| m.role != Role::System);
@@ -283,4 +453,55 @@ mod tests {
             assert_eq!(non_sys.role, Role::User, "safe boundary should preserve User as first");
         }
     }
+
+    /// Summarizer stub that always falls back to mechanical truncation.
+    fn noop_summarizer(_dropped: Vec<Message>) -> SummarizerFuture {
+        Box::pin(async { None })
+    }
+
+    fn mode_test_cfg() -> CompactionConfig {
+        CompactionConfig {
+            enabled: true,
+            preserve_recent_messages: 2,
+            token_budget: 100,
+            context_limit_threshold: 0.85, // threshold = 85 chars
+            max_turns_before_compaction: 1000,
+            ..Default::default()
+        }
+    }
+
+    /// PreSend is an overflow safety net: it must NOT compact when the context
+    /// is merely "approaching" the budget (so follow-up questions keep the
+    /// full evidence), but MUST compact when strictly over budget.
+    #[tokio::test]
+    async fn presend_only_compacts_on_overflow() {
+        // 5 messages × 18 chars = 90 chars: above threshold (85), below budget (100).
+        let mut approaching: Vec<Message> = (0..5).map(|_| build_user(&"x".repeat(18))).collect();
+        let mut mgr = CompactionManager::new(mode_test_cfg());
+        let ev = mgr
+            .maybe_compact(&mut approaching, noop_summarizer, CompactionMode::PreSend, 1, 1)
+            .await;
+        assert!(ev.is_none(), "PreSend must not fire on approaching-only");
+
+        // 6 messages × 20 chars = 120 chars: over budget (100).
+        let mut overflow: Vec<Message> = (0..6).map(|_| build_user(&"x".repeat(20))).collect();
+        let mut mgr2 = CompactionManager::new(mode_test_cfg());
+        let ev2 = mgr2
+            .maybe_compact(&mut overflow, noop_summarizer, CompactionMode::PreSend, 1, 1)
+            .await;
+        assert!(ev2.is_some(), "PreSend must fire on overflow");
+    }
+
+    /// Proactive convergence fires on the "approaching" threshold too, so the
+    /// next turn starts smaller.
+    #[tokio::test]
+    async fn proactive_compacts_on_approaching() {
+        let mut approaching: Vec<Message> = (0..5).map(|_| build_user(&"x".repeat(18))).collect();
+        let mut mgr = CompactionManager::new(mode_test_cfg());
+        let ev = mgr
+            .maybe_compact(&mut approaching, noop_summarizer, CompactionMode::Proactive, 1, 1)
+            .await;
+        assert!(ev.is_some(), "Proactive must fire on approaching threshold");
+    }
+
 }

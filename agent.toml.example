@@ -108,19 +108,23 @@ rebuild_on_model_change = false  # re-embed when model/version changes
 # ── Compaction ──────────────────────────────────────────────
 
 [compaction]
-enabled = true                   # default: false — enable for long sessions
-token_budget = 80_000            # default: 12_000 — char budget before compaction
-preserve_recent_messages = 10    # default: 20 — keep N most recent messages
-max_turns_before_compaction = 20 # fallback trigger
-context_limit_threshold = 0.85   # fraction of budget that triggers early compaction
-max_compaction_count = 10        # prevent infinite loops
-min_compaction_gap_turns = 3     # min turns between compactions
+# Compaction is a LAST RESORT safety net. With 3.2M char budget (≈800K tokens),
+# most sessions will never trigger it.
+enabled = true                   # default: false
+token_budget = 3_200_000         # default: 3,200,000
+preserve_recent_messages = 80    # default: 80
+max_turns_before_compaction = 500 # default: 500
+context_limit_threshold = 0.90   # default: 0.90
+max_compaction_count = 10        # default: 10
+min_compaction_gap_turns = 20    # default: 20
+llm_summary_enabled = true       # default: true — LLM structured narrative extraction
 
 # ── Safety ──────────────────────────────────────────────────
 
 [safety]
 # Tool allowlist — only these tools auto-allowed (None = disabled)
-# tool_allowlist = ["read", "grep", "ls", "glob", "edit", "write"]
+# tool_allowlist = ["read", "grep", "ls", "glob", "edit", "write", "bash", "webfetch", "websearch", "goal", "plan", "todo", "lsp", "invalid", "agentgrep"]
+
 
 # Tool denylist — these tools always require confirmation
 # tool_denylist = ["bash", "webfetch"]
@@ -128,8 +132,9 @@ min_compaction_gap_turns = 3     # min turns between compactions
 # Default policy for tools not in allowlist or denylist
 default_policy = "Allow"         # "Confirm" | "Allow" | "Deny"
 
-# Permission timeout (0 = no timeout)
-approval_timeout_secs = 120      # default
+# When enabled, write/edit/non-readonly bash always ask for confirmation.
+# Simpler and more reliable than guessing user intent from message keywords.
+productive_tool_confirm = true    # default
 
 # Approval cache
 [safety.approval_cache]

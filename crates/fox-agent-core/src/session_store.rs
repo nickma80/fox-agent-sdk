@@ -46,6 +46,11 @@ pub struct SessionSnapshot {
     pub working_dir: Option<PathBuf>,
     #[serde(default)]
     pub messages: Vec<Message>,
+    /// Complete un-compacted transcript — never truncated.
+    /// Persisted separately so session restore and UI display
+    /// always see the full conversation history.
+    #[serde(default)]
+    pub full_messages: Vec<Message>,
     #[serde(default)]
     pub env_snapshots: Vec<EnvSnapshot>,
     #[serde(default)]
@@ -227,6 +232,7 @@ mod tests {
             status: SessionStatus::Active,
             working_dir: None,
             messages: vec![Message::user("hello")],
+            full_messages: vec![Message::user("hello")],
             env_snapshots: Vec::new(),
             model_runtime_state: ModelRuntimeState::default(),
             pending_permission: None,

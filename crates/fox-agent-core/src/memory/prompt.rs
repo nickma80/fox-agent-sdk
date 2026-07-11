@@ -64,6 +64,7 @@ pub(super) fn format_entries_for_prompt_with_header(
             MemoryCategory::Fact => "facts",
             MemoryCategory::Preference => "preferences",
             MemoryCategory::Entity => "entities",
+            MemoryCategory::Narrative => "narratives",
             MemoryCategory::Custom(ref name) => {
                 sections.entry(name.to_lowercase()).or_default().push(entry);
                 continue;
@@ -147,6 +148,7 @@ fn format_recall_hits(
             MemoryCategory::Fact => "facts",
             MemoryCategory::Preference => "preferences",
             MemoryCategory::Entity => "entities",
+            MemoryCategory::Narrative => "narratives",
             MemoryCategory::Custom(ref name) => {
                 sections.entry(name.to_lowercase()).or_default().push(hit);
                 continue;
@@ -226,6 +228,7 @@ fn category_key(category: &MemoryCategory) -> String {
         MemoryCategory::Fact => "facts".to_string(),
         MemoryCategory::Preference => "preferences".to_string(),
         MemoryCategory::Entity => "entities".to_string(),
+        MemoryCategory::Narrative => "narratives".to_string(),
         MemoryCategory::Custom(name) => name.to_lowercase(),
     }
 }

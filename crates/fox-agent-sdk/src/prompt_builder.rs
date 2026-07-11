@@ -53,6 +53,7 @@ impl PromptBuilder {
     /// - skills list
     ///
     /// Sections routed to `dynamic_part` (per-turn):
+    /// - intent anchor (first user message — always visible)
     /// - planning context (todos, plan, goals)
     /// - memory injection
     /// - active skill prompt
@@ -64,15 +65,37 @@ impl PromptBuilder {
         skills: &[SkillInfo],
         memory_injection: Option<&str>,
         active_skill: Option<&str>,
+        intent_anchor: Option<&str>,
+        narrative_prompt: Option<&str>,
     ) -> (SplitPrompt, ContextInfo) {
         // === Dynamic sections (per-turn) ===
         let mut dynamic_sections: Vec<String> = Vec::new();
+
+        // Intent Anchor — always visible, keeps agent focused on the CURRENT task.
+        // This reflects the LATEST user message (not the first), so when the user
+        // changes tasks mid-session, the agent follows the new instruction.
+        if let Some(anchor) = intent_anchor {
+            dynamic_sections.push(format!(
+                "# Current Task\n\nThe user's latest instruction is:\n\"\"\"\n{anchor}\n\"\"\"\n\n\
+                 SCOPE: Focus on THIS task. Do NOT perform actions from earlier in the \
+                 conversation unless explicitly requested again. If the user asked you to \
+                 ANALYZE, do NOT modify code. If the user asked you to IMPLEMENT, focus \
+                 only on the requested change. If you believe follow-up work is needed, \
+                 finish the current task first, then ASK.\n"
+            ));
+        }
 
         let planning_context = render_planning_context_with_store(planning_store.as_ref(), session_id);
         let has_planning_state = !planning_context.is_empty();
 
         if has_planning_state {
             dynamic_sections.push(format!("# Planning Context\n\n{}", planning_context));
+        }
+
+        // Narrative session history (from compaction) — placed before memory injection
+        // so the model sees turn-by-turn history first, then semantic memory
+        if let Some(narrative_text) = narrative_prompt {
+            dynamic_sections.push(narrative_text.to_string());
         }
 
         if let Some(mem) = memory_injection {

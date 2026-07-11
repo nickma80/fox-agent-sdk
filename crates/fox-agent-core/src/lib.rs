@@ -31,7 +31,7 @@ pub use memory::prompt::{format_entries_for_prompt, format_recall_hits_display_p
 pub use memory::ranking::{self};
 pub use memory::relevance::{self, ExtractedMemory, MemoryExtractor, MemoryRelevanceChecker};
 pub use memory::storage::{self, GCResult, MemoryGraphCache};
-pub use memory::types::{self, MemoryCategory, MemoryEntry, MemoryScope, RecallMode, Reinforcement, TrustLevel};
+pub use memory::types::{self, MemoryCategory, MemoryEntry, MemoryScope, NarrativeRecord, RecallMode, Reinforcement, TrustLevel};
 pub use memory::{AnnRebuildStats, ClusterRefreshStats, CompactStats, ExportStats, ImportStats, IngestionReport, MemoryAuditEvent, MemoryExportBundle, MemoryManager, MemoryStateEvent, RecallHit, RetrievalSource, ScoreBreakdown};
 pub use prompt::*;
 pub use session_store::*;

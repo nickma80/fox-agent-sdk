@@ -62,7 +62,12 @@ pub struct SessionState {
     pub provider_key: Option<String>,
     pub status: SessionStatus,
     pub working_dir: Option<PathBuf>,
+    /// Working message context (may be compacted). Sent to the model.
     pub messages: Vec<Message>,
+    /// Complete un-compacted transcript. Never truncated — used for
+    /// persistence, session restore, and UI display. Every push to
+    /// `messages` is also pushed to `full_messages`.
+    pub full_messages: Vec<Message>,
     pub env_snapshots: Vec<EnvSnapshot>,
     /// Wall-clock creation time (seconds since Unix epoch).
     pub created_at: u64,
@@ -80,6 +85,7 @@ impl SessionState {
             status: SessionStatus::Active,
             working_dir,
             messages: Vec::new(),
+            full_messages: Vec::new(),
             env_snapshots: Vec::new(),
             created_at: now_secs(),
         }
@@ -135,6 +141,14 @@ impl SessionState {
         self.messages.len()
     }
 
+    /// Push a message to both the working context (`messages`) and the
+    /// lossless transcript (`full_messages`). Use this for every
+    /// message addition so the full transcript is always preserved.
+    pub fn push_message(&mut self, msg: Message) {
+        self.messages.push(msg.clone());
+        self.full_messages.push(msg);
+    }
+
     pub fn from_snapshot(snapshot: &SessionSnapshot) -> Self {
         Self {
             id: snapshot.session_id.clone(),
@@ -144,7 +158,21 @@ impl SessionState {
             provider_key: snapshot.provider_key.clone(),
             status: snapshot.status,
             working_dir: snapshot.working_dir.clone(),
-            messages: snapshot.messages.clone(),
+            // On restore, rebuild the working context from the full transcript
+            // so the model has complete history. Compaction will re-compress
+            // naturally on subsequent turns if the context grows too large.
+            messages: if snapshot.full_messages.is_empty() {
+                snapshot.messages.clone()
+            } else {
+                snapshot.full_messages.clone()
+            },
+            // Backward compat: if full_messages is empty (old snapshot),
+            // fall back to messages so we don't lose history on restore.
+            full_messages: if snapshot.full_messages.is_empty() {
+                snapshot.messages.clone()
+            } else {
+                snapshot.full_messages.clone()
+            },
             env_snapshots: snapshot.env_snapshots.clone(),
             created_at: snapshot.created_at,
         }

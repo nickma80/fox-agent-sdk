@@ -381,7 +381,7 @@ impl AgentBuilder {
 
         if self.default_tools {
             // Load skills: project (.claude/skills/) + global ({storage_dir}/skills/) + additional
-            let working_dir = agent.harness().session_state.working_dir.clone();
+            let working_dir = agent.harness().session_working_dir().cloned();
             let storage_dir = resolve_storage_root_for_skills(
                 &sdk_config,
                 working_dir.as_deref(),

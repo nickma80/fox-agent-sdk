@@ -1,8 +1,10 @@
-//! ApprovalManager: permission cache, timeout auto-deny, and audit trail.
+//! ApprovalManager: permission cache and audit trail.
 //!
 //! The manager sits between the SafetySystem and the user, providing
-//! three layers of caching (this-turn, this-session, this-workspace),
-//! an optional timeout for pending requests, and a structured audit log.
+//! three layers of caching (this-turn, this-session, this-workspace)
+//! and a structured audit log. Waiting for a user permission decision
+//! never times out — a pending request stays pending until the user
+//! explicitly allows or denies it.
 
 use fox_agent_core::{
     ApprovalCacheEntry, ApprovalScope, PermissionAuditEntry,
@@ -175,11 +177,6 @@ impl ApprovalManager {
             let _ = std::io::Write::write_fmt(&mut f, format_args!("{line}\n"));
         }
         Ok(())
-    }
-
-    /// Get approval timeout in seconds. 0 = no timeout.
-    pub fn timeout_secs(&self) -> u64 {
-        self.config.approval_timeout_secs
     }
 
     // ── Private helpers ──

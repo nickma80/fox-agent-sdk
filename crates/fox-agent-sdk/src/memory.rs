@@ -16,6 +16,7 @@ use fox_agent_core::{
 };
 use async_trait::async_trait;
 use futures::StreamExt;
+use tracing::Instrument;
 
 use std::time::Instant;
 use tokio::sync::RwLock;
@@ -125,6 +126,18 @@ impl MemoryManager {
         self
     }
 
+    /// Set the project directory for the core MemoryManager.
+    pub fn with_project_dir(mut self, dir: PathBuf) -> Self {
+        self.core = self.core.with_project_dir(dir);
+        self
+    }
+
+    /// Set the session ID for Session-scoped memory isolation.
+    pub fn with_session_id(mut self, id: impl Into<String>) -> Self {
+        self.core = self.core.with_session_id(id);
+        self
+    }
+
     /// Store a memory entry via the core MemoryManager (project scope).
     pub async fn add_memory(&self, content: impl Into<String>) -> String {
         let entry = fox_agent_core::MemoryEntry::new(
@@ -147,7 +160,8 @@ impl MemoryManager {
         }
         let core = self.core.clone();
         let cfg = self.cfg.clone();
-        tokio::spawn(async move {
+        tokio::spawn(
+            async move {
             // Extract query from the most recent user message
             let query = messages
                 .iter()
@@ -211,7 +225,9 @@ impl MemoryManager {
 
             let mut state = memory_state.write().await;
             let _ = state.apply(MemoryInjectionEvent::InjectionComputed { injection });
-        });
+            }
+            .in_current_span(),
+        );
     }
 
     pub fn trigger_ingestion_for_turn(
@@ -229,7 +245,8 @@ impl MemoryManager {
         }
         let core = self.core.clone();
         let cfg = self.cfg.clone();
-        tokio::spawn(async move {
+        tokio::spawn(
+            async move {
             let worker = model_for_memory_tasks(model, cfg.verify_model.clone());
             let extractor = ModelBackedExtractor { model: worker.clone() };
             let checker = ModelBackedRelevanceChecker { model: worker };
@@ -258,7 +275,9 @@ impl MemoryManager {
                     },
                 })
                 .await;
-        });
+            }
+            .in_current_span(),
+        );
     }
 }
 

@@ -1,8 +1,9 @@
 use async_trait::async_trait;
-use fox_agent_core::{Tool, ToolContext, ToolError, ToolOutput, intent_schema_property};
+use fox_agent_core::{Tool, ToolContext, ToolError, ToolOutput, ToolProgressEvent, OutputStream, intent_schema_property};
 use serde::Deserialize;
 use serde_json::{Value, json};
 use std::time::Duration;
+use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::Command as TokioCommand;
 
 const MAX_OUTPUT_LEN: usize = 30000;
@@ -130,33 +131,96 @@ impl BashTool {
         }
 
         let result = tokio::time::timeout(timeout_duration, async {
-            let output = command
-                .output()
-                .await
+            let mut child = command
+                .spawn()
                 .map_err(|e| ToolError::Message {
                     message: format!("failed to execute command: {e}"),
                 })?;
 
-            let stdout = String::from_utf8_lossy(&output.stdout).to_string();
-            let stderr = String::from_utf8_lossy(&output.stderr).to_string();
-            let exit_code = output.status.code();
+            let stdout = child.stdout.take();
+            let stderr = child.stderr.take();
 
-            let mut text = stdout.clone();
-            if !stderr.is_empty() {
+            let progress_tx = ctx.progress_tx.clone();
+
+            // Read stdout and stderr concurrently with streaming
+            let (stdout_lines, stderr_lines) = tokio::join!(
+                async {
+                    if let Some(stdout) = stdout {
+                        let mut reader = BufReader::new(stdout).lines();
+                        let mut buf = String::new();
+                        while let Ok(Some(line)) = reader.next_line().await {
+                            if let Some(ref tx) = progress_tx {
+                                let _ = tx.send(ToolProgressEvent::StdoutLine {
+                                    line: line.clone(),
+                                    stream: OutputStream::Stdout,
+                                }).await;
+                            }
+                            buf.push_str(&line);
+                            buf.push('\n');
+                        }
+                        buf
+                    } else {
+                        String::new()
+                    }
+                },
+                async {
+                    if let Some(stderr) = stderr {
+                        let mut reader = BufReader::new(stderr).lines();
+                        let mut buf = String::new();
+                        while let Ok(Some(line)) = reader.next_line().await {
+                            if let Some(ref tx) = progress_tx {
+                                let _ = tx.send(ToolProgressEvent::StdoutLine {
+                                    line: line.clone(),
+                                    stream: OutputStream::Stderr,
+                                }).await;
+                            }
+                            buf.push_str(&line);
+                            buf.push('\n');
+                        }
+                        buf
+                    } else {
+                        String::new()
+                    }
+                },
+            );
+
+            let status = child.wait().await.map_err(|e| ToolError::Message {
+                message: format!("command failed: {e}"),
+            })?;
+            let exit_code = status.code();
+
+            // Trim trailing newlines (matching the behaviour of .output() which
+            // returns raw stdout without an extra trailing newline).
+            let stdout_trimmed = stdout_lines.trim_end_matches('\n').to_string();
+            let stderr_trimmed = stderr_lines.trim_end_matches('\n').to_string();
+            let mut text = stdout_trimmed;
+            if !stderr_trimmed.is_empty() {
                 if !text.is_empty() {
                     text.push('\n');
                 }
-                text.push_str(&stderr);
+                text.push_str(&stderr_trimmed);
             }
             let text = format_command_output(text, exit_code);
 
+            // Truncate if too large
+            let text = if text.len() > MAX_OUTPUT_LEN {
+                let boundary = text.char_indices()
+                    .take_while(|(i, _)| *i < MAX_OUTPUT_LEN)
+                    .last()
+                    .map(|(i, _)| i)
+                    .unwrap_or(MAX_OUTPUT_LEN.min(text.len()));
+                format!("{}...\n[OUTPUT TRUNCATED at {} chars]", &text[..boundary], MAX_OUTPUT_LEN)
+            } else {
+                text
+            };
+
             Ok::<ToolOutput, ToolError>(ToolOutput {
                 text,
-                is_error: !output.status.success(),
+                is_error: !status.success(),
                 json: Some(json!({
                     "exit_code": exit_code,
-                    "stdout": stdout,
-                    "stderr": stderr,
+                    "stdout": stdout_lines,
+                    "stderr": stderr_lines,
                 })),
             })
         })

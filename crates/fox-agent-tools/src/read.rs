@@ -4,7 +4,7 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 use std::path::Path;
 
-const DEFAULT_LIMIT: usize = 5000;
+const DEFAULT_LIMIT: usize = 300;
 const MAX_LINE_LEN: usize = 2000;
 
 pub struct ReadTool;
@@ -148,7 +148,7 @@ impl Tool for ReadTool {
                 },
                 "limit": {
                     "type": "integer",
-                    "description": "Max text lines to read. Default 5000."
+                    "description": "Max text lines to read. Default 300. Use with offset for pagination."
                 }
             }
         })
@@ -236,16 +236,24 @@ impl Tool for ReadTool {
 
         let end = end_exclusive.min(total_lines);
 
-        // Add continuation hint
+        // Add continuation hint with progress percentage
         if end < total_lines {
             let continuation_hint = match range.style {
                 ReadRangeStyle::OffsetLimit => format!("offset={}", range.next_offset()),
                 ReadRangeStyle::StartEnd => format!("start_line={}", range.next_start_line()),
             };
+            let pct = (end as f64 / total_lines as f64 * 100.0) as u32;
+            let remaining = total_lines - end;
             output.push_str(&format!(
-                "\n... {} more lines (use {} to continue)\n",
-                total_lines - end,
-                continuation_hint
+                "\n─── Read lines {}-{} of {} ({}% of file) ───\n\
+                 [{} more lines remaining. To continue: {} limit={}]\n",
+                range.offset + 1,
+                end,
+                total_lines,
+                pct,
+                remaining,
+                continuation_hint,
+                DEFAULT_LIMIT,
             ));
         }
 

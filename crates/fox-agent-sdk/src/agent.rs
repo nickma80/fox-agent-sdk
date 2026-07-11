@@ -10,7 +10,7 @@ use futures::StreamExt;
 use std::sync::Arc;
 use std::time::Instant;
 use tokio::sync::RwLock;
-use tracing::{debug, error, info, span, trace, warn, Level};
+use tracing::{debug, error, info, span, trace, warn, Instrument, Level};
 
 use crate::harness::Harness;
 
@@ -29,6 +29,11 @@ const MAX_CONTEXT_LIMIT_RETRIES: u32 = 5;
 const MAX_INCOMPLETE_CONTINUATION_ATTEMPTS: u32 = 3;
 /// Number of consecutive identical tool calls before injecting a warning.
 const DUPLICATE_TOOL_CALL_WARN_THRESHOLD: u32 = 3;
+/// Number of consecutive auto-turns (no new user message) before drift
+/// detection injects a soft interrupt reminder.
+const DRIFT_DETECTION_THRESHOLD: u32 = 5;
+/// Interval (in auto-turns) between drift-detection reminders.
+const DRIFT_DETECTION_INTERVAL: u32 = 3;
 /// Substrings that indicate a context-limit error from the provider.
 const CTRL_LIMIT_KEYWORDS: &[&str] = &[
     "context_length_exceeded",
@@ -52,7 +57,10 @@ const FAST_RETRY_MAX_BACKOFF_MS: u64 = 8_000;
 const SLOW_RETRY_INTERVAL_SECS: u64 = 30;
 /// Maximum number of slow retries before giving up permanently.
 const SLOW_RETRY_MAX: u32 = 10;
-
+/// While waiting for the next model stream event, emit a `WaitingForModel`
+/// heartbeat every this many seconds so the UI can distinguish "slow model"
+/// from "frozen". Informational only — does not abort or retry the request.
+const MODEL_WAIT_HEARTBEAT_SECS: u64 = 8;
 // ---------------------------------------------------------------------------
 // Internal state: a tool call awaiting user permission
 // ---------------------------------------------------------------------------
@@ -93,9 +101,15 @@ use crate::governance::GovernanceGuard;
 pub struct Agent {
     pub model: Arc<dyn Model>,
     pub harness: Harness,
-    pending_permission: Option<PermissionRequest>,
-    pending_tool_calls: Vec<PendingToolCall>,
-    next_turn_id: u64,
+    /// Per-turn mutable state behind interior mutability so turn-driving
+    /// methods can take `&self`. Guarded by a `std::sync::Mutex` and never
+    /// held across an `.await`.
+    pending_permission: std::sync::Mutex<Option<PermissionRequest>>,
+    pending_tool_calls: std::sync::Mutex<Vec<PendingToolCall>>,
+    next_turn_id: std::sync::atomic::AtomicU64,
+    /// Counter for consecutive turns without a new user message.
+    /// Used by drift detection to inject periodic reminders.
+    consecutive_auto_turns: std::sync::atomic::AtomicU32,
     /// Optional budget governance guard.
     governance: Option<GovernanceGuard>,
     /// MCP client for external tool servers.
@@ -106,13 +120,14 @@ pub struct Agent {
 
 impl Agent {
     pub fn new(model: Arc<dyn Model>, harness: Harness, active_skill: Arc<RwLock<Option<Skill>>>) -> Self {
-        debug!(session_id = %harness.session_state.id, "Agent created");
+        debug!(session_id = %harness.session_id(), "Agent created");
         Self {
             model,
             harness,
-            pending_permission: None,
-            pending_tool_calls: Vec::new(),
-            next_turn_id: 1,
+            pending_permission: std::sync::Mutex::new(None),
+            pending_tool_calls: std::sync::Mutex::new(Vec::new()),
+            next_turn_id: std::sync::atomic::AtomicU64::new(1),
+            consecutive_auto_turns: std::sync::atomic::AtomicU32::new(0),
             governance: None,
             mcp_client: None,
             active_skill,
@@ -132,26 +147,93 @@ impl Agent {
     pub fn harness(&self) -> &Harness { &self.harness }
     pub fn model(&self) -> &Arc<dyn Model> { &self.model }
 
+    // ── Per-turn mutable state accessors (interior mutability) ──
+    // These use short synchronous critical sections and are never held
+    // across an `.await`, so turn-driving methods can take `&self`.
+
+    fn allocate_turn_id(&self) -> u64 {
+        self.next_turn_id
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst)
+    }
+
+    fn peek_turn_id(&self) -> u64 {
+        self.next_turn_id.load(std::sync::atomic::Ordering::SeqCst)
+    }
+
+    fn pending_permission_snapshot(&self) -> Option<PermissionRequest> {
+        self.pending_permission.lock().unwrap().clone()
+    }
+
+    fn set_pending_permission(&self, value: Option<PermissionRequest>) {
+        *self.pending_permission.lock().unwrap() = value;
+    }
+
+    fn pending_tool_calls_snapshot(&self) -> Vec<PendingToolCall> {
+        self.pending_tool_calls.lock().unwrap().clone()
+    }
+
+    fn set_pending_tool_calls(&self, value: Vec<PendingToolCall>) {
+        *self.pending_tool_calls.lock().unwrap() = value;
+    }
+
+    fn clear_pending_tool_calls(&self) {
+        self.pending_tool_calls.lock().unwrap().clear();
+    }
+
+    fn pending_tool_calls_is_empty(&self) -> bool {
+        self.pending_tool_calls.lock().unwrap().is_empty()
+    }
+
+    /// Clone the first pending tool call without removing it.
+    fn first_pending_tool_call(&self) -> Option<PendingToolCall> {
+        self.pending_tool_calls.lock().unwrap().first().cloned()
+    }
+
+    /// Remove and return the first pending tool call.
+    fn pop_first_pending_tool_call(&self) -> Option<PendingToolCall> {
+        let mut guard = self.pending_tool_calls.lock().unwrap();
+        if guard.is_empty() {
+            None
+        } else {
+            Some(guard.remove(0))
+        }
+    }
+
+    /// Test-only: run a turn directly on the streaming loop, bypassing
+    /// `run_once_streaming`'s graceful-shutdown clearing, so in-progress
+    /// turn cancellation can be exercised.
+    #[cfg(test)]
+    pub(crate) async fn run_turn_for_test(
+        &self,
+        user_message: &str,
+        event_tx: &AgentEventTx,
+    ) -> Result<TurnOutcome, AgentError> {
+        self.harness.push_message(Message::user(user_message)).await;
+        self.run_turn_streaming(event_tx).await
+    }
+
     /// Set MCP resources/prompts context for the system prompt.
     pub(crate) fn set_mcp_context(&mut self, summary: String) {
         self.harness.prompt_builder.set_mcp_context(summary);
     }
 
-    pub fn snapshot(&self) -> SessionSnapshot {
+    pub async fn snapshot(&self) -> SessionSnapshot {
+        let ss = self.harness.session_state_read().await;
         SessionSnapshot {
-            session_id: self.harness.session_state.id.clone(),
-            parent_id: self.harness.session_state.parent_id.clone(),
-            title: self.harness.session_state.title.clone(),
-            model: self.harness.session_state.model.clone().or_else(|| Some(self.model.model_id())),
-            provider_key: self.harness.session_state.provider_key.clone(),
-            status: self.harness.session_state.status,
-            working_dir: self.harness.session_state.working_dir.clone(),
-            messages: self.harness.session_state.messages.clone(),
-            env_snapshots: self.harness.session_state.env_snapshots.clone(),
+            session_id: ss.id.clone(),
+            parent_id: ss.parent_id.clone(),
+            title: ss.title.clone(),
+            model: ss.model.clone().or_else(|| Some(self.model.model_id())),
+            provider_key: ss.provider_key.clone(),
+            status: ss.status,
+            working_dir: ss.working_dir.clone(),
+            messages: ss.messages.clone(),
+            full_messages: ss.full_messages.clone(),
+            env_snapshots: ss.env_snapshots.clone(),
             model_runtime_state: self.model.runtime_state(),
-            pending_permission: self.pending_permission.clone(),
+            pending_permission: self.pending_permission_snapshot(),
             pending_tool_calls: self
-                .pending_tool_calls
+                .pending_tool_calls_snapshot()
                 .iter()
                 .map(PendingToolCallSnapshot::from)
                 .collect(),
@@ -161,10 +243,10 @@ impl Agent {
                 .try_read()
                 .map(|guard| guard.snapshot())
                 .unwrap_or_default(),
-            next_turn_id: self.next_turn_id,
+            next_turn_id: self.peek_turn_id(),
             metadata: None,
             updated_at: now_secs(),
-            created_at: self.harness.session_state.created_at,
+            created_at: ss.created_at,
         }
     }
 
@@ -173,7 +255,11 @@ impl Agent {
         mut harness: Harness,
         snapshot: SessionSnapshot,
     ) -> Self {
-        harness.session_state = crate::session::SessionState::from_snapshot(&snapshot);
+        let restored_messages = snapshot.messages.clone();
+        harness.reset_session_state(crate::session::SessionState::from_snapshot(&snapshot));
+        // Repopulate first/latest user message tracking from restored messages
+        // so Intent Guard and Intent Anchor work after session restore.
+        harness.repopulate_user_message_tracking_sync(&restored_messages);
         if let Some(model_id) = &snapshot.model {
             let _ = model.set_model(model_id);
         }
@@ -186,13 +272,16 @@ impl Agent {
         Self {
             model,
             harness,
-            pending_permission: snapshot.pending_permission,
-            pending_tool_calls: snapshot
-                .pending_tool_calls
-                .into_iter()
-                .map(PendingToolCall::from)
-                .collect(),
-            next_turn_id: snapshot.next_turn_id.max(1),
+            pending_permission: std::sync::Mutex::new(snapshot.pending_permission),
+            pending_tool_calls: std::sync::Mutex::new(
+                snapshot
+                    .pending_tool_calls
+                    .into_iter()
+                    .map(PendingToolCall::from)
+                    .collect(),
+            ),
+            next_turn_id: std::sync::atomic::AtomicU64::new(snapshot.next_turn_id.max(1)),
+            consecutive_auto_turns: std::sync::atomic::AtomicU32::new(0),
             governance: None,
             mcp_client: None,
             active_skill: Arc::new(RwLock::new(None)),
@@ -215,19 +304,19 @@ impl Agent {
 
     // ── Public entry points ──
 
-    pub async fn run_once(&mut self, user_message: &str) -> Result<(), AgentError> {
+    pub async fn run_once(&self, user_message: &str) -> Result<(), AgentError> {
         let (tx, _rx) = tokio::sync::mpsc::channel(1);
         let _ = self.run_once_streaming(user_message, &tx).await?;
         Ok(())
     }
 
-    pub async fn run_once_capture(&mut self, user_message: &str) -> Result<TurnOutcome, AgentError> {
+    pub async fn run_once_capture(&self, user_message: &str) -> Result<TurnOutcome, AgentError> {
         let (tx, _rx) = tokio::sync::mpsc::channel(8);
         self.run_once_streaming(user_message, &tx).await
     }
 
     pub async fn run_once_streaming(
-        &mut self,
+        &self,
         user_message: &str,
         event_tx: &AgentEventTx,
     ) -> Result<TurnOutcome, AgentError> {
@@ -241,50 +330,55 @@ impl Agent {
         }
 
         info!(msg_preview = %truncate(user_message, 120), "Processing user message");
-        self.pending_permission = None;
-        self.pending_tool_calls.clear();
-        self.harness.session_state.messages.push(Message::user(user_message));
-        self.persist_snapshot("user_message");
+        // A new user message means the user wants to continue — clear any
+        // leftover graceful-shutdown flag from a previously cancelled turn,
+        // otherwise the new turn would be cancelled immediately.
+        self.harness.clear_graceful_shutdown().await;
+        self.set_pending_permission(None);
+        self.clear_pending_tool_calls();
+        // Reset drift detection — new user message means the user is engaged
+        self.consecutive_auto_turns.store(0, std::sync::atomic::Ordering::SeqCst);
+        self.harness.push_message(Message::user(user_message)).await;
+        self.persist_snapshot("user_message").await;
         self.run_turn_streaming(event_tx).await
     }
 
     /// Resume a turn after the user made a permission decision.
     pub async fn resume_streaming(
-        &mut self,
+        &self,
         decision: PermissionDecision,
         event_tx: &AgentEventTx,
     ) -> Result<TurnOutcome, AgentError> {
-        let Some(pending) = self.pending_tool_calls.first().cloned() else {
+        let Some(pending) = self.pop_first_pending_tool_call() else {
             return Err(AgentError::Internal {
                 message: "no pending tool call".to_string(),
             });
         };
-        self.pending_tool_calls.remove(0);
 
         self.execute_single_tool(pending, decision, event_tx).await?;
 
-        self.pending_permission = None;
+        self.set_pending_permission(None);
 
         // Process remaining buffered tool calls from the same model response.
-        while !self.pending_tool_calls.is_empty() {
-            let next = self.pending_tool_calls[0].clone();
+        while !self.pending_tool_calls_is_empty() {
+            let Some(next) = self.first_pending_tool_call() else { break };
             let name = next.name.clone();
 
             match self.harness.check_tool_permission(&name, &next.input).await {
                 PermissionResult::Allow => {
-                    self.pending_tool_calls.remove(0);
+                    let _ = self.pop_first_pending_tool_call();
                     self.execute_single_tool(next, PermissionDecision::Allow, event_tx).await?;
                 }
                 PermissionResult::Deny { reason } => {
-                    self.pending_tool_calls.remove(0);
+                    let _ = self.pop_first_pending_tool_call();
                     info!(tool = %name, reason = %reason, "Remaining tool denied by policy");
-                    self.harness.session_state.messages.push(
+                    self.harness.push_message(
                         Message::tool_result(&next.call_id, reason, true),
-                    );
+                    ).await;
                 }
                 PermissionResult::AskUser { request } => {
                     info!(tool = %name, "Remaining tool requires user permission");
-                    self.pending_permission = Some(request.clone());
+                    self.set_pending_permission(Some(request.clone()));
                     return Ok(TurnOutcome::RequiresUserDecision { request });
                 }
             }
@@ -295,7 +389,7 @@ impl Agent {
 
     /// Execute (or deny) a single tool call and push the result message. (P2: duration)
     async fn execute_single_tool(
-        &mut self,
+        &self,
         pending: PendingToolCall,
         decision: PermissionDecision,
         event_tx: &AgentEventTx,
@@ -304,12 +398,13 @@ impl Agent {
             PermissionDecision::Allow => {
                 info!(tool = %pending.name, "Executing tool");
                 let ctx = ToolContext {
-                    session_id: self.harness.session_state.id.clone(),
+                    session_id: self.harness.session_id().to_string(),
                     message_id: uuid::Uuid::new_v4().to_string(),
                     tool_call_id: pending.call_id.clone(),
-                    working_dir: self.harness.session_state.working_dir.clone(),
+                    working_dir: self.harness.session_working_dir().cloned(),
                     execution_mode: ToolExecutionMode::Foreground,
                     graceful_shutdown_requested: self.harness.is_graceful_shutdown_requested().await,
+                    progress_tx: None,
                 };
 
                 let start = Instant::now();
@@ -342,9 +437,9 @@ impl Agent {
                     if !allowed {
                         let reason = block_reason.unwrap_or_else(|| "hook blocked".into());
                         info!(tool = %pending.name, reason = %reason, "Tool blocked by PreToolUse hook");
-                        self.harness.session_state.messages.push(
+                        self.harness.push_message(
                             Message::tool_result(&pending.call_id, reason.clone(), true),
-                        );
+                        ).await;
                         return Ok(());
                     }
                     if let Some(mod_input) = modified {
@@ -354,7 +449,27 @@ impl Agent {
 
                 let output = match tokio::time::timeout(
                     timeout_dur,
-                    self.harness.execute_tool(&pending.name, effective_input, ctx),
+                    async {
+                        // Start heartbeat for progress UI
+                        let hb_call_id = pending.call_id.clone();
+                        let hb_name = pending.name.clone();
+                        let hb_tx = event_tx.clone();
+                        let hb_start = Instant::now();
+                        let hb_handle = tokio::spawn(async move {
+                            tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+                            loop {
+                                let _ = hb_tx.send(AgentEvent::ToolExecutionProgress {
+                                    call_id: hb_call_id.clone(),
+                                    tool_name: hb_name.clone(),
+                                    elapsed_secs: hb_start.elapsed().as_secs(),
+                                }).await;
+                                tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+                            }
+                        });
+                        let result = self.harness.execute_tool_with_cache(&pending.name, effective_input, ctx).await;
+                        hb_handle.abort();
+                        result
+                    }.in_current_span(),
                 ).await {
                     Ok(Ok(output)) => {
                         if let Some(ref guard) = self.governance {
@@ -369,9 +484,9 @@ impl Agent {
                         }
                         // Push error tool result so conversation history stays valid
                         // for the next API call.
-                        self.harness.session_state.messages.push(
+                        self.harness.push_message(
                             Message::tool_result(&pending.call_id, format!("tool error: {}", err), true),
-                        );
+                        ).await;
                         let _ = event_tx
                             .send(AgentEvent::ToolCallEnd {
                                 call_id: pending.call_id.clone(),
@@ -391,9 +506,9 @@ impl Agent {
                             guard.record_tool_error().await;
                         }
                         // Push timeout tool result so conversation history stays valid.
-                        self.harness.session_state.messages.push(
+                        self.harness.push_message(
                             Message::tool_result(&pending.call_id, format!("tool timed out after {}s", timeout_dur.as_secs()), true),
-                        );
+                        ).await;
                         let _ = event_tx
                             .send(AgentEvent::ToolCallEnd {
                                 call_id: pending.call_id.clone(),
@@ -416,9 +531,9 @@ impl Agent {
                     if !allowed {
                         let reason = block_reason.unwrap_or_else(|| "hook blocked".into());
                         info!(tool = %pending.name, reason = %reason, "Tool result blocked by PostToolUse hook");
-                        self.harness.session_state.messages.push(
+                        self.harness.push_message(
                             Message::tool_result(&pending.call_id, reason.clone(), true),
-                        );
+                        ).await;
                         let _ = event_tx
                             .send(AgentEvent::ToolCallEnd {
                                 call_id: pending.call_id.clone(),
@@ -447,15 +562,15 @@ impl Agent {
                     })
                     .await;
                 // P2: Push result with duration metadata
-                self.harness.session_state.messages.push(
+                self.harness.push_message(
                     tool_result_msg(pending.call_id, output.text, output.is_error, elapsed_ms),
-                );
+                ).await;
             }
             PermissionDecision::Deny { reason } => {
                 info!(reason = %reason, "Permission denied");
-                self.harness.session_state.messages.push(
+                self.harness.push_message(
                     Message::tool_result(pending.call_id, reason, true),
-                );
+                ).await;
             }
         }
         Ok(())
@@ -464,10 +579,10 @@ impl Agent {
     // ── Core turn loop (P0: retry, continuation, filtering) ──
 
     async fn run_turn_streaming(
-        &mut self,
+        &self,
         event_tx: &AgentEventTx,
     ) -> Result<TurnOutcome, AgentError> {
-        let session_id = self.harness.session_state.id.clone();
+        let session_id = self.harness.session_id().to_string();
         let mut context_limit_retries = 0u32;
         let mut incomplete_continuations = 0u32;
         let mut tool_loop_iterations = 0u32;
@@ -479,8 +594,7 @@ impl Agent {
         let mut prev_tool_fingerprints: Vec<(String, String)> = Vec::new();
 
         loop {
-            let turn_id = self.next_turn_id;
-            self.next_turn_id += 1;
+            let turn_id = self.allocate_turn_id();
             tool_loop_iterations += 1;
 
             // P1: Tool loop upper limit
@@ -497,7 +611,11 @@ impl Agent {
                 }));
             }
 
-            let turn_span = span!(Level::INFO, "turn", session = %session_id, turn = turn_id);
+            // NOTE: `run` is the SDK-internal run/session id from the harness,
+            // NOT fox-code's server_session_id. Named `run` (not `session`) to
+            // avoid colliding with the outer `session{id=...}` span that
+            // embedders like fox-code attach with their own session id.
+            let turn_span = span!(Level::INFO, "turn", run = %session_id, turn = turn_id);
             let _guard = turn_span.enter();
 
             info!("Turn loop start");
@@ -508,13 +626,43 @@ impl Agent {
                 return self.finish_cancelled_turn(turn_id, event_tx, None).await;
             }
 
-            if let Some(compaction) = self.harness.maybe_compact_messages().await {
+            // ── Drift detection: periodic reminders after N consecutive auto-turns ──
+            let auto_turns = self.consecutive_auto_turns.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1;
+            if auto_turns >= DRIFT_DETECTION_THRESHOLD && (auto_turns - DRIFT_DETECTION_THRESHOLD) % DRIFT_DETECTION_INTERVAL == 0 {
+                if let Some(anchor) = self.harness.latest_user_message_text().await {
+                    info!(
+                        auto_turns = auto_turns,
+                        "Drift detection: injecting focus reminder"
+                    );
+                    self.harness.queue_soft_interrupt(
+                        format!(
+                            "Focus Reminder: Your current task is:\n\"{anchor}\"\n\n\
+                             Are you still working toward this goal? If the task is complete, \
+                             stop and report your findings. If not, what specific step are you on?",
+                        ),
+                        false, // not urgent
+                    ).await;
+                }
+            }
+
+            let summarizer = Self::make_summarizer(
+                self.model.clone(),
+                self.harness.cfg.compaction.llm_summary_enabled,
+            );
+            // Pre-send overflow safety net: only compacts if the context is
+            // strictly over budget (e.g. a huge accumulated history, or the
+            // first turn after restoring a large session). A follow-up that
+            // still fits keeps the full evidence from previous turns.
+            if let Some((compaction, narratives)) = self
+                .harness
+                .maybe_compact_messages(summarizer, crate::compaction::CompactionMode::PreSend, turn_id, turn_id)
+                .await
+            {
                 // ── PreCompact hooks: inject context before compaction ──
                 {
                     let hm = self.harness.hook_manager.read().await;
-                    let session_id = self.harness.session_state.id.clone();
-                    let working_dir = self.harness.session_state.working_dir
-                        .as_ref()
+                    let session_id = self.harness.session_id().to_string();
+                    let working_dir = self.harness.session_working_dir()
                         .map(|p| p.to_string_lossy().to_string())
                         .unwrap_or_default();
                     let ctx = crate::hooks::HookContext {
@@ -530,9 +678,9 @@ impl Agent {
                         if let crate::hooks::HookDecision::InjectContext { context } = decision {
                             if !context.is_empty() {
                                 info!(chars = context.len(), "PreCompact hook injected context");
-                                self.harness.session_state.messages.push(
+                                self.harness.push_message(
                                     Message::user(format!("[PreCompact hook context]\n{context}")),
-                                );
+                                ).await;
                             }
                         }
                     }
@@ -550,6 +698,13 @@ impl Agent {
                 let _ = event_tx
                     .send(AgentEvent::Compaction { event: compaction })
                     .await;
+                // Store narrative records for cross-turn/session memory
+                let session_id = self.harness.session_id().to_string();
+                for rec in &narratives {
+                    if let Err(e) = self.harness.memory_manager.core().remember_narrative(rec, &session_id) {
+                        warn!(error = %e, "Failed to store narrative record");
+                    }
+                }
             }
 
             for interrupt in self.harness.take_pending_interrupts().await {
@@ -558,15 +713,15 @@ impl Agent {
                     urgent = interrupt.urgent,
                     "Injecting soft interrupt"
                 );
-                self.harness.session_state.messages.push(
+                self.harness.push_message(
                     Message::user(format!("Interrupt: {}", interrupt.content)),
-                );
+                ).await;
                 let _ = event_tx
                     .send(AgentEvent::SoftInterruptInjected { interrupt })
                     .await;
             }
 
-            self.harness.trigger_memory_for_next_turn();
+            self.harness.trigger_memory_for_next_turn().await;
             let memory_injection = self.harness.take_memory_injection_for_prompt().await;
             let memory_prompt: Option<String> = memory_injection.as_ref().map(|(inj, _)| inj.prompt.clone());
             if let Some((inj, memory_state_event)) = memory_injection {
@@ -594,7 +749,7 @@ impl Agent {
                 .build_system_prompt_split(memory_prompt.as_deref(), active_skill_prompt.as_deref())
                 .await;
             let tools = self.harness.tool_definitions().await;
-            let messages = self.harness.session_state.messages.clone();
+            let messages = self.harness.session_messages().await;
 
             info!(
                 msg_count = messages.len(),
@@ -637,13 +792,23 @@ impl Agent {
                             error = %err_str,
                             "Context limit detected, compacting and retrying"
                         );
-                        if let Some(compaction) = self.harness.maybe_compact_messages().await {
+                        let summarizer = Self::make_summarizer(
+                            self.model.clone(),
+                            self.harness.cfg.compaction.llm_summary_enabled,
+                        );
+                        // Reactive recovery after the provider reported a
+                        // context-limit error: compact as aggressively as the
+                        // proactive path (any trigger) to make the retry fit.
+                        if let Some((compaction, _narratives)) = self
+                            .harness
+                            .maybe_compact_messages(summarizer, crate::compaction::CompactionMode::Proactive, turn_id, turn_id)
+                            .await
+                        {
                             // ── PreCompact hooks ──
                             {
                                 let hm = self.harness.hook_manager.read().await;
-                                let session_id = self.harness.session_state.id.clone();
-                                let working_dir = self.harness.session_state.working_dir
-                                    .as_ref()
+                                let session_id = self.harness.session_id().to_string();
+                                let working_dir = self.harness.session_working_dir()
                                     .map(|p| p.to_string_lossy().to_string())
                                     .unwrap_or_default();
                                 let ctx = crate::hooks::HookContext {
@@ -658,9 +823,9 @@ impl Agent {
                                 if let Ok(decision) = hm.execute(crate::hooks::HookEvent::PreCompact, ctx).await {
                                     if let crate::hooks::HookDecision::InjectContext { context } = decision {
                                         if !context.is_empty() {
-                                            self.harness.session_state.messages.push(
+                                            self.harness.push_message(
                                                 Message::user(format!("[PreCompact hook context]\n{context}")),
-                                            );
+                                            ).await;
                                         }
                                     }
                                 }
@@ -753,7 +918,33 @@ impl Agent {
                 .await;
 
             tokio::pin!(stream);
-            while let Some(ev) = stream.next().await {
+            loop {
+                // Await the next stream event, emitting a heartbeat every
+                // MODEL_WAIT_HEARTBEAT_SECS seconds while waiting so a slow or
+                // stalled model does not appear frozen to the UI. The pending
+                // stream future is preserved across heartbeats (not cancelled),
+                // so this does not change blocking/cancellation semantics.
+                let ev = {
+                    let wait_start = Instant::now();
+                    let next_ev = stream.next();
+                    tokio::pin!(next_ev);
+                    loop {
+                        tokio::select! {
+                            biased;
+                            ev = &mut next_ev => break ev,
+                            _ = tokio::time::sleep(
+                                std::time::Duration::from_secs(MODEL_WAIT_HEARTBEAT_SECS)
+                            ) => {
+                                let elapsed = wait_start.elapsed().as_secs();
+                                warn!(elapsed_secs = elapsed, "Still waiting for model response");
+                                let _ = event_tx
+                                    .send(AgentEvent::WaitingForModel { elapsed_secs: elapsed })
+                                    .await;
+                            }
+                        }
+                    }
+                };
+                let Some(ev) = ev else { break };
                 if self.harness.is_graceful_shutdown_requested().await {
                     warn!("Graceful shutdown during streaming");
                     let _ = event_tx
@@ -834,6 +1025,17 @@ impl Agent {
                             .await;
                         break;
                     }
+                    StreamEvent::ToolInputDelta { index, id, name, delta } => {
+                        trace!(index, ?name, "ToolInputDelta");
+                        let _ = event_tx
+                            .send(AgentEvent::ToolInputDelta {
+                                index,
+                                call_id: id,
+                                tool_name: name,
+                                delta,
+                            })
+                            .await;
+                    }
                     // P2: Handle provider-side compaction notification
                     StreamEvent::Compaction { trigger, pre_tokens } => {
                         info!(?trigger, ?pre_tokens, "Provider-side compaction");
@@ -907,20 +1109,20 @@ impl Agent {
 
             if collected_tool_calls.is_empty() {
                 // P0: Check for incomplete continuation
-                if maybe_continue_incomplete(&stop_reason, &mut incomplete_continuations, &mut self.harness) {
+                if maybe_continue_incomplete(&stop_reason, &mut incomplete_continuations, &self.harness).await {
                     info!("Requesting continuation for incomplete response");
                     continue;
                 }
                 // P0: Check for degenerate (empty) response
-                if maybe_continue_degenerate(&final_text, &thinking_text, &mut incomplete_continuations, &mut self.harness) {
+                if maybe_continue_degenerate(&final_text, &thinking_text, &mut incomplete_continuations, &self.harness).await {
                     info!("Requesting continuation for degenerate response");
                     continue;
                 }
 
                 // Pure text response — save and return.
-                self.push_assistant_message(final_text.clone(), thinking_text.clone());
+                self.push_assistant_message(final_text.clone(), thinking_text.clone()).await;
                 self.harness.memory_manager.trigger_ingestion_for_turn(
-                    self.harness.session_state.messages.clone(),
+                    self.harness.session_messages().await,
                     self.model.clone(),
                     event_tx.clone(),
                 );
@@ -937,7 +1139,44 @@ impl Agent {
                 let _ = event_tx
                     .send(AgentEvent::TurnEnd { turn_id, outcome: outcome.clone() })
                     .await;
-                self.persist_snapshot("turn_completed");
+                // Proactive convergence: now that the user has received the
+                // answer, preemptively compact so the NEXT turn starts small
+                // and this latency is hidden. Fires on budget / approaching /
+                // turn-count (gap-gated). full_messages stays intact, so the
+                // persisted snapshot keeps the complete transcript.
+                let summarizer = Self::make_summarizer(
+                    self.model.clone(),
+                    self.harness.cfg.compaction.llm_summary_enabled,
+                );
+                if let Some((compaction, narratives)) = self
+                    .harness
+                    .maybe_compact_messages(summarizer, crate::compaction::CompactionMode::Proactive, turn_id, turn_id)
+                    .await
+                {
+                    // Store narrative records for cross-turn/session memory
+                    let session_id = self.harness.session_id().to_string();
+                    for rec in &narratives {
+                        if let Err(e) = self.harness.memory_manager.core().remember_narrative(rec, &session_id) {
+                            warn!(error = %e, "Failed to store narrative record");
+                        }
+                    }
+                    if !narratives.is_empty() {
+                        info!(count = narratives.len(), "Stored compaction narrative records");
+                    }
+                    info!(
+                        trigger = ?compaction.trigger,
+                        removed = compaction.removed_messages,
+                        kept = compaction.kept_messages,
+                        "Proactive compaction after turn"
+                    );
+                    if let Some(ref guard) = self.governance {
+                        guard.record_compaction().await;
+                    }
+                    let _ = event_tx
+                        .send(AgentEvent::Compaction { event: compaction })
+                        .await;
+                }
+                self.persist_snapshot("turn_completed").await;
                 return Ok(outcome);
             }
 
@@ -956,9 +1195,9 @@ impl Agent {
                     input: tc.input.clone(),
                 });
             }
-            self.harness.session_state.messages.push(
+            self.harness.push_message(
                 Message { role: Role::Assistant, content },
-            );
+            ).await;
 
             // Execute each tool call.
             let total = collected_tool_calls.len();
@@ -972,15 +1211,15 @@ impl Agent {
                     PermissionResult::Allow => { debug!(tool = %name, "Tool auto-allowed"); }
                     PermissionResult::Deny { reason } => {
                         info!(tool = %name, reason = %reason, "Tool denied by policy");
-                        self.harness.session_state.messages.push(
+                        self.harness.push_message(
                             Message::tool_result(&call_id, reason, true),
-                        );
+                        ).await;
                         continue;
                     }
                     PermissionResult::AskUser { request } => {
                         info!(tool = %name, "Tool requires user permission");
-                        self.pending_permission = Some(request.clone());
-                        self.pending_tool_calls = collected_tool_calls.drain(idx..).collect();
+                        self.set_pending_permission(Some(request.clone()));
+                        self.set_pending_tool_calls(collected_tool_calls.drain(idx..).collect());
                         let _ = event_tx
                             .send(AgentEvent::PermissionRequest {
                                 request_id: request.request_id.clone(),
@@ -996,18 +1235,19 @@ impl Agent {
                             .send(AgentEvent::TurnEnd { turn_id, outcome: outcome.clone() })
                             .await;
                         info!("Turn paused awaiting user decision");
-                        self.persist_snapshot("awaiting_permission");
+                        self.persist_snapshot("awaiting_permission").await;
                         return Ok(outcome);
                     }
                 }
 
                 let ctx = ToolContext {
-                    session_id: self.harness.session_state.id.clone(),
+                    session_id: self.harness.session_id().to_string(),
                     message_id: uuid::Uuid::new_v4().to_string(),
                     tool_call_id: call_id.clone(),
-                    working_dir: self.harness.session_state.working_dir.clone(),
+                    working_dir: self.harness.session_working_dir().cloned(),
                     execution_mode: ToolExecutionMode::Foreground,
                     graceful_shutdown_requested: self.harness.is_graceful_shutdown_requested().await,
+                    progress_tx: None,
                 };
 
                 if ctx.graceful_shutdown_requested {
@@ -1043,9 +1283,9 @@ impl Agent {
                     if !allowed {
                         let reason = block_reason.unwrap_or_else(|| "hook blocked".into());
                         info!(tool = %name, reason = %reason, "Tool blocked by PreToolUse hook");
-                        self.harness.session_state.messages.push(
+                        self.harness.push_message(
                             Message::tool_result(&call_id, reason.clone(), true),
-                        );
+                        ).await;
                         continue;
                     }
                     if let Some(mod_input) = modified {
@@ -1056,7 +1296,27 @@ impl Agent {
                 debug!(tool = %name, "Executing tool");
                 let output = match tokio::time::timeout(
                     timeout_dur,
-                    self.harness.execute_tool(&name, effective_input, ctx),
+                    async {
+                        // Start heartbeat for progress UI
+                        let hb_call_id = call_id.clone();
+                        let hb_name = name.clone();
+                        let hb_tx = event_tx.clone();
+                        let hb_start = Instant::now();
+                        let hb_handle = tokio::spawn(async move {
+                            tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+                            loop {
+                                let _ = hb_tx.send(AgentEvent::ToolExecutionProgress {
+                                    call_id: hb_call_id.clone(),
+                                    tool_name: hb_name.clone(),
+                                    elapsed_secs: hb_start.elapsed().as_secs(),
+                                }).await;
+                                tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+                            }
+                        });
+                        let result = self.harness.execute_tool_with_cache(&name, effective_input, ctx).await;
+                        hb_handle.abort();
+                        result
+                    }.in_current_span(),
                 ).await {
                     Ok(Ok(output)) => {
                         if let Some(ref guard) = self.governance {
@@ -1076,9 +1336,9 @@ impl Agent {
                             guard.record_tool_error().await;
                         }
                         // Push error tool result so conversation history stays valid.
-                        self.harness.session_state.messages.push(
+                        self.harness.push_message(
                             Message::tool_result(&call_id, format!("tool error: {}", err), true),
-                        );
+                        ).await;
                         let _ = event_tx
                             .send(AgentEvent::ToolCallEnd {
                                 call_id: call_id.clone(),
@@ -1092,9 +1352,9 @@ impl Agent {
                         // Push error results for remaining tools in the batch.
                         for j in (idx+1)..total {
                             let tc2 = &collected_tool_calls[j];
-                            self.harness.session_state.messages.push(
+                            self.harness.push_message(
                                 Message::tool_result(&tc2.call_id, format!("skipped: earlier tool '{}' failed", name), true),
-                            );
+                            ).await;
                             let _ = event_tx
                                 .send(AgentEvent::ToolCallEnd {
                                     call_id: tc2.call_id.clone(),
@@ -1114,9 +1374,9 @@ impl Agent {
                             guard.record_tool_error().await;
                         }
                         // Push timeout tool result so conversation history stays valid.
-                        self.harness.session_state.messages.push(
+                        self.harness.push_message(
                             Message::tool_result(&call_id, format!("tool timed out after {}s", timeout_dur.as_secs()), true),
-                        );
+                        ).await;
                         let _ = event_tx
                             .send(AgentEvent::ToolCallEnd {
                                 call_id: call_id.clone(),
@@ -1130,9 +1390,9 @@ impl Agent {
                         // Push error results for remaining tools in the batch.
                         for j in (idx+1)..total {
                             let tc2 = &collected_tool_calls[j];
-                            self.harness.session_state.messages.push(
+                            self.harness.push_message(
                                 Message::tool_result(&tc2.call_id, format!("skipped: earlier tool '{}' timed out", name), true),
-                            );
+                            ).await;
                             let _ = event_tx
                                 .send(AgentEvent::ToolCallEnd {
                                     call_id: tc2.call_id.clone(),
@@ -1155,9 +1415,9 @@ impl Agent {
                     if !allowed {
                         let reason = block_reason.unwrap_or_else(|| "hook blocked".into());
                         info!(tool = %name, reason = %reason, "Tool result blocked by PostToolUse hook");
-                        self.harness.session_state.messages.push(
+                        self.harness.push_message(
                             Message::tool_result(&call_id, reason.clone(), true),
-                        );
+                        ).await;
                         let _ = event_tx
                             .send(AgentEvent::ToolCallEnd {
                                 call_id: call_id.clone(),
@@ -1182,15 +1442,44 @@ impl Agent {
                 // enter the message stream (avoids wasting tokens and memory on
                 // 10 MB file reads / grep explosions).  Mirrors jcode's
                 // `CONTEXT_GUARD_THRESHOLD` / `SINGLE_OUTPUT_MAX_FRACTION`.
-                let output_text = guard_tool_output(
+                let session_messages = self.harness.session_messages().await;
+                let (output_text, trunc_info) = guard_tool_output(
                     &self.harness.cfg.compaction,
-                    &self.harness.session_state.messages,
+                    &session_messages,
                     &name,
                     &output.text,
                 );
-                self.harness.session_state.messages.push(
+                // Context pressure feedback: inject soft interrupt when context is tight
+                if let Some(info) = trunc_info {
+                    let pct = info.projected as f64 / info.budget as f64;
+                    let (level, urgent) = if pct > 0.9 {
+                        ("CRITICAL", true)
+                    } else if pct > 0.7 {
+                        ("HIGH", false)
+                    } else if pct > 0.5 {
+                        ("MODERATE", false)
+                    } else {
+                        ("", false)
+                    };
+                    if !level.is_empty() {
+                        self.harness.queue_soft_interrupt(
+                            format!(
+                                "[Context {level}: {:.0}% full ({}/{})]\n\
+                                 Stop reading large files. Instead:\n\
+                                 - Use grep with targeted patterns to find specific code\n\
+                                 - Read only the specific lines you need (use offset + limit)\n\
+                                 - Summarize what you already know and decide next action",
+                                pct * 100.0,
+                                info.current + output_text.len(),
+                                info.budget,
+                            ),
+                            urgent,
+                        ).await;
+                    }
+                }
+                self.harness.push_message(
                     tool_result_msg(call_id, output_text, output.is_error, elapsed_ms),
-                );
+                ).await;
             }
 
             info!("Tool calls processed, continuing turn loop");
@@ -1200,11 +1489,11 @@ impl Agent {
     // ── Cancellation ──
 
     async fn finish_cancelled_turn(
-        &mut self, turn_id: u64, event_tx: &AgentEventTx, partial_text: Option<String>,
+        &self, turn_id: u64, event_tx: &AgentEventTx, partial_text: Option<String>,
     ) -> Result<TurnOutcome, AgentError> {
         warn!("Turn cancelled");
         if let Some(text) = partial_text.filter(|text| !text.is_empty()) {
-            self.harness.session_state.messages.push(Message::assistant(text));
+            self.harness.push_message(Message::assistant(text)).await;
         }
         let _ = event_tx
             .send(AgentEvent::Error {
@@ -1215,7 +1504,7 @@ impl Agent {
         let _ = event_tx
             .send(AgentEvent::TurnEnd { turn_id, outcome: outcome.clone() })
             .await;
-        self.persist_snapshot("turn_cancelled");
+        self.persist_snapshot("turn_cancelled").await;
         Ok(outcome)
     }
 
@@ -1226,14 +1515,14 @@ impl Agent {
         let _ = event_tx.send(AgentEvent::Error { error }).await;
     }
 
-    fn push_assistant_message(&mut self, text: String, thinking: String) {
+    async fn push_assistant_message(&self, text: String, thinking: String) {
         let mut content = vec![ContentBlock::Text { text }];
         if !thinking.is_empty() {
             content.push(ContentBlock::Reasoning { text: thinking });
         }
-        self.harness.session_state.messages.push(
+        self.harness.push_message(
             Message { role: Role::Assistant, content },
-        );
+        ).await;
     }
 
     /// Record a progress checkpoint on any focused goal.
@@ -1244,7 +1533,7 @@ impl Agent {
     /// are **not** modified — the Agent (or user via goal tool) is
     /// responsible for explicit progress updates.
     async fn auto_checkpoint_focused_goals(&self) {
-        let session_id = &self.harness.session_state.id;
+        let session_id = self.harness.session_id();
         let store = &self.harness.planning_store;
 
         for scope in [GoalScope::Session, GoalScope::Global] {
@@ -1284,18 +1573,64 @@ impl Agent {
         let tx = event_tx.clone();
         let err_event = error.clone();
         let outcome = TurnOutcome::Failed { error: error.clone() };
-        tokio::spawn(async move {
-            let _ = tx.send(AgentEvent::Error { error: err_event }).await;
-            let _ = tx.send(AgentEvent::TurnEnd { turn_id, outcome }).await;
-        });
+        tokio::spawn(
+            async move {
+                let _ = tx.send(AgentEvent::Error { error: err_event }).await;
+                let _ = tx.send(AgentEvent::TurnEnd { turn_id, outcome }).await;
+            }
+            .in_current_span(),
+        );
         error
     }
 
-    fn persist_snapshot(&self, trigger: &str) {
+    /// Build a summarizer closure for compaction that uses the LLM (when
+    /// enabled) to produce a semantic summary of dropped messages. Falls back
+    /// to mechanical truncation (via returning `None`) when disabled or the
+    /// model call fails.
+    ///
+    /// Takes owned `model` + `enabled` (not `&self`) so the returned closure
+    /// does not borrow the agent — letting the caller pass it into
+    /// `self.harness.maybe_compact_messages(..)` which needs `&mut self.harness`.
+    fn make_summarizer(
+        model: Arc<dyn Model>,
+        enabled: bool,
+    ) -> impl FnOnce(Vec<Message>) -> crate::compaction::SummarizerFuture {
+        move |old_messages: Vec<Message>| {
+            Box::pin(async move {
+                if !enabled {
+                    return None;
+                }
+                let prompt = crate::compaction::build_summarization_prompt(&old_messages);
+                let system = "You are a precise conversation summarizer for a coding agent.";
+                let messages = vec![Message::user(prompt)];
+                let mut stream = match model.complete(&messages, &[], system, "", None).await {
+                    Ok(s) => s,
+                    Err(e) => {
+                        warn!(error = %e, "LLM compaction summary failed; falling back to mechanical");
+                        return None;
+                    }
+                };
+                let mut output = String::new();
+                while let Some(event) = stream.next().await {
+                    match event {
+                        Ok(StreamEvent::TextDelta { text }) => output.push_str(&text),
+                        Ok(_) => {}
+                        Err(e) => {
+                            warn!(error = %e, "LLM compaction summary stream error; using partial/mechanical");
+                            break;
+                        }
+                    }
+                }
+                if output.trim().is_empty() { None } else { Some(output) }
+            }) as crate::compaction::SummarizerFuture
+        }
+    }
+
+    async fn persist_snapshot(&self, trigger: &str) {
         if !self.harness.cfg.auto_snapshot {
             return;
         }
-        let mut snapshot = self.snapshot();
+        let mut snapshot = self.snapshot().await;
         snapshot.metadata = Some(serde_json::json!({ "trigger": trigger }));
         if let Err(err) = self.harness.session_store.save_session(&snapshot) {
             warn!(session_id = %snapshot.session_id, trigger, error = %err, "failed to persist session snapshot");
@@ -1331,10 +1666,10 @@ fn filter_truncated_tool_calls(stop_reason: &Option<String>, calls: &mut Vec<Pen
 }
 
 /// Check if the model response was truncated (max_tokens) and request continuation.
-fn maybe_continue_incomplete(
+async fn maybe_continue_incomplete(
     stop_reason: &Option<String>,
     attempts: &mut u32,
-    harness: &mut Harness,
+    harness: &Harness,
 ) -> bool {
     if *attempts >= MAX_INCOMPLETE_CONTINUATION_ATTEMPTS {
         return false;
@@ -1345,9 +1680,9 @@ fn maybe_continue_incomplete(
     };
     if should_continue {
         *attempts += 1;
-        harness.session_state.messages.push(
+        harness.push_message(
             Message::user("Please continue."),
-        );
+        ).await;
         true
     } else {
         false
@@ -1364,11 +1699,11 @@ fn maybe_continue_incomplete(
 ///   what the model "found" is still hollow if no tools were actually run.
 ///   This catches the common pattern where reasoning planned concrete
 ///   actions but the output was only speculating about the codebase.
-fn maybe_continue_degenerate(
+async fn maybe_continue_degenerate(
     text: &str,
     thinking: &str,
     attempts: &mut u32,
-    harness: &mut Harness,
+    harness: &Harness,
 ) -> bool {
     if *attempts >= MAX_INCOMPLETE_CONTINUATION_ATTEMPTS {
         return false;
@@ -1376,18 +1711,19 @@ fn maybe_continue_degenerate(
     let trimmed = text.trim();
     if trimmed.is_empty() {
         *attempts += 1;
-        harness.session_state.messages.push(
+        harness.push_message(
             Message::user("Your response was empty. Please try again."),
-        );
+        ).await;
         return true;
     }
-    // Text-only response where the model planned to use tools
-    // in thinking but never executed them.  Regardless of how long
-    // the text is, the answer is based on speculation rather than
-    // actual tool results.
-    if thinking_contains_tool_plan(thinking) {
+    // Text-only response where the model planned to use tools in thinking
+    // but never executed them — BUT only when it did NOT also plan to create
+    // a goal/plan/todo. The system prompt instructs "plan first, then tools",
+    // so thinking that mixes planning tools + execution tags is legitimate
+    // staged workflow, not a degenerate response.
+    if thinking_contains_tool_plan(thinking) && !thinking_contains_planning(thinking) {
         *attempts += 1;
-        harness.session_state.messages.push(
+        harness.push_message(
             Message::user(
                 "Your response did not include any tool calls, but your \
                  thinking shows you planned to inspect the codebase or \
@@ -1395,10 +1731,23 @@ fn maybe_continue_degenerate(
                  now — do not speculate about what the code does without \
                  checking it first."
             ),
-        );
+        ).await;
         return true;
     }
     false
+}
+
+/// Check whether the thinking text contains planning tools (goal/plan/todo).
+///
+/// When the model is in the "plan first, then execute" phase, we should NOT
+/// treat the absence of tool calls as degenerate — the system prompt
+/// explicitly instructs the model to create goals and plans before using
+/// execution tools.
+fn thinking_contains_planning(thinking: &str) -> bool {
+    let lower = thinking.to_lowercase();
+    lower.contains("<goal")
+        || lower.contains("<plan")
+        || lower.contains("<todo")
 }
 
 /// Check whether the thinking text contains planned but unexecuted tool usage.
@@ -1453,9 +1802,9 @@ fn guard_tool_output(
     messages: &[Message],
     tool_name: &str,
     output_text: &str,
-) -> String {
+) -> (String, Option<GuardTruncationInfo>) {
     if !compaction_cfg.enabled {
-        return output_text.to_string();
+        return (output_text.to_string(), None);
     }
 
     let budget = compaction_cfg.token_budget;
@@ -1469,7 +1818,7 @@ fn guard_tool_output(
     let needs_trunc = output_len > single_max || projected > threshold;
 
     if !needs_trunc {
-        return output_text.to_string();
+        return (output_text.to_string(), None);
     }
 
     // How much room do we have?
@@ -1481,30 +1830,55 @@ fn guard_tool_output(
     let max_chars = remaining.min(single_max);
 
     if output_text.len() <= max_chars {
-        return output_text.to_string();
+        return (output_text.to_string(), None);
     }
 
-    // Keep the beginning of the output (most relevant)
-    let prefix = if max_chars > 300 {
-        // Safe UTF-8 boundary: find last char boundary at or before the limit
-        let cut = max_chars.saturating_sub(200);
-        let boundary = if let Some((idx, _)) = output_text.char_indices().take_while(|(i, _)| *i < cut).last() {
-            idx
-        } else {
-            cut.min(output_text.len())
-        };
+    // Smart truncation: keep head (25%) + tail (60%) to preserve both
+    // structural context (imports, definitions) and the most relevant
+    // content at the end of the file.
+    let head_chars = (max_chars as f64 * 0.25) as usize;
+    let tail_chars = (max_chars as f64 * 0.60) as usize;
+
+    // Head: first `head_chars` bytes at a safe UTF-8 boundary
+    let head = fox_agent_core::truncate_to_bytes(output_text, head_chars);
+
+    // Tail: find the safe boundary for the start of the tail section,
+    // then take everything from that boundary to the end.
+    let tail_start_raw = output_text.len().saturating_sub(tail_chars);
+    // Walk forward from tail_start_raw to the first valid char boundary
+    let mut tail_start = tail_start_raw;
+    while tail_start < output_text.len() && !output_text.is_char_boundary(tail_start) {
+        tail_start += 1;
+    }
+    let tail = &output_text[tail_start..];
+
+    // Count omitted lines for structured truncation notice
+    let head_lines = head.lines().count();
+    let total_lines = output_text.lines().count();
+    let tail_lines = tail.lines().count();
+    let omitted_lines = total_lines.saturating_sub(head_lines + tail_lines);
+    let omitted_start = head_lines + 1;
+    let omitted_end = omitted_start + omitted_lines.saturating_sub(1);
+
+    let result = if max_chars > 500 {
         format!(
-            "{}\n\n[OUTPUT TRUNCATED: {:.0}k → {:.0}k chars. Context {}/{}. Use more targeted tool queries.]",
-            &output_text[..boundary],
+            "{head}\n\n\
+             ─── Lines {omitted_start}-{omitted_end} omitted ({omitted_lines} lines) ───\n\
+             [Use offset={omitted_start} limit=300 to read this section]\n\n\
+             {tail}\n\n\
+             [OUTPUT TRUNCATED: {:.0}k → {:.0}k chars | Context {:.0}% full ({}/{})]",
             output_len as f64 / 1000.0,
-            max_chars as f64 / 1000.0,
+            (head.len() + tail.len()) as f64 / 1000.0,
+            projected as f64 / budget as f64 * 100.0,
             current,
             budget,
         )
     } else {
         format!(
-            "[OUTPUT TRUNCATED: {:.0}k chars. Context {}/{} almost full. Use more targeted tool queries.]",
+            "[OUTPUT TRUNCATED: {:.0}k chars. Context {:.0}% full ({}/{}). \
+             Use more targeted tool queries.]",
             output_len as f64 / 1000.0,
+            projected as f64 / budget as f64 * 100.0,
             current,
             budget,
         )
@@ -1513,32 +1887,40 @@ fn guard_tool_output(
     warn!(
         tool = %tool_name,
         original = output_len,
-        truncated = prefix.len(),
+        truncated = result.len(),
         current = current,
         budget = budget,
         "Context guard truncated tool output"
     );
 
-    prefix
+    let info = GuardTruncationInfo {
+        budget,
+        current,
+        projected,
+    };
+
+    (result, Some(info))
+}
+
+/// Info about a guard_tool_output truncation, used by the caller to inject
+/// context-pressure soft interrupts.
+struct GuardTruncationInfo {
+    budget: usize,
+    current: usize,
+    projected: usize,
 }
 
 // ── Logging helpers ──
 
+/// Safe string truncation: returns at most `max_bytes` bytes, always on a
+/// valid UTF-8 character boundary. Uses `fox_agent_core::truncate_to_bytes`
+/// which walks back from `max_bytes` to the nearest boundary.
 fn truncate(s: &str, max: usize) -> String {
-    if s.len() <= max { s.to_string() }
-    else {
-        let boundary = char_boundary_before(s, max);
-        format!("{}... ({}/{})", &s[..boundary], boundary, s.len())
-    }
-}
-
-/// Returns the largest byte index ≤ `pos` that is a valid UTF-8 char boundary.
-fn char_boundary_before(s: &str, pos: usize) -> usize {
-    let pos = pos.min(s.len());
-    if s.is_char_boundary(pos) { pos }
-    else {
-        // Walk back one byte at a time until we hit a boundary
-        (0..pos).rev().find(|&i| s.is_char_boundary(i)).unwrap_or(0)
+    let truncated = fox_agent_core::truncate_to_bytes(s, max);
+    if truncated.len() == s.len() {
+        s.to_string()
+    } else {
+        format!("{}... ({}/{})", truncated, truncated.len(), s.len())
     }
 }
 
@@ -1551,8 +1933,14 @@ fn format_message_summaries(messages: &[Message]) -> Vec<String> {
             Role::Tool => "tool",
         };
         let preview: String = msg.content.iter().filter_map(|block| match block {
-            ContentBlock::Text { text } | ContentBlock::Reasoning { text } => Some(truncate(text, 80)),
-            ContentBlock::ToolResult { text, .. } => Some(format!("[result: {}]", truncate(text, 60))),
+            ContentBlock::Text { text } | ContentBlock::Reasoning { text } => {
+                let (short, _) = fox_agent_core::format_truncated(text, 80);
+                Some(short)
+            }
+            ContentBlock::ToolResult { text, .. } => {
+                let (short, _) = fox_agent_core::format_truncated(text, 60);
+                Some(format!("[result: {}]", short))
+            }
             ContentBlock::ToolUse { name, .. } => Some(format!("[tool_call: {name}]")),
             ContentBlock::Image { .. } => Some("[image]".to_string()),
         }).collect::<Vec<_>>().join(" | ");

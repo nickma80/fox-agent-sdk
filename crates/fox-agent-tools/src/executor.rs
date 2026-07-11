@@ -1,4 +1,4 @@
-use fox_agent_core::{PlanningStore, SandboxError, SandboxOperation, Skill, SkillRegistry, Tool, ToolContext, ToolDefinition, ToolError, ToolOutput, WorkspaceSandbox};
+use fox_agent_core::{AgentEventTx, PlanningStore, SandboxError, SandboxOperation, Skill, SkillRegistry, Tool, ToolContext, ToolDefinition, ToolError, ToolOutput, WorkspaceSandbox};
 use std::collections::HashMap;
 use std::path::Path;
 use std::sync::Arc;
@@ -188,11 +188,28 @@ pub async fn register_default_tools_with_planning_store(
 ///
 /// If `skill_registry` and `active_skill` are provided, a `SkillTool` is
 /// registered that lets the Agent activate/deactivate skills on demand.
+///
+/// If `event_tx` is provided, `PlanTool` will emit `PlanProgress` events
+/// whenever the plan is updated.
 pub async fn register_default_tools_with_planning_store_and_skill_registry(
     executor: &ToolExecutor,
     planning_store: Arc<dyn PlanningStore>,
     skill_registry: Option<Arc<RwLock<SkillRegistry>>>,
     active_skill: Option<Arc<RwLock<Option<Skill>>>>,
+) {
+    register_default_tools_with_planning_store_and_skill_registry_and_events(
+        executor, planning_store, skill_registry, active_skill, None,
+    ).await
+}
+
+/// Like [`register_default_tools_with_planning_store_and_skill_registry`] but
+/// also accepts an optional `AgentEventTx` for tools that emit progress events.
+pub async fn register_default_tools_with_planning_store_and_skill_registry_and_events(
+    executor: &ToolExecutor,
+    planning_store: Arc<dyn PlanningStore>,
+    skill_registry: Option<Arc<RwLock<SkillRegistry>>>,
+    active_skill: Option<Arc<RwLock<Option<Skill>>>>,
+    event_tx: Option<AgentEventTx>,
 ) {
     executor.register_tool(Arc::new(ReadTool)).await;
     executor.register_tool(Arc::new(WriteTool)).await;
@@ -204,7 +221,11 @@ pub async fn register_default_tools_with_planning_store_and_skill_registry(
     executor.register_tool(Arc::new(WebFetchTool::new())).await;
     executor.register_tool(Arc::new(WebSearchTool::new())).await;
     executor.register_tool(Arc::new(TodoTool::new(planning_store.clone()))).await;
-    executor.register_tool(Arc::new(PlanTool::new(planning_store.clone()))).await;
+    if let Some(tx) = event_tx {
+        executor.register_tool(Arc::new(PlanTool::with_event_tx(planning_store.clone(), tx))).await;
+    } else {
+        executor.register_tool(Arc::new(PlanTool::new(planning_store.clone()))).await;
+    }
     executor.register_tool(Arc::new(GoalTool::new(planning_store))).await;
     if let (Some(reg), Some(active)) = (skill_registry, active_skill) {
         executor.register_tool(Arc::new(SkillTool::new(reg, active))).await;
@@ -238,6 +259,7 @@ mod tests {
             working_dir,
             execution_mode: ToolExecutionMode::Foreground,
             graceful_shutdown_requested: false,
+            progress_tx: None,
         }
     }
 

@@ -30,7 +30,7 @@ impl SwarmRuntime {
     ) -> Self {
         // Wire coordinator persist to the harness' planning store before
         // returning — no race condition.
-        let session_id = base_harness.session_state.id.clone();
+        let session_id = base_harness.session_id().to_string();
         let store = base_harness.planning_store.clone();
         coordinator.set_planning_store(store, session_id).await;
         Self { coordinator, model, base_harness }
@@ -53,10 +53,13 @@ impl SwarmRuntime {
         &self.base_harness.cfg
     }
 
-    /// Fork a new agent that shares the same tools, skills, and config.
-    pub fn fork_agent(&self) -> Agent {
+    /// Fork a new agent that shares the same tools, skills, and config but
+    /// has an INDEPENDENT session state (so worker conversation does not
+    /// pollute the parent session).
+    pub async fn fork_agent(&self) -> Agent {
         let forked_model = self.model.fork();
-        Agent::new(forked_model, self.base_harness.clone(), Arc::new(tokio::sync::RwLock::new(None)))
+        let forked_harness = self.base_harness.fork_session_state().await;
+        Agent::new(forked_model, forked_harness, Arc::new(tokio::sync::RwLock::new(None)))
     }
 
     pub async fn spawn_worker(&self, worker_id: impl Into<String>, prompt: impl Into<String>) -> WorkerHandle {
@@ -122,7 +125,7 @@ impl WorkerAgent {
     }
 
     fn sync_plan_to_session(&self) {
-        let session_id = &self.agent.harness().session_state.id;
+        let session_id = self.agent.harness().session_id();
         let items: Vec<PlanItem> = {
             let Ok(guard) = self.coordinator.shared_plan.try_read() else { return };
             guard.items.iter().map(|i| PlanItem {

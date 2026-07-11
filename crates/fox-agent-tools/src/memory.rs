@@ -38,16 +38,27 @@ impl MemoryTool {
 
     fn parse_scope(s: Option<&str>, default: MemoryScope) -> Result<MemoryScope, ToolError> {
         match s.unwrap_or(match default {
+            MemoryScope::Session => "session",
             MemoryScope::Project => "project",
             MemoryScope::Global => "global",
             MemoryScope::All => "all",
         }) {
+            "session" => Ok(MemoryScope::Session),
             "project" => Ok(MemoryScope::Project),
             "global" => Ok(MemoryScope::Global),
             "all" => Ok(MemoryScope::All),
             other => Err(ToolError::Message {
-                message: format!("Unknown scope: {other}. Use project, global, or all"),
+                message: format!("Unknown scope: {other}. Use session, project, global, or all"),
             }),
+        }
+    }
+
+    fn scope_label(scope: MemoryScope) -> &'static str {
+        match scope {
+            MemoryScope::Session => "session",
+            MemoryScope::Project => "project",
+            MemoryScope::Global => "global",
+            MemoryScope::All => "all",
         }
     }
 
@@ -74,6 +85,8 @@ struct MemoryInput {
     tags: Option<Vec<String>>,
     #[serde(default)]
     scope: Option<String>,
+    #[serde(default)]
+    to_scope: Option<String>,
     #[serde(default)]
     from_id: Option<String>,
     #[serde(default)]
@@ -103,7 +116,7 @@ impl Tool for MemoryTool {
     }
 
     fn description(&self) -> &str {
-        "Manage cross-session memory. Supports remember, recall, search, list, forget, disable, enable, redact, tag, link, related, stats, reembed, reindex, refresh_clusters, rebuild_ann, export, import, compact."
+        "Manage cross-session memory. Supports remember, recall, search, list, forget, promote, disable, enable, redact, tag, link, related, stats, reembed, reindex, refresh_clusters, rebuild_ann, export, import, compact."
     }
 
     fn parameters_schema(&self) -> Value {
@@ -113,7 +126,7 @@ impl Tool for MemoryTool {
                 "intent": intent_schema_property(),
                 "action": {
                     "type": "string",
-                    "enum": ["remember", "recall", "search", "list", "forget", "disable", "enable", "redact", "tag", "link", "related", "stats", "reembed", "reindex", "refresh_clusters", "rebuild_ann", "export", "import", "compact"],
+                    "enum": ["remember", "recall", "search", "list", "forget", "promote", "disable", "enable", "redact", "tag", "link", "related", "stats", "reembed", "reindex", "refresh_clusters", "rebuild_ann", "export", "import", "compact"],
                     "description": "Action to perform."
                 },
                 "content": { "type": "string", "description": "Content to remember (for remember action)." },
@@ -121,7 +134,8 @@ impl Tool for MemoryTool {
                 "query": { "type": "string", "description": "Search/recall query." },
                 "id": { "type": "string", "description": "Memory ID." },
                 "tags": { "type": "array", "items": { "type": "string" }, "description": "Tags to attach." },
-                "scope": { "type": "string", "enum": ["project", "global", "all"], "description": "Memory scope (default: project)." },
+                "scope": { "type": "string", "enum": ["session", "project", "global", "all"], "description": "Memory scope (default: project). 'session' is isolated to the current session." },
+                "to_scope": { "type": "string", "enum": ["project", "global"], "description": "Target scope for promote action (default: project)." },
                 "from_id": { "type": "string", "description": "Source memory ID for link action." },
                 "to_id": { "type": "string", "description": "Target memory ID for link action." },
                 "weight": { "type": "number", "description": "Link weight 0.0-1.0 (default: 0.5)." },
@@ -142,12 +156,12 @@ impl Tool for MemoryTool {
             message: format!("invalid memory input: {e}"),
         })?;
 
-        // Set project directory from context
-        let manager = if let Some(ref wd) = ctx.working_dir {
-            self.manager.clone().with_project_dir(wd.clone())
-        } else {
-            self.manager.clone()
-        };
+        // Set project directory and session ID from context so that
+        // session-scoped operations resolve to the correct storage file.
+        let mut manager = self.manager.clone().with_session_id(ctx.session_id.clone());
+        if let Some(ref wd) = ctx.working_dir {
+            manager = manager.with_project_dir(wd.clone());
+        }
 
         match input.action.as_str() {
             "remember" => {
@@ -163,6 +177,7 @@ impl Tool for MemoryTool {
                     .with_tags(input.tags.unwrap_or_default());
 
                 let id = match scope {
+                    MemoryScope::Session => manager.remember_session(entry).map_err(|e| ToolError::Message { message: e })?,
                     MemoryScope::Global => manager.remember_global(entry).map_err(|e| ToolError::Message { message: e })?,
                     _ => manager.remember_project(entry).map_err(|e| ToolError::Message { message: e })?,
                 };
@@ -311,6 +326,34 @@ impl Tool for MemoryTool {
                     text: if found { format!("Forgot: {id}") } else { format!("Not found: {id}") },
                     is_error: false,
                     json: Some(json!({ "action": "forget", "id": id, "found": found })),
+                })
+            }
+
+            "promote" => {
+                let id = input.id.ok_or_else(|| ToolError::Message {
+                    message: "id required for promote action".to_string(),
+                })?;
+                // Source scope defaults to session (the common promote case).
+                let from = Self::parse_scope(input.scope.as_deref(), MemoryScope::Session)?;
+                // Target scope defaults to project.
+                let to = Self::parse_scope(input.to_scope.as_deref(), MemoryScope::Project)?;
+                let new_id = manager
+                    .promote_memory(&id, from, to)
+                    .map_err(|e| ToolError::Message { message: e })?;
+                Ok(ToolOutput {
+                    text: format!(
+                        "Promoted memory {id} from {} to {} (new id: {new_id})",
+                        Self::scope_label(from),
+                        Self::scope_label(to)
+                    ),
+                    is_error: false,
+                    json: Some(json!({
+                        "action": "promote",
+                        "source_id": id,
+                        "new_id": new_id,
+                        "from": Self::scope_label(from),
+                        "to": Self::scope_label(to),
+                    })),
                 })
             }
 

@@ -189,7 +189,7 @@ BFS `cascade_retrieve` 通过标签传播和边权重衰减发现间接相关记
 | `MemoryEntry` | 单条记忆: id, category, content, tags, search_text, embedding, confidence, trust... |
 | `MemoryCategory` | Fact / Preference / Entity / Correction / Custom |
 | `TrustLevel` | High (用户明确) / Medium (观察) / Low (推断) |
-| `MemoryScope` | Project / Global / All |
+| `MemoryScope` | Session / Project / Global / All |
 | `MemoryGraph` | 有向图: memories, tags, clusters, edges, reverse_edges |
 | `EdgeKind` | HasTag / InCluster / RelatesTo / Supersedes / Contradicts / DerivedFrom |
 
@@ -331,6 +331,7 @@ impl MemoryManager {
 
     // 核心 CRUD
     pub fn remember(&self, entry: MemoryEntry, scope: MemoryScope) -> Result<String>;
+    pub fn promote_memory(&self, id: &str, from: MemoryScope, to: MemoryScope) -> Result<String>;
     pub fn recall(&self, query: &str, limit: usize, mode: RecallMode) -> Result<Vec<(MemoryEntry, f32)>>;
     pub fn search(&self, text: &str, scope: MemoryScope) -> Result<Vec<MemoryEntry>>;
     pub fn list(&self, scope: MemoryScope) -> Result<Vec<MemoryEntry>>;
@@ -414,11 +415,12 @@ pub struct MemoryTool {
 ```
 
 支持 action:
-- `remember` — 存储 (content, category, scope, tags)
+- `remember` — 存储 (content, category, scope=[session|project|global], tags)
 - `recall` — 检索 (query, mode=[recent|keyword|semantic|cascade], limit, scope)
 - `search` — 文本搜索 (query, scope)
 - `list` — 列出所有 (scope)
 - `forget` — 删除 (id)
+- `promote` — 提升作用域 (id, scope=源作用域, to_scope=[project|global])，如 Session→Project
 - `tag` — 添加标签 (id, tags)
 - `link` — 链接记忆 (from_id, to_id, weight)
 - `related` — 图遍历 (id, depth)

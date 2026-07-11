@@ -1,5 +1,5 @@
 use async_trait::async_trait;
-use fox_agent_core::{Tool, ToolContext, ToolError, ToolOutput};
+use fox_agent_core::{AgentEvent, AgentEventTx, Tool, ToolContext, ToolError, ToolOutput};
 pub use fox_agent_core::{
     PlanItem, PlanStatus, PlanPriority, PlanningStore, VersionedPlan,
     load_plan, load_plan_with_store, save_plan, save_plan_with_store,
@@ -62,11 +62,18 @@ pub(crate) struct PlanToolInput {
 /// Tool that reads or updates the session-local shared plan.
 pub struct PlanTool {
     store: Arc<dyn PlanningStore>,
+    /// Optional event channel for emitting PlanProgress events.
+    event_tx: Option<AgentEventTx>,
 }
 
 impl PlanTool {
     pub fn new(store: Arc<dyn PlanningStore>) -> Self {
-        Self { store }
+        Self { store, event_tx: None }
+    }
+
+    /// Create a PlanTool that emits PlanProgress events when the plan changes.
+    pub fn with_event_tx(store: Arc<dyn PlanningStore>, event_tx: AgentEventTx) -> Self {
+        Self { store, event_tx: Some(event_tx) }
     }
 }
 
@@ -123,6 +130,23 @@ impl Tool for PlanTool {
             }
             None => load_plan_with_store(self.store.as_ref(), &ctx.session_id),
         };
+
+        // Emit PlanProgress event if we have an event channel
+        if let Some(ref tx) = self.event_tx {
+            let total = plan.items.len();
+            let completed = plan.items.iter()
+                .filter(|i| i.status == PlanStatus::Completed)
+                .count();
+            let current = plan.items.iter()
+                .find(|i| i.status == PlanStatus::InProgress)
+                .map(|i| i.content.clone());
+            let _ = tx.send(AgentEvent::PlanProgress {
+                completed,
+                total,
+                current_item: current,
+            }).await;
+        }
+
         Ok(ToolOutput {
             text: serde_json::to_string_pretty(&plan).map_err(|err| ToolError::Message {
                 message: format!("failed to serialize plan: {err}"),

@@ -136,7 +136,7 @@ Output ONLY the formatted lines, no other text. If no NEW memories worth extract
         if !existing.is_empty() {
             system.push_str("\n\nAlready known (do NOT re-extract these or close paraphrases):\n");
             for mem in existing.iter().take(80) {
-                let truncated = if mem.len() > 150 { &mem[..150] } else { mem.as_str() };
+                let truncated = crate::truncate_to_bytes(mem, 150);
                 system.push_str("- ");
                 system.push_str(truncated);
                 system.push('\n');

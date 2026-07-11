@@ -2,6 +2,25 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use thiserror::Error;
 
+/// Progress events emitted by tools during long-running execution.
+///
+/// Tools send these through `ToolContext::progress_tx` to give the
+/// application layer real-time visibility into tool execution.
+#[derive(Debug, Clone)]
+pub enum ToolProgressEvent {
+    /// A line of stdout/stderr output from a command (e.g. bash).
+    StdoutLine { line: String, stream: OutputStream },
+    /// Tool-defined progress update.
+    Progress { message: String, current: u64, total: Option<u64> },
+}
+
+/// Which output stream a line came from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OutputStream {
+    Stdout,
+    Stderr,
+}
+
 /// Describes a tool that the model can call (serialized in API requests).
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct ToolDefinition {
@@ -61,6 +80,10 @@ pub struct ToolContext {
     pub execution_mode: ToolExecutionMode,
     /// Whether a graceful shutdown has been requested
     pub graceful_shutdown_requested: bool,
+    /// Optional channel for tools to emit progress events during long-running
+    /// execution (e.g. bash stdout lines). Tools should check `is_some()` before
+    /// sending; the agent loop sets this when a progress channel is available.
+    pub progress_tx: Option<tokio::sync::mpsc::Sender<ToolProgressEvent>>,
 }
 
 impl ToolContext {
