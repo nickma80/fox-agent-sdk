@@ -23,17 +23,14 @@
 ///     .await?;
 /// ```
 
+use fox_agent_mcp::{McpClient, McpToolDefinition, McpTransport, McpRequest, McpResponse, TransportError};
 use fox_agent_sdk::{
-    AgentBuilder, AgentEvent, MockProvider, Tool, ToolContext, ToolError, ToolOutput,
-    TurnOutcome, StreamEvent,
+    AgentBuilder, AgentEvent, FoxAgentSdkConfig, MockProvider, StreamEvent,
+    Tool, ToolContext, ToolError, ToolOutput, TurnOutcome,
 };
-use fox_agent_mcp::{
-    McpClient, McpToolDefinition,
-    McpTransport, McpRequest, McpResponse,
-    TransportError,
-};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::collections::HashMap;
+use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
 // ═══════════════════════════════════════════════════════════════════════════

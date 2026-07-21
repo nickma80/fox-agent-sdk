@@ -626,22 +626,35 @@ impl Agent {
                 return self.finish_cancelled_turn(turn_id, event_tx, None).await;
             }
 
-            // ── Drift detection: periodic reminders after N consecutive auto-turns ──
+            // ── Drift detection: inject ONE reminder after N consecutive auto-turns ──
+            // The reminder persists in the conversation as a user message, so we only
+            // re-inject when compaction may have evicted it.  Check whether a focus
+            // reminder already exists in recent history — if so, skip to avoid filling
+            // context with redundant copies.
             let auto_turns = self.consecutive_auto_turns.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1;
             if auto_turns >= DRIFT_DETECTION_THRESHOLD && (auto_turns - DRIFT_DETECTION_THRESHOLD) % DRIFT_DETECTION_INTERVAL == 0 {
-                if let Some(anchor) = self.harness.latest_user_message_text().await {
-                    info!(
-                        auto_turns = auto_turns,
-                        "Drift detection: injecting focus reminder"
-                    );
-                    self.harness.queue_soft_interrupt(
-                        format!(
-                            "Focus Reminder: Your current task is:\n\"{anchor}\"\n\n\
-                             Are you still working toward this goal? If the task is complete, \
-                             stop and report your findings. If not, what specific step are you on?",
-                        ),
-                        false, // not urgent
-                    ).await;
+                let already_reminded = self.harness.session_messages().await
+                    .iter()
+                    .rev()
+                    .take(8)
+                    .any(|m| m.content.iter().any(|b| matches!(b, ContentBlock::Text { text } if text.starts_with("Interrupt: Focus Reminder:"))));
+                if !already_reminded {
+                    if let Some(anchor) = self.harness.latest_user_message_text().await {
+                        info!(
+                            auto_turns = auto_turns,
+                            "Drift detection: injecting focus reminder"
+                        );
+                        self.harness.queue_soft_interrupt(
+                            format!(
+                                "Focus Reminder: Your current task is:\n\"{anchor}\"\n\n\
+                                 Are you still working toward this goal? If the task is complete, \
+                                 stop and report your findings. If not, what specific step are you on?",
+                            ),
+                            false, // not urgent
+                        ).await;
+                    }
+                } else {
+                    trace!(auto_turns, "Drift detection: focus reminder already present — skipping");
                 }
             }
 

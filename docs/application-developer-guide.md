@@ -30,40 +30,57 @@ Agent 生命周期管理到高级配置的全部内容。
 ### 1.1 最小示例
 
 ```rust
-use fox_agent_sdk::{AgentBuilder, ProviderConfig, TurnOutcome};
+// 最小示例：从 agent.toml 加载全部配置
+use fox_agent_sdk::{AgentBuilder, AgentEvent, StreamEvent};
+use std::path::PathBuf;
 
 #[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let api_key = std::env::var("DEEPSEEK_API_KEY")?;
-    let mut agent = AgentBuilder::new()
-        .provider_config(ProviderConfig::deepseek(api_key))
-        .model_id("deepseek-reasoner")
-        .build()
-        .await?;
+async fn main() {
+    // 加载项目配置（agent.toml + AGENTS.md）
+    let project_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let cfg = FoxAgentSdkConfig::load_from_file(project_root.join("agent.toml"))
+        .unwrap_or_else(|_| FoxAgentSdkConfig::default());
 
-    let outcome = agent.run_once("你是谁？").await?;
-    println!("{:?}", outcome);
-    Ok(())
+    // 构建 Agent — 所有配置 (safety, MCP, skills, budget ...) 自动生效
+    let mut agent = AgentBuilder::new()
+        .working_dir(&project_root)
+        .sdk_config(cfg)
+        .with_global_agents_md_path(project_root.join("AGENTS.md"))
+        // 只需要显式覆盖 Provider（未放在 agent.toml 中时）
+        .provider_config(ProviderConfig::deepseek("sk-your-api-key"))
+        .model_id("deepseek-v4-flash")
+        .build()
+        .await
+        .expect("build agent");
+
+    // 执行一次对话
+    let outcome = agent
+        .run_once_streaming("用中文回答：介绍一下 Rust 编程语言", event_tx)
+        .await
+        .unwrap();
+    println!("Done: {:?}", outcome);
 }
 ```
 
 ### 1.2 Builder 配置选项
 
-| 方法 | 默认值 | 说明 |
-|------|--------|------|
-| `.provider_config(config)` | 无（必须设置） | 选择 Provider（DeepSeek/OpenAI/Anthropic） |
-| `.model_id(id)` | `"deepseek-reasoner"` | 模型标识符 |
-| `.working_dir(path)` | `None` | 工具执行的工作目录 |
-| `.with_default_tools()` | 不注册任何工具 | 注册所有内置工具 |
-| `.with_tool(tool)` | - | 注册自定义工具 |
-| `.with_system_prompt(text)` | 内置 `system.md` | 覆盖系统提示词 |
-| `.with_safety_policy(config)` | `SafetyConfig::default()` | 权限策略 |
-| `.with_storage_dir(path)` | `.fox-agent-sdk` | 存储根目录（必填） |
-| `.with_session_store(store)` | `InMemorySessionStore` | 会话持久化后端（覆盖默认路径） |
-| `.with_planning_store(store)` | `InMemoryPlanningStore` | 规划持久化后端（覆盖默认路径） |
-| `.with_mcp_server(config)` | - | 接入 MCP 服务器 |
-| `.with_global_agents_md_path(path)` | `~/.fox-agent/AGENTS.md` | 全局/领域级 AGENTS.md 路径 |
-| `.build()` | - | 构建 Agent |
+| 方法 | 参数类型 | 说明 |
+|------|----------|------|
+| `new()` | — | 创建 Builder |
+| `sdk_config(cfg)` | `FoxAgentSdkConfig` | 注入从 `agent.toml` / 代码构建的配置（safety、MCP、budget、memory …） |
+| `provider_config(cfg)` | `ProviderConfig` | 使用代码配置 LLM Provider（不放在 agent.toml 时） |
+| `with_provider(provider)` | `Arc<dyn Provider>` | 直接注入已构建的 Provider 实例（用于测试/Mock） |
+| `model_id(id)` | `&str` | 指定模型 ID |
+| `working_dir(path)` | `impl Into<PathBuf>` | 设定项目根目录（建议与 agent.toml 所在目录一致） |
+| `with_global_agents_md_path(path)` | `impl Into<PathBuf>` | 指定 `AGENTS.md` 文件路径 |
+| `with_default_tools()` | — | 注册所有内置工具 |
+| `with_tool(tool)` | `Arc<dyn Tool>` | 注册一个自定义工具 |
+| `with_system_prompt(prompt)` | `&str` | 设置系统提示词 |
+| `system_prompt_builder()` | — | 获取 SystemPromptBuilder 用于多级 prompt 组合 |
+| `with_planning_store(store)` | `Arc<dyn PlanningStore>` | 注入规划上下文存储 |
+| `with_safety_policy(safety)` | `SafetyConfig` | 运行时覆盖安全规则（allowlist、denylist、MCP auto-approve …） |
+| `with_permission_hook(hook)` | `fn(&str, &Value) -> PermissionResult` | 注入自定义权限钩子 |
+| `with_storage_dir(path)` | `impl Into<PathBuf>` | 设置 SDK 内部存储目录（覆盖 agent.toml 中的 storage_dir） |
 
 ### 1.3 多 Provider 配置
 
@@ -121,7 +138,7 @@ let mut agent = AgentBuilder::new()
 ```rust
 let mut agent = AgentBuilder::new()
     .provider_config(ProviderConfig::deepseek(key))
-    .model_id("deepseek-reasoner")
+    .model_id("deepseek-v4-flash")
     .build()
     .await?;
 
@@ -137,25 +154,29 @@ agent.set_model("deepseek-v4-flash")?;
 
 | 方法 | 返回 | 场景 |
 |------|------|------|
-| `run_once(msg)` | `Result<()>` | 纯副作用（忽略输出） |
-| `run_once_capture(msg)` | `Result<TurnOutcome>` | 捕获最终结果 |
-| `run_once_streaming(msg, tx)` | `Result<TurnOutcome>` | 通过 channel 获取实时事件 |
+| `run_once(msg)` | `Result<(), AgentError>` | 纯副作用（忽略输出） |
+| `run_once_capture(msg)` | `Result<TurnOutcome, AgentError>` | 捕获最终结果 |
+| `run_once_streaming(msg, tx)` | `Result<TurnOutcome, AgentError>` | 通过 channel 获取实时事件 |
 
 **示例：流式获取事件**
 
 ```rust
-let (tx, mut rx) = tokio::sync::mpsc::channel::<AgentEvent>(64);
+use tokio::sync::mpsc;
+let (tx, mut rx) = mpsc::channel::<AgentEvent>(64);
 let outcome = agent.run_once_streaming("创建项目结构", &tx).await?;
 
-loop {
-    match rx.recv().await {
-        Some(AgentEvent::TextDelta { text, .. }) => print!("{}", text),
-        Some(AgentEvent::ToolCallStart { name, .. }) => println!("[tool] {}", name),
-        Some(AgentEvent::Usage { input_tokens, output_tokens, .. }) => {
-            // token 统计
+// 注意：rx 会在 turn 结束后自动关闭，所以 rx.recv() 最终返回 None。
+while let Some(ev) = rx.recv().await {
+    match ev {
+        AgentEvent::ModelTextDelta { text } => print!("{}", text),
+        AgentEvent::ToolCallStart { name, .. } => println!("[tool] {}", name),
+        AgentEvent::ModelUsage { usage } => {
+            println!("tokens: in={} out={}", usage.input_tokens, usage.output_tokens);
         }
-        Some(AgentEvent::TurnComplete { .. }) => break,
-        Some(AgentEvent::Error { message, .. }) => eprintln!("error: {}", message),
+        AgentEvent::TurnEnd { outcome, .. } => {
+            println!("turn finished: {:?}", outcome);
+        }
+        AgentEvent::Error { error } => eprintln!("error: {}", error),
         _ => {}
     }
 }
@@ -165,31 +186,27 @@ loop {
 
 | 事件 | 时机 | 关键字段 |
 |------|------|---------|
-| `TurnStart` | 轮次开始 | `turn_id` |
-| `TurnEnd` | 轮次结束 | `turn_id`、`outcome` |
-| `ModelMessageStart` | 模型开始生成 | `message_id` |
-| `ModelTextDelta` | Provider 返回文本块 | `text` |
-| `ModelThinkingDelta` | 推理模型思考过程 | `text` |
-| `ModelMessageEnd` | 模型生成完毕 | `message_id` |
-| `WaitingForModel` | 模型流暂停（心跳） | `elapsed_secs` |
-| `ModelUsage` | Token 用量统计 | `usage` |
-| `ToolCallStart` | 工具调用开始 | `call_id`、`name`、`input` |
-| `ToolInputDelta` | 工具参数流式生成 | `index`、`call_id`、`tool_name`、`delta` |
-| `ToolCallEnd` | 工具调用结束 | `call_id`、`output` |
-| `ToolExecutionProgress` | 工具执行心跳（≥5s） | `call_id`、`tool_name`、`elapsed_secs` |
-| `PlanProgress` | Plan 进度更新 | `completed`、`total`、`current_item` |
-| `PermissionRequest` | 需要用户授权 | `request_id`、`tool_name`、`prompt`、`risk_level` |
-| `Compaction` | 上下文压缩 | `event`（trigger/removed/kept） |
-| `MemoryStateChanged` | 记忆状态变更 | `event` |
-| `MemoryInjected` | 记忆注入 prompt | `count`、`memory_ids` |
-| `SoftInterruptInjected` | 软中断注入 | `interrupt` |
-| `Error` | 发生错误 | `error` |
-| `McpServerConnected` | MCP 服务器连接 | `server_name` |
-| `McpServerDisconnected` | MCP 服务器断开 | `server_name`、`error` |
-
-**新增事件（v0.2+）**：
-- `ToolExecutionProgress` — 工具执行超过 5 秒后每 3 秒发送一次，TUI 用于显示"正在执行 bash... (12s)"
-- `PlanProgress` — 当 Agent 通过 `plan` 工具更新计划时自动发送，TUI 用于显示步骤进度条
+| `TurnStart` | 轮次开始 | `turn_id: u64` |
+| `TurnEnd` | 轮次结束 | `turn_id: u64`、`outcome: TurnOutcome` |
+| `ModelMessageStart` | 模型开始生成 | `message_id: String` |
+| `ModelTextDelta` | Provider 返回文本块 | `text: String` |
+| `ModelThinkingDelta` | 推理模型思考过程 | `text: String` |
+| `ModelMessageEnd` | 模型生成完毕 | `message_id: String` |
+| `WaitingForModel` | 模型流暂停（心跳） | `elapsed_secs: u64` |
+| `ModelUsage` | Token 用量统计 | `usage: TokenUsage` |
+| `ToolCallStart` | 工具调用开始 | `call_id: String`、`name: String`、`input: Value` |
+| `ToolInputDelta` | 工具参数流式生成 | `index: usize`、`call_id: Option<String>`、`tool_name: Option<String>`、`delta: String` |
+| `ToolCallEnd` | 工具调用结束 | `call_id: String`、`output: ToolOutput` |
+| `ToolExecutionProgress` | 工具执行心跳（≥5s） | `call_id: String`、`tool_name: String`、`elapsed_secs: u64` |
+| `PlanProgress` | Plan 进度更新 | `completed: usize`、`total: usize`、`current_item: Option<String>` |
+| `PermissionRequest` | 需要用户授权 | `request_id: String`、`tool_name: String`、`prompt: String`、`risk_level: String`、`policy_source: String`、`tool_summary: String` |
+| `Compaction` | 上下文压缩 | `event: CompactionEvent` |
+| `MemoryStateChanged` | 记忆状态变更 | `event: MemoryStateEvent` |
+| `MemoryInjected` | 记忆注入 prompt | `count: u32`、`memory_ids: Vec<String>` |
+| `SoftInterruptInjected` | 软中断注入 | `interrupt: InjectedInterrupt` |
+| `Error` | 发生错误 | `error: AgentError` |
+| `McpServerConnected` | MCP 服务器连接 | `server_name: String` |
+| `McpServerDisconnected` | MCP 服务器断开 | `server_name: String`、`error: Option<String>` |
 
 ### 2.3 TurnOutcome 结果类型
 
@@ -197,19 +214,18 @@ loop {
 pub enum TurnOutcome {
     Completed { text: String },
     RequiresUserDecision { request: PermissionRequest },
-    CancelledByUser,
-    BudgetExceeded { reason: String },
-    Error { message: String },
-    GracefulShutdown,
+    Cancelled,
+    Failed { error: AgentError },
 }
 ```
 
 ### 2.4 权限中断与恢复
 
-LLM 调用工具触发权限检查 → 用户决策 → Agent 恢复执行：
+LLM 调用工具触发权限检查 → 用户决策 → Agent 恢复执行。`PermissionDecision` 只有 `Allow` 和 `Deny { reason }` 两种变体。
 
 ```rust
-let (tx, mut rx) = tokio::sync::mpsc::channel::<AgentEvent>(64);
+use tokio::sync::mpsc;
+let (tx, mut rx) = mpsc::channel::<AgentEvent>(64);
 
 // 第一轮：触发权限
 let outcome = agent.run_once_streaming("删除日志文件", &tx).await?;
@@ -218,18 +234,37 @@ match outcome {
         println!("Agent 请求权限: {}", request.prompt);
         // 用户决策后恢复
         let decision = PermissionDecision::Allow;
-        agent.record_permission_decision(request.id.clone(), decision.clone());
+        // 注意：resume_streaming 复用同一个 tx，继续发送事件
         let outcome2 = agent.resume_streaming(decision, &tx).await?;
     }
     _ => {}
 }
 ```
 
+> **注意**：`resume_streaming` 只处理从上一次 `RequiresUserDecision` 暂停的那个 tool call 开始恢复。如果 assistant 同时返回了多个 tool call 且都需要权限，每次 `RequiresUserDecision` 只暂停一个，需要多次 `resume_streaming`。
+
 ---
 
 ## 3. 会话管理
 
-### 3.1 SessionState（运行时模型）
+### 3.1 三层模型：运行时 → 快照 → 持久化
+
+```
+SessionState (运行时) ──snapshot()──▶ SessionSnapshot (可序列化)
+                                           │
+                                     SessionStore trait
+                                      ┌────┴────┐
+                              FileSessionStore  InMemorySessionStore
+                              ({storage_dir}/sessions/)   (HashMap, 测试用)
+```
+
+| 概念 | 定位 | 包含内容 |
+|------|------|---------|
+| `SessionState` | 内存中的运行时状态 | 消息历史 `Vec<Message>`、会话状态 `SessionStatus`、标题/模型、env 快照 |
+| `SessionSnapshot` | 可序列化的完整快照 | 继承 `SessionState` 全部字段 **+** 模型运行时状态、挂起的权限请求、挂起的工具调用队列、中断状态、turn 计数器 |
+| `SessionStore` | trait，持久化接口 | `save_session()` / `load_session()` / `delete_session()` / `list_sessions()` |
+
+### 3.2 SessionState（运行时模型）
 
 `SessionState` 是领域层 Reducer 模型，通过 `apply(SessionEvent)` 驱动状态转移：
 
@@ -240,67 +275,134 @@ pub struct SessionState {
     pub title: Option<String>,
     pub model: Option<String>,
     pub provider_key: Option<String>,
-    pub status: SessionStatus,     // New / Active / Closed
+    pub status: SessionStatus,          // New / Active / Closed
     pub working_dir: Option<PathBuf>,
-    pub messages: Vec<Message>,
+    pub messages: Vec<Message>,         // 当前工作上下文（可能已被压缩）
+    pub full_messages: Vec<Message>,    // 完整未压缩的对话记录
     pub env_snapshots: Vec<EnvSnapshot>,
+    pub created_at: u64,                // Unix 秒
 }
 ```
 
-### 3.2 SessionSnapshot（持久化格式）
+### 3.3 SessionSnapshot（持久化格式）
 
-Agent 调用 `snapshot()` 时，将运行时状态（包括模型运行时、待审批权限、中断队列等）导出为完整快照：
+Agent 调用 `snapshot()` 时，将运行时状态（包括模型运行时、待审批权限、中断队列等）导出为完整快照。`SessionSnapshot` **包含了恢复 Agent 运行所需的全部信息**，不仅包括对话历史。
 
 ```rust
-let snapshot = agent.snapshot();
-session_store.save_session(&snapshot)?;
+pub struct SessionSnapshot {
+    // ── 继承自 SessionState ──
+    pub session_id: String,
+    pub parent_id: Option<String>,
+    pub title: Option<String>,
+    pub model: Option<String>,
+    pub provider_key: Option<String>,
+    pub status: SessionStatus,
+    pub working_dir: Option<PathBuf>,
+    pub messages: Vec<Message>,
+    pub full_messages: Vec<Message>,
+    pub env_snapshots: Vec<EnvSnapshot>,
+
+    // ── 附加的运行时状态（SessionState 中没有的） ──
+    pub model_runtime_state: ModelRuntimeState,         // 模型上下文窗口状态
+    pub pending_permission: Option<PermissionRequest>,  // 挂起的权限请求
+    pub pending_tool_calls: Vec<PendingToolCallSnapshot>, // 待执行的工具调用
+    pub interrupt_state: InterruptSnapshot,             // 中断管理
+    pub next_turn_id: u64,                              // 下一个 turn ID
+
+    pub metadata: Option<serde_json::Value>,
+    pub updated_at: u64,
+    pub created_at: u64,
+}
 ```
 
-### 3.3 SessionStore
+### 3.4 默认存储位置与 storage_dir 的关系
+
+**`FoxAgentSdkConfig.storage_dir`** 是所有持久化数据的根目录：
+
+```
+{storage_dir}/                          ← 默认 ".fox-agent-sdk"
+├── sessions/         ← FileSessionStore 的 root_dir
+│   └── {session_id}.json
+├── planning/         ← 规划数据
+│   ├── goals.json
+│   └── plans.json
+└── memory/           ← 长期记忆图
+```
+
+**存储位置解析规则**（`resolve_storage_root()`）：
+
+1. 若 `storage_dir` 是绝对路径 → 直接使用
+2. 若 `storage_dir` 是相对路径 → 相对于 `AgentBuilder::working_dir()` 拼接
+3. **默认值**：`storage_dir = ".fox-agent-sdk"`，`working_dir` 为 Agent 传入的项目根目录
+   ⇒ 最终默认路径：**`{项目根目录}/.fox-agent-sdk/sessions/`**
+
+### 3.5 SessionStore
+
+trait 定义：
+
+```rust
+pub trait SessionStore: Send + Sync {
+    fn save_session(&self, snapshot: &SessionSnapshot) -> Result<(), String>;
+    fn load_session(&self, session_id: &str) -> Result<Option<SessionSnapshot>, String>;
+    fn delete_session(&self, session_id: &str) -> Result<(), String>;
+    fn list_sessions(&self) -> Result<Vec<String>, String>;
+}
+```
 
 两个内置实现：
 
-- **InMemorySessionStore**：`HashMap` 存储，测试用
-- **FileSessionStore**：按 `session_id` 分文件存储为 JSON，生产用
+| 实现 | 存储后端 | 用途 |
+|------|---------|------|
+| `FileSessionStore` | `{root_dir}/{session_id}.json`（JSON pretty 格式） | **默认**，生产环境 |
+| `InMemorySessionStore` | `HashMap<String, SessionSnapshot>` | 测试，`AgentBuilder::new()` 无 work_dir 时自动降级 |
+
+AgentBuilder 构建时**自动创建** `FileSessionStore`，路径为 `{storage_root}/sessions/`。若需要自定义（如切换为 `InMemorySessionStore`），通过 `with_session_store()` 覆盖：
 
 ```rust
-use fox_agent_sdk::FileSessionStore;
-
-let store = Arc::new(FileSessionStore::new(PathBuf::from("./sessions")));
+let store = Arc::new(InMemorySessionStore::default());
 let mut agent = AgentBuilder::new()
+    .sdk_config(cfg)
     .provider_config(ProviderConfig::deepseek(key))
     .with_session_store(store)
     .build()
     .await?;
 ```
 
-### 3.4 会话恢复
+### 3.6 自动快照（auto_snapshot）
+
+`auto_snapshot` 默认为 **`true`**。每次 `run_once()` 或 `run_once_streaming()` 完成后，Agent 会自动：
+
+1. 调用 `snapshot()` 生成完整的 `SessionSnapshot`
+2. 通过 `SessionStore::save_session()` 写入磁盘
+
+在 `agent.toml` 中控制：
+```toml
+auto_snapshot = true   # 默认开启
+```
+
+### 3.7 会话恢复
+
+通过 `SessionStore::load_session()` 读取 `SessionSnapshot`，再用 `Agent::from_session_snapshot()` 重建 Agent：
 
 ```rust
+// 从 store 加载快照
+if let Some(snapshot) = harness.session_store.load_session("session-1")? {
+    let model = load_model(&cfg)?;  // 重新连接 Provider
+    let restored = Agent::from_session_snapshot(model, harness, snapshot);
+    restored.run_once("继续刚才的工作").await?;
+} else {
+    eprintln!("session not found");
+}
+```
+
+也可以在构建 Agent 时通过 `session_id()` 指定要恢复的会话：
+```rust
 let mut agent = AgentBuilder::new()
+    .sdk_config(cfg)
     .provider_config(ProviderConfig::deepseek(key))
-    .with_session_store(store.clone())
+    .session_id("session-1")   // 若存在则自动恢复
     .build()
     .await?;
-
-let restored = Agent::load_from_store(
-    model,
-    harness,
-    "session-1",
-)?;
-
-restored.run_once("继续刚才的工作").await?;
-```
-
-### 3.5 存储路径
-
-`FoxAgentSdkConfig.storage_dir` 是必填字段，所有持久化数据统一存储在该目录下：
-
-```
-{storage_dir}/
-├── sessions/   — 会话快照 (*.json)
-├── planning/   — 规划数据（goals, plans, todos）
-└── memory/     — 长期记忆图
 ```
 
 相对路径会基于 `working_dir` 解析。
@@ -422,18 +524,35 @@ let mut agent = AgentBuilder::new()
 
 ```rust
 pub struct SafetyConfig {
+    /// default_policy — 未匹配到其他规则时的默认策略。
     pub default_policy: DefaultSafetyPolicy,    // Allow / Deny / Confirm
-    pub tool_denylist: Option<Vec<String>>,     // 黑名单工具
-    pub tool_allowlist: Option<Vec<String>>,    // 白名单工具
-    pub custom_hook: Option<Arc<dyn PermissionHook>>,
-    pub productive_tool_confirm: bool,            // 产出工具确认（默认 true）
+
+    /// tool_denylist — 工具黑名单。匹配的工具始终要求用户确认。
+    /// 支持 `*` 通配符：`"mcp__akshare__*"`、`"mcp__*"`、`"stock_*"`。
+    /// 优先级高于 allowlist 和 mcp_auto_approve。
+    pub tool_denylist: Option<Vec<String>>,
+
+    /// tool_allowlist — 工具白名单。若设置，仅匹配的工具自动允许。
+    /// 支持 `*` 通配符。未匹配到的工具会被 Deny。
+    /// `None` 表示白名单模式关闭。
+    pub tool_allowlist: Option<Vec<String>>,
+
+    /// productive_tool_confirm — 启用时 write/edit/非只读 bash 始终确认。
+    pub productive_tool_confirm: bool,
+
+    /// mcp_auto_approve_servers — 自动批准指定 MCP server 的所有工具。
+    /// 等价于在 allowlist 中添加 `"mcp__<server>__*"`。
+    /// 当 AgentBuilder 设置了 `auto_approve: true` 的 McpServerConfig 时自动填充。
+    pub mcp_auto_approve_servers: Option<Vec<String>>,
+
+    /// approval_cache — 审批缓存配置。
+    pub approval_cache: ApprovalCacheConfig,
 }
 ```
 
 ### 5.1a Productive Tool Confirm（产出工具确认）
 
-当启用时，write/edit/bash（非只读）始终需要用户确认，不分析用户消息内容。
-这是一种简单可靠的防护：修改类工具本身就是危险的，总该确认。
+当启用时 write/edit/bash（非只读）始终需要用户确认，不分析用户消息内容。
 
 **只读 bash 命令自动放行**：`ls`、`grep`、`cat`、`find`、`git log`、`cargo check` 等。
 
@@ -443,20 +562,54 @@ pub struct SafetyConfig {
 productive_tool_confirm = true   # 默认开启
 ```
 
-```rust
-let safety = SafetyConfig {
-    productive_tool_confirm: false,  // 关闭产出工具确认
-    ..Default::default()
-};
-```
-
 ### 5.2 策略评估流程
 
 ```
-自定义 hook (优先) → Denylist 检查 → Allowlist 检查 → Default Policy
+1. custom_hook（自定义权限钩子 — 最高优先级，跳过所有规则）
+   ↓ (未注册则继续)
+2. Denylist（通配符匹配） → 命中 → AskUser
+   ↓ (未命中)
+3. Allowlist（通配符匹配） → 命中 → Allow
+   ↓ (allowlist 已设置但未命中 → Deny)
+4. MCP auto-approve servers → 工具名以 `mcp__<server>` 开头且在列表中 → Allow
+   ↓
+5. Default Policy → Allow / Deny / Confirm
+   ↓
+6. Productive Tool Confirm → write / edit / 非只读 bash → AskUser
 ```
 
-### 5.3 ApprovalManager
+#### 通配符规则示例
+
+```toml
+[safety]
+# 允许 akshare MCP server 的所有工具
+tool_allowlist = ["read", "grep", "mcp__akshare__*"]
+
+# 黑名单优先级最高 —  即使 MCP auto-approve 了 akshare，此工具仍需确认
+tool_denylist = ["mcp__akshare__delete_data"]
+
+# 批量自动批准多个 MCP server
+mcp_auto_approve_servers = ["akshare", "filesystem"]
+```
+
+### 5.3 自定义权限钩子
+
+```rust
+let mut agent = AgentBuilder::new()
+    .sdk_config(cfg)
+    .provider_config(ProviderConfig::deepseek(key))
+    .with_permission_hook(|tool_name: &str, _input: &Value| {
+        // 自定义逻辑：文件系统操作必须用户确认
+        if tool_name.starts_with("mcp__filesystem__") {
+            return PermissionResult::AskUser { ... };
+        }
+        PermissionResult::Allow
+    })
+    .build()
+    .await?;
+```
+
+### 5.4 ApprovalManager
 
 三层缓存设计，减少重复审批：
 
@@ -466,31 +619,9 @@ let safety = SafetyConfig {
 | `ThisSession` | 会话结束清空 | 用户确认一次，整个会话生效 |
 | `ThisWorkspace` | 跨会话持久 | 信任的工具永久生效 |
 
-```rust
-let safety = SafetyConfig {
-    default_policy: DefaultSafetyPolicy::Confirm,
-    ..Default::default()
-};
+### 5.5 审计与溯源
 
-let approval = ApprovalManager::new("session-1", safety);
-
-// 会话级别缓存 read 工具的审批
-approval.cache_decision(
-    "read",
-    &PermissionResult::Allow,
-    ApprovalScope::ThisSession,
-).await;
-
-// 检查缓存
-match approval.check_cache("read").await {
-    Some(result) => { /* 使用缓存结果 */ }
-    None => { /* 需要用户决策 */ }
-}
-```
-
-### 5.4 审计与溯源
-
-每个 `PermissionRequest` 携带 `policy_source` 字段，记录决策逻辑来源（`"denylist"`、`"allowlist"`、`"default:confirm"` 等）。完整决策链可导出到 JSONL，用于安全审计和回溯分析，确保不可抵赖性。
+每个 `PermissionRequest` 携带 `policy_source` 字段，记录决策逻辑来源（`"denylist"`、`"allowlist"`、`"default:confirm"` 等）。完整决策链可导出到 JSONL，用于安全审计和回溯分析。
 
 ```rust
 approval.record_audit(&request, &result, turn_id).await;
@@ -738,7 +869,7 @@ guard.add_metrics_hook(|metrics| {
 
 ### 9.3 自动停止条件
 
-- 超预算：`TurnOutcome::BudgetExceeded`
+- 超预算：`AgentError::BudgetExceeded { message }`（turn 返回 `Err`）
 - 连续错误过多：自动终止
 - 正常完成：`TurnOutcome::Completed`
 
@@ -790,36 +921,63 @@ eyJhbGci...   →  [JWT]
 ### 11.1 接入 MCP 服务器
 
 ```rust
-use fox_agent_sdk::McpServerConfig;
+use fox_agent_sdk::{McpServerConfig, McpTransportMode};
 
+// stdio 模式 — 通过子进程 stdin/stdout 通信
 let mcp_conf = McpServerConfig {
-    name: "filesystem".to_string(),
-    command: "npx".to_string(),
-    args: vec!["-y".into(), "@modelcontextprotocol/server-filesystem".into(), "/tmp".into()],
-    env: None,
-    transport: McpTransport::Stdio,
+    name: "akshare".to_string(),
+    transport: McpTransportMode::Stdio {
+        command: "uvx".into(),
+        args: vec!["akshare-mcp".into()],
+        env: None,
+        cwd: None,
+        startup_grace_ms: Some(10_000),  // uvx 首次需安装包，适当延长
+    },
+    auto_approve: true,   // 该 server 的所有工具自动批准
+    request_timeout_ms: Some(60_000),
+    ..Default::default()
 };
 
 let mut agent = AgentBuilder::new()
+    .sdk_config(cfg)
     .provider_config(ProviderConfig::deepseek(key))
     .with_mcp_server(mcp_conf)
     .build()
     .await?;
+
+// MCP 工具名称格式：mcp__<server>__<tool>
+// 示例：
+//   mcp__akshare__get_news_data
+//   mcp__akshare__get_hist_data
 ```
 
 ### 11.2 传输方式
 
-- `McpTransport::Stdio`：通过子进程 stdin/stdout 通信
-- `McpTransport::Sse { url }`：通过 HTTP SSE 连接
+| 模式 | 适用场景 | 关键参数 |
+|------|---------|---------|
+| `McpTransportMode::Stdio` | 本地 MCP server（子进程） | `command`、`args`、`startup_grace_ms` |
+| `McpTransportMode::Sse` | 远程 MCP server | `url`、`custom_headers`、`timeout_secs` |
 
-### 11.3 动态工具发现
+`Stdio` 模式的 `startup_grace_ms` 控制子进程启动后等待多久才开始健康检查。对于 `uvx` / `npx` 等首次需安装包的工具，建议设置为 `10_000`（10 秒）或更长。
 
-`McpClient` 在启动时完成三步初始化：
-1. `tools/list` → 发现所有可用工具
-2. 为每个工具创建 `McpToolAdapter`（实现 `Tool` trait）
-3. 将适配器注册到 harness 工具体系中
+### 11.3 自动批准（auto_approve）
 
-所有已加入权限检查、审计、超时控制等 SDK 级保障。
+`McpServerConfig::auto_approve = true` 会将 server 名注入 `SafetyConfig::mcp_auto_approve_servers`，该 server 的所有工具在权限检查时自动 `Allow`（遵守 denylist 最高优先级）。
+
+在 `agent.toml` 中可直接配置：
+```toml
+[safety]
+mcp_auto_approve_servers = ["akshare", "filesystem"]
+```
+
+### 11.4 动态工具发现
+
+`McpClient` 在连接时完成三步初始化：
+1. `initialize` → MCP 握手
+2. `notifications/initialized` → 通知服务器就绪
+3. `tools/list` → 发现所有工具并注册为 `McpTool`
+
+每个 MCP 工具的 `name` 会自动转换为 Provider 兼容格式（`mcp://server/tool` → `mcp__server__tool`），确保通过 DeepSeek / OpenAI 等 API 的 `^[a-zA-Z0-9_-]+$` 校验。
 
 ---
 
@@ -1310,7 +1468,7 @@ auto_update_hours = 24
 ```rust
 let cfg = FoxAgentSdkConfig::load_from_file("agent.toml")?;
 let mut agent = AgentBuilder::new()
-    .with_config(cfg)
+    .sdk_config(cfg)
     .provider_config(ProviderConfig::deepseek(key))
     .build()
     .await?;
@@ -1432,7 +1590,7 @@ Some(AgentEvent::WaitingForModel { elapsed_secs }) => {
 应用层无需额外操作——Intent Anchor 由 Harness 自动管理。可通过 Harness 访问：
 
 ```rust
-let anchor = agent.harness().intent_anchor_text().await;
+let anchor = agent.harness().latest_user_message_text().await;
 if let Some(msg) = anchor {
     println!("Current task: {msg}");
 }

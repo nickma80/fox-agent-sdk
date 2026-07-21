@@ -12,7 +12,20 @@ const DEFAULT_TIMEOUT: u64 = 30;
 const MAX_TIMEOUT: u64 = 120;
 
 fn default_user_agent() -> &'static str {
-    "Mozilla/5.0 (compatible; FoxAgent/1.0)"
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36 Edg/131.0.0.0"
+}
+
+/// Walk the full `std::error::Error` source chain so the underlying cause
+/// (TLS handshake failure, connection reset, DNS error, ...) is surfaced
+/// instead of reqwest's opaque top-level "error sending request" message.
+fn format_error_chain(err: &(dyn std::error::Error)) -> String {
+    let mut parts = vec![err.to_string()];
+    let mut source = err.source();
+    while let Some(inner) = source {
+        parts.push(inner.to_string());
+        source = inner.source();
+    }
+    parts.join(" -> ")
 }
 
 pub struct WebFetchTool {
@@ -25,6 +38,7 @@ impl WebFetchTool {
             client: reqwest::Client::builder()
                 .user_agent(default_user_agent())
                 .timeout(Duration::from_secs(MAX_TIMEOUT))
+                .connect_timeout(Duration::from_secs(10))
                 .build()
                 .unwrap_or_default(),
         }
@@ -97,7 +111,7 @@ impl Tool for WebFetchTool {
             .send()
             .await
             .map_err(|e| ToolError::Message {
-                message: format!("HTTP request failed: {e}"),
+                message: format!("HTTP request failed: {}", format_error_chain(&e)),
             })?;
 
         let status = response.status();
@@ -131,7 +145,7 @@ impl Tool for WebFetchTool {
         let mut stream = response.bytes_stream();
         while let Some(chunk) = stream.next().await {
             let chunk = chunk.map_err(|e| ToolError::Message {
-                message: format!("failed to read response: {e}"),
+                message: format!("failed to read response: {}", format_error_chain(&e)),
             })?;
             let remaining = MAX_SIZE.saturating_sub(body_bytes.len());
             if chunk.len() > remaining {

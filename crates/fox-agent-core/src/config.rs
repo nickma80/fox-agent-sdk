@@ -102,7 +102,7 @@ pub struct FoxAgentSdkConfig {
     /// called explicitly.
     pub provider: Option<ProviderConfig>,
 
-    /// Default model id (e.g. `"deepseek-reasoner"`, `"gpt-4o"`).
+    /// Default model id (e.g. `"deepseek-v4-flash"`, `"gpt-4o"`).
     ///
     /// Ignored when `AgentBuilder::model_id()` is called explicitly.
     /// Falls back to `"gpt-4o"` when neither is set (backward-compatible).
@@ -624,18 +624,34 @@ pub enum DefaultSafetyPolicy {
 }
 
 /// Safety/permission configuration with allowlist/denylist support.
+///
+/// ## Patterns
+///
+/// `tool_allowlist` and `tool_denylist` entries support `*` wildcards:
+///
+/// | Pattern | Matches |
+/// |---------|---------|
+/// | `"read"` | exact match: tool `read` |
+/// | `"mcp__akshare__*"` | all MCP tools from `akshare` server |
+/// | `"mcp__*"` | all MCP tools from any server |
+/// | `"stock_*"` | all tools whose name starts with `stock_` |
+///
+/// MCP tools are auto-detected by the `mcp__<server>__<tool>` prefix.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct SafetyConfig {
-    /// Tool allowlist. If set, only tools in this list are automatically allowed.
+    /// Tool allowlist — entries may include `*` wildcards.
+    /// If set, only matching tools are automatically allowed.
     /// None means allowlist mode is disabled.
     pub tool_allowlist: Option<Vec<String>>,
 
-    /// Tool denylist. Tools in this list always require user confirmation,
-    /// regardless of other settings.
+    /// Tool denylist — entries may include `*` wildcards.
+    /// Matching tools always require user confirmation, regardless of other settings.
+    /// Takes priority over allowlist and mcp_auto_approve_servers.
     pub tool_denylist: Option<Vec<String>>,
 
-    /// Default policy for tools not covered by allowlist or denylist.
+    /// Default policy for tools not covered by allowlist, denylist, or
+    /// mcp_auto_approve_servers.
     pub default_policy: DefaultSafetyPolicy,
 
     /// Approval cache configuration.
@@ -647,6 +663,12 @@ pub struct SafetyConfig {
     /// nature and should be confirmed. Read-only bash commands (ls, grep, cat,
     /// etc.) are still allowed automatically.
     pub productive_tool_confirm: bool,
+
+    /// MCP server names whose tools should be auto-approved.
+    ///
+    /// Example: `["akshare", "filesystem"]` auto-approves all tools from
+    /// the `akshare` and `filesystem` MCP servers.
+    pub mcp_auto_approve_servers: Option<Vec<String>>,
 }
 
 impl Default for SafetyConfig {
@@ -657,6 +679,7 @@ impl Default for SafetyConfig {
             default_policy: DefaultSafetyPolicy::Allow,
             approval_cache: crate::event::ApprovalCacheConfig::default(),
             productive_tool_confirm: true,
+            mcp_auto_approve_servers: None,
         }
     }
 }

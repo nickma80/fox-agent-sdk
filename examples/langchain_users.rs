@@ -19,12 +19,13 @@
 ///
 /// 使用 MockProvider，无需真实 LLM 凭证即可运行。
 use fox_agent_sdk::{
-    AgentBuilder, AgentEvent, AgentReport, MockProvider, PermissionResult,
+    AgentBuilder, AgentEvent, AgentReport, FoxAgentSdkConfig, MockProvider, PermissionResult,
     PlanItem, PlanPriority, PlanStatus, StreamEvent,
     SwarmCoordinator, SwarmSupervisor, Tool, ToolContext, ToolError,
     ToolOutput, TurnOutcome, WorkerStatus,
 };
 use serde_json::{json, Value};
+use std::path::PathBuf;
 use std::sync::Arc;
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -165,7 +166,14 @@ async fn demo_agent_builder() {
     ]);
 
     // ── 链式构建 (对应 LCEL 的 | 管道) ──
+    let project_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let cfg = FoxAgentSdkConfig::load_from_file(project_root.join("agent.toml"))
+        .unwrap_or_else(|_| FoxAgentSdkConfig::default());
+
     let mut agent = AgentBuilder::new()
+        .working_dir(&project_root)
+        .sdk_config(cfg)
+        .with_global_agents_md_path(project_root.join("AGENTS.md"))
         // 注入预构建 Provider (测试用)。生产环境用 .provider_config(ProviderConfig::deepseek(key))
         .with_provider(provider.clone())
         .model_id("mock-1")
@@ -234,7 +242,14 @@ async fn demo_streaming_events() {
         StreamEvent::MessageStop { stop_reason: None },
     ]);
 
+    let project_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let cfg = FoxAgentSdkConfig::load_from_file(project_root.join("agent.toml"))
+        .unwrap_or_else(|_| FoxAgentSdkConfig::default());
+
     let mut agent = AgentBuilder::new()
+        .working_dir(&project_root)
+        .sdk_config(cfg)
+        .with_global_agents_md_path(project_root.join("AGENTS.md"))
         .with_provider(provider)
         .model_id("mock-1")
         .with_tool(Arc::new(CalculatorTool))
@@ -429,7 +444,14 @@ async fn demo_permission_hook() {
 
     // ── 自定义权限策略 (对应 LangGraph 的 interrupt 逻辑) ──
     // Allow: 放行 | AskUser: 暂停等用户确认 | Deny: 拒绝
+    let project_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let cfg = FoxAgentSdkConfig::load_from_file(project_root.join("agent.toml"))
+        .unwrap_or_else(|_| FoxAgentSdkConfig::default());
+
     let mut agent = AgentBuilder::new()
+        .working_dir(&project_root)
+        .sdk_config(cfg)
+        .with_global_agents_md_path(project_root.join("AGENTS.md"))
         .with_provider(provider)
         .model_id("mock-1")
         .with_tool(Arc::new(CalculatorTool))

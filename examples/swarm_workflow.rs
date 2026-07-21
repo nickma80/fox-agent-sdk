@@ -1,24 +1,50 @@
-/// swarm_workflow: demonstrates multi-agent swarm with supervisor.
+/// swarm_workflow: demonstrates multi-agent swarm with supervisor,
+/// building agents via `AgentBuilder` + `agent.toml`.
 ///
 /// Covers:
+/// - Loading `agent.toml` + `AGENTS.md` via `AgentBuilder`
+/// - Building worker agents with the builder pattern
 /// - Worker lifecycle (Ready → Running → Completed/Failed/TimedOut)
 /// - Task assignment with dependency resolution
 /// - Failure retry and task reassignment
 /// - Summary report generation
 ///
-/// Uses `SwarmCoordinator` + `SwarmSupervisor` directly.
-/// For a higher-level API, see `SwarmRuntimeBuilder` in the SDK.
+/// Uses `SwarmCoordinator` + `SwarmSupervisor` with agents built
+/// from the project config.
 ///
 /// Uses MockProvider - no real LLM credentials needed.
 use fox_agent_sdk::{
-    AgentReport, PlanItem, PlanPriority, PlanStatus,
+    AgentBuilder, AgentReport, FoxAgentSdkConfig, MockProvider,
+    PlanItem, PlanPriority, PlanStatus,
     SwarmCoordinator, SwarmSupervisor, WorkerStatus,
 };
+use std::path::PathBuf;
 use std::sync::Arc;
 
 #[tokio::main]
 async fn main() {
     println!("=== Fox Agent SDK — Swarm Workflow Demo ===\n");
+
+    // ── Load project config ──
+    let project_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let cfg = FoxAgentSdkConfig::load_from_file(project_root.join("agent.toml"))
+        .unwrap_or_else(|_| FoxAgentSdkConfig::default());
+    println!("> Config loaded from agent.toml\n");
+
+    // ── Build a supervisor agent via AgentBuilder ──
+    let provider = Arc::new(MockProvider::new("mock-supervisor"));
+    let _agent = AgentBuilder::new()
+        .working_dir(&project_root)
+        .sdk_config(cfg)
+        .with_global_agents_md_path(project_root.join("AGENTS.md"))
+        .with_provider(provider.clone())
+        .model_id("mock-1")
+        .with_default_tools()
+        .build()
+        .await
+        .expect("build agent");
+
+    println!("> Supervisor agent built\n");
 
     // ── Set up coordinator + supervisor ──
     let coordinator = Arc::new(SwarmCoordinator::new());

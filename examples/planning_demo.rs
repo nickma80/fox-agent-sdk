@@ -15,11 +15,12 @@
 ///
 /// Run: cargo run --example planning_demo
 use fox_agent_sdk::{
-    AgentBuilder, AgentEvent, MockProvider, StreamEvent,
+    AgentBuilder, AgentEvent, FoxAgentSdkConfig, MockProvider, StreamEvent,
     InMemoryPlanningStore, PlanningStore,
     load_goals_with_store, load_plan_with_store, load_todos_with_store,
 };
 use fox_agent_core::{MilestoneStatus, PlanStatus, TodoStatus, GoalScope};
+use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::sync::mpsc;
 
@@ -37,7 +38,14 @@ async fn main() {
     // ── Build Agent with shared store + all default tools ──
     let provider = Arc::new(MockProvider::new("mock-agent"));
 
+    let project_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let cfg = FoxAgentSdkConfig::load_from_file(project_root.join("agent.toml"))
+        .unwrap_or_else(|_| FoxAgentSdkConfig::default());
+
     let mut agent = AgentBuilder::new()
+        .working_dir(&project_root)
+        .sdk_config(cfg)
+        .with_global_agents_md_path(project_root.join("AGENTS.md"))
         .with_provider(provider.clone())
         .model_id("mock-1")
         .with_planning_store(store.clone())
@@ -46,7 +54,7 @@ async fn main() {
         .await
         .expect("build agent");
 
-    let session_id = agent.harness().session_state.id.clone();
+    let session_id = agent.harness().session_state.read().await.id.clone();
     println!("[setup] session_id = {session_id}");
     println!("[setup] Agent built with goal/plan/todo tools registered\n");
 

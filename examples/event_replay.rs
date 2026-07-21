@@ -9,8 +9,10 @@
 ///
 /// Uses MockProvider — no real LLM credentials needed.
 use fox_agent_sdk::{
-    AgentBuilder, AgentEvent, EventRecorder, MockProvider, StreamEvent, TurnOutcome,
+    AgentBuilder, AgentEvent, EventRecorder, FoxAgentSdkConfig, MockProvider,
+    StreamEvent, TurnOutcome,
 };
+use std::path::PathBuf;
 use std::sync::Arc;
 
 #[tokio::main]
@@ -27,7 +29,14 @@ async fn main() {
         StreamEvent::MessageStop { stop_reason: None },
     ]);
 
+    let project_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let cfg = FoxAgentSdkConfig::load_from_file(project_root.join("agent.toml"))
+        .unwrap_or_else(|_| FoxAgentSdkConfig::default());
+
     let mut agent = AgentBuilder::new()
+        .working_dir(&project_root)
+        .sdk_config(cfg)
+        .with_global_agents_md_path(project_root.join("AGENTS.md"))
         .with_provider(provider.clone())
         .model_id("mock-1")
         .build()

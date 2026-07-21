@@ -21,6 +21,10 @@ pub enum McpTransportMode {
         args: Vec<String>,
         env: Option<Vec<(String, String)>>,
         cwd: Option<String>,
+        /// How long (ms) to wait after spawn before verifying the child is
+        /// alive.  Increase this for slow‑start wrappers like `uvx` / `npx`
+        /// that install packages on first run.  Defaults to 5000.
+        startup_grace_ms: Option<u64>,
     },
     /// SSE HTTP long‑poll (remote MCP server)
     Sse {
@@ -55,6 +59,7 @@ impl Default for McpServerConfig {
                 args: Vec::new(),
                 env: None,
                 cwd: None,
+                startup_grace_ms: Some(5_000),
             },
             auto_approve: false,
             tools_only: None,
@@ -66,11 +71,25 @@ impl Default for McpServerConfig {
 // ── Tool wrapper ──
 
 /// An MCP tool exposed through the SDK `Tool` trait.
+///
+/// The `name` exposed via [`Tool::name`] is sanitised for provider compatibility
+/// (e.g. `mcp://akshare/stock_info` → `mcp_akshare_stock_info`).  The internal
+/// `mcp_name` field keeps the original `mcp://server/tool` format for routing.
 pub struct McpTool {
+    /// Sanitised name safe for provider APIs (matches `^[a-zA-Z0-9_-]+$`).
     name: String,
+    /// Original MCP routing name (`mcp://server/tool`).
+    mcp_name: String,
     description: String,
     parameters_schema: Value,
     client: McpClient,
+}
+
+/// Convert `mcp://server/tool` to a provider-safe name.
+fn sanitise_tool_name(mcp: &str) -> String {
+    let stripped = mcp.strip_prefix("mcp://").unwrap_or(mcp);
+    let name = stripped.replace('/', "__");
+    format!("mcp__{}", name)
 }
 
 #[async_trait::async_trait]
@@ -88,7 +107,7 @@ impl Tool for McpTool {
     }
 
     async fn execute(&self, input: Value, _ctx: ToolContext) -> Result<ToolOutput, ToolError> {
-        match self.client.call_tool(&self.name, input).await {
+        match self.client.call_tool(&self.mcp_name, input).await {
             Ok(text) => Ok(ToolOutput {
                 text,
                 is_error: false,
@@ -107,7 +126,7 @@ impl Tool for McpTool {
 
 fn build_transport(cfg: &McpServerConfig) -> Box<dyn fox_agent_mcp::McpTransport> {
     match &cfg.transport {
-        McpTransportMode::Stdio { command, args, env, cwd } => {
+        McpTransportMode::Stdio { command, args, env, cwd, startup_grace_ms } => {
             let timeout = cfg.request_timeout_ms.unwrap_or(30_000);
             let env_map = env.as_ref().map(|pairs| {
                 pairs
@@ -122,6 +141,7 @@ fn build_transport(cfg: &McpServerConfig) -> Box<dyn fox_agent_mcp::McpTransport
                 env: env_map,
                 cwd: cwd.clone(),
                 request_timeout_ms: timeout,
+                startup_grace_ms: startup_grace_ms.unwrap_or(5_000),
             }))
         }
         McpTransportMode::Sse { url, headers, connect_timeout_secs } => {
@@ -171,7 +191,8 @@ pub async fn connect_and_discover_tools(
         .iter()
         .map(|def| {
             Arc::new(McpTool {
-                name: def.name.clone(),
+                name: sanitise_tool_name(&def.name),
+                mcp_name: def.name.clone(),
                 description: def.description.clone(),
                 parameters_schema: def.parameters_schema.clone(),
                 client: client.clone(),

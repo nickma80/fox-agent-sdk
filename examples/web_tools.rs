@@ -9,9 +9,11 @@
 /// 实时网络测试需要翻墙环境（DuckDuckGo / httpbin.org），默认启用 Mock 模式。
 /// 设置环境变量 `WEB_TOOLS_LIVE=1` 启用真实网络调用。
 use fox_agent_sdk::{
-    AgentBuilder, MockProvider, Tool, ToolContext, ToolError, WebFetchTool, WebSearchTool,
+    AgentBuilder, FoxAgentSdkConfig, MockProvider, Tool,
+    ToolContext, ToolError, ToolOutput, WebFetchTool, WebSearchTool,
 };
 use serde_json::json;
+use std::path::PathBuf;
 use std::sync::Arc;
 
 #[tokio::main]

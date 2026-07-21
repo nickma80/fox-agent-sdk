@@ -13,9 +13,10 @@ use fox_agent_core::{
     load_goals_with_store, load_plan_with_store, load_todos_with_store,
 };
 use fox_agent_sdk::{
-    AgentBuilder, AgentEvent, InMemoryPlanningStore, PlanningStore,
-    ProviderConfig, TurnOutcome,
+    AgentBuilder, AgentEvent, FoxAgentSdkConfig, InMemoryPlanningStore,
+    PlanningStore, ProviderConfig, TurnOutcome,
 };
+use std::path::PathBuf;
 use std::sync::Arc;
 
 #[tokio::main]
@@ -26,8 +27,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // ── Shared planning store so we can read state after the turn ──
     let planning_store: Arc<dyn PlanningStore> = Arc::new(InMemoryPlanningStore::default());
 
+    // ── Load project config (agent.toml + AGENTS.md from project root) ──
+    let project_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let cfg = FoxAgentSdkConfig::load_from_file(project_root.join("agent.toml"))
+        .unwrap_or_else(|_| FoxAgentSdkConfig::default());
+
     // ── Build agent with planning tools + store ──
     let mut agent = AgentBuilder::new()
+        .working_dir(&project_root)
+        .sdk_config(cfg)
+        .with_global_agents_md_path(project_root.join("AGENTS.md"))
         .provider_config(ProviderConfig::deepseek(api_key))
         .model_id("deepseek-v4-flash")
         .with_planning_store(planning_store.clone())
@@ -35,7 +44,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .build()
         .await?;
 
-    let session_id = agent.harness().session_state.id.clone();
+    let session_id = agent.harness().session_state.read().await.id.clone();
 
     println!("=== Fox Agent SDK — Simple Agent (DeepSeek v4) ===\n");
 

@@ -209,18 +209,20 @@ impl Harness {
 
     /// Append a message to the session (both working context and full transcript).
     ///
-    /// On every user message, captures it as the `latest_user_message`.
-    /// The first user message is separately captured as `first_user_message`.
+    /// On every **real** user message (not system-injected interrupts),
+    /// captures it as the `latest_user_message` and (once) `first_user_message`.
+    ///
+    /// System-injected messages starting with "Interrupt: " are skipped so
+    /// drift-detection and intent-anchor prompt slots always reference the
+    /// user's actual task, not stale injected reminders.
     pub async fn push_message(&self, msg: fox_agent_core::Message) {
         if msg.role == Role::User {
             let text: String = msg.content.iter().filter_map(|b| match b {
                 fox_agent_core::ContentBlock::Text { text } => Some(text.as_str()),
                 _ => None,
             }).collect::<Vec<_>>().join(" ");
-            if !text.is_empty() {
-                // Always update latest
+            if !text.is_empty() && !text.starts_with("Interrupt: ") {
                 *self.latest_user_message.write().await = Some(text.clone());
-                // Only set first once
                 let mut first = self.first_user_message.write().await;
                 if first.is_none() {
                     *first = Some(text);
@@ -275,7 +277,7 @@ impl Harness {
                     fox_agent_core::ContentBlock::Text { text } => Some(text.as_str()),
                     _ => None,
                 }).collect::<Vec<_>>().join(" ");
-                if !text.is_empty() {
+                if !text.is_empty() && !text.starts_with("Interrupt: ") {
                     if first.is_none() {
                         first = Some(text.clone());
                     }

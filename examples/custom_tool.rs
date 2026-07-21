@@ -5,10 +5,11 @@
 /// - Registering a custom tool with `AgentBuilder::with_tool()`
 /// - Using `MockProvider` for deterministic testing
 use fox_agent_sdk::{
-    AgentBuilder, AgentEvent, MockProvider, StreamEvent, Tool, ToolContext, ToolError,
-    ToolOutput, TurnOutcome,
+    AgentBuilder, AgentEvent, FoxAgentSdkConfig, MockProvider, StreamEvent,
+    Tool, ToolContext, ToolError, ToolOutput, TurnOutcome,
 };
 use serde_json::{Value, json};
+use std::path::PathBuf;
 use std::sync::Arc;
 
 struct ReverseTool;
@@ -70,7 +71,14 @@ async fn main() {
         StreamEvent::MessageStop { stop_reason: None },
     ]);
 
+    let project_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let cfg = FoxAgentSdkConfig::load_from_file(project_root.join("agent.toml"))
+        .unwrap_or_else(|_| FoxAgentSdkConfig::default());
+
     let mut agent = AgentBuilder::new()
+        .working_dir(&project_root)
+        .sdk_config(cfg)
+        .with_global_agents_md_path(project_root.join("AGENTS.md"))
         .with_provider(provider.clone())
         .model_id("mock-1")
         .with_tool(Arc::new(ReverseTool))

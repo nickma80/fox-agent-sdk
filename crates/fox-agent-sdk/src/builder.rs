@@ -331,6 +331,19 @@ impl AgentBuilder {
         if let Some(mcp_override) = self.mcp_config_override {
             sdk_config.mcp = mcp_override;
         }
+
+        // ── Inject MCP auto-approve servers into SafetyConfig ──
+        {
+            let auto_approve: Vec<String> = self
+                .mcp_servers
+                .iter()
+                .filter(|c| c.auto_approve)
+                .map(|c| c.name.clone())
+                .collect();
+            if !auto_approve.is_empty() {
+                sdk_config.safety.mcp_auto_approve_servers = Some(auto_approve);
+            }
+        }
         let budget_timeout = sdk_config.budget.provider_timeout_secs;
 
         let provider = if let Some(p) = self.provider {

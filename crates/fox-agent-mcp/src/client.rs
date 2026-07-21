@@ -49,6 +49,12 @@ pub struct McpClient {
     servers: Arc<RwLock<Vec<McpServerHandle>>>,
 }
 
+impl Default for McpClient {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl McpClient {
     /// Create an empty client — call [`connect_server`] to add servers.
     pub fn new() -> Self {
@@ -150,17 +156,17 @@ impl McpClient {
             );
             match server.transport.send(&req).await {
                 Ok(resp) => {
-                    if let Some(result) = resp.result {
-                        if let Ok(list) = serde_json::from_value::<ToolsListResult>(result) {
-                            for tool in &list.tools {
-                                // Apply tools_only filter
-                                if let Some(ref only) = server.tools_only {
-                                    if !only.iter().any(|n| n == &tool.name) {
-                                        continue;
-                                    }
-                                }
-                                all_tools.push(mcp_tool_to_definition(&server.name, tool));
+                    if let Some(result) = resp.result
+                        && let Ok(list) = serde_json::from_value::<ToolsListResult>(result)
+                    {
+                        for tool in &list.tools {
+                            // Apply tools_only filter
+                            if let Some(ref only) = server.tools_only
+                                && !only.iter().any(|n| n == &tool.name)
+                            {
+                                continue;
                             }
+                            all_tools.push(mcp_tool_to_definition(&server.name, tool));
                         }
                     }
                 }

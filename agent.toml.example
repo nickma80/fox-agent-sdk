@@ -122,11 +122,16 @@ llm_summary_enabled = true       # default: true — LLM structured narrative ex
 # ── Safety ──────────────────────────────────────────────────
 
 [safety]
-# Tool allowlist — only these tools auto-allowed (None = disabled)
+# Tool allowlist — only these tools auto-allowed (None = disabled).
+# Supports `*` wildcards:
+#   "mcp__akshare__*"   → all tools from the `akshare` MCP server
+#   "mcp__*"            → all MCP tools from any server
+#   "stock_*"           → all custom tools whose name starts with `stock_`
 # tool_allowlist = ["read", "grep", "ls", "glob", "edit", "write", "bash", "webfetch", "websearch", "goal", "plan", "todo", "lsp", "invalid", "agentgrep"]
 
 
-# Tool denylist — these tools always require confirmation
+# Tool denylist — these tools always require confirmation.
+# Also supports `*` wildcards.
 # tool_denylist = ["bash", "webfetch"]
 
 # Default policy for tools not in allowlist or denylist
@@ -135,6 +140,10 @@ default_policy = "Allow"         # "Confirm" | "Allow" | "Deny"
 # When enabled, write/edit/non-readonly bash always ask for confirmation.
 # Simpler and more reliable than guessing user intent from message keywords.
 productive_tool_confirm = true    # default
+
+# MCP server names whose tools should be auto-approved.
+# Convenience shortcut — equivalent to adding "mcp__<server>__*" to allowlist.
+# mcp_auto_approve_servers = ["akshare", "filesystem"]
 
 # Approval cache
 [safety.approval_cache]

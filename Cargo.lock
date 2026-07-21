@@ -1680,6 +1680,7 @@ dependencies = [
  "serde_json",
  "similar",
  "tokio",
+ "tracing",
  "urlencoding",
  "uuid 1.23.3",
 ]
