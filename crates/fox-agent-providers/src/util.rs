@@ -55,6 +55,7 @@ pub fn extract_text_content(message: &Message) -> String {
             fox_agent_core::ContentBlock::ToolResult { text, .. } => Some(text.as_str()),
             fox_agent_core::ContentBlock::Image { data, .. } => Some(data.as_str()),
             fox_agent_core::ContentBlock::ToolUse { .. } => None,
+            fox_agent_core::ContentBlock::NarrativeSummary { text } => Some(text.as_str()),
         })
         .collect::<Vec<_>>()
         .join("\n")

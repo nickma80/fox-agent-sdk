@@ -1,9 +1,9 @@
 use fox_agent_core::{
-    AgentError, AgentEvent, AgentEventTx, CompactionConfig, ContentBlock, GoalCheckpoint,
-    GoalScope, GoalStatus, Message, Model, PermissionDecision, PermissionRequest,
-    PermissionResult, PendingToolCallSnapshot, ProviderError, Role, SessionSnapshot, Skill,
-    StreamEvent, ToolContext, ToolError, ToolExecutionMode, ToolOutput, TurnOutcome,
-    load_goals_with_store, now_secs, save_goals_with_store,
+    AgentError, AgentEvent, AgentEventTx, AgentStatus, CompactionConfig, ContentBlock,
+    GoalCheckpoint, GoalScope, GoalStatus, Message, Model, PermissionDecision,
+    PermissionRequest, PermissionResult, PendingToolCallSnapshot, ProviderError, Role,
+    SessionSnapshot, Skill, StreamEvent, ToolContext, ToolError, ToolExecutionMode,
+    ToolOutput, TurnOutcome, load_goals_with_store, now_secs, save_goals_with_store,
     ArtifactProducer, ArtifactRetentionClass, ArtifactType, McpServerKind, McpServerProfile,
     McpToolDescriptorSnapshot, ToolResultRouting,
 };
@@ -16,6 +16,14 @@ use tokio::sync::RwLock;
 use tracing::{debug, error, info, span, trace, warn, Instrument, Level};
 
 use crate::harness::Harness;
+
+// ── Type aliases ──
+
+/// Callback invoked on every user permission decision.
+///
+/// Parameters: the original `PermissionRequest`, the user's `PermissionDecision`,
+/// and the `turn_id` at the time of the decision.
+pub type AuditHandlerFn = Arc<dyn Fn(&PermissionRequest, &PermissionDecision, u64) + Send + Sync>;
 
 // ── Loop limits (P0) ──
 
@@ -32,11 +40,6 @@ const MAX_CONTEXT_LIMIT_RETRIES: u32 = 5;
 const MAX_INCOMPLETE_CONTINUATION_ATTEMPTS: u32 = 3;
 /// Number of consecutive identical tool calls before injecting a warning.
 const DUPLICATE_TOOL_CALL_WARN_THRESHOLD: u32 = 3;
-/// Number of consecutive auto-turns (no new user message) before drift
-/// detection injects a soft interrupt reminder.
-const DRIFT_DETECTION_THRESHOLD: u32 = 5;
-/// Interval (in auto-turns) between drift-detection reminders.
-const DRIFT_DETECTION_INTERVAL: u32 = 3;
 /// Substrings that indicate a context-limit error from the provider.
 const CTRL_LIMIT_KEYWORDS: &[&str] = &[
     "context_length_exceeded",
@@ -125,6 +128,11 @@ pub struct Agent {
     pub active_skill: Arc<RwLock<Option<Skill>>>,
     /// Sub-agent runtime for isolated task exploration (Phase 3).
     pub subagent_runtime_enabled: bool,
+    /// Agent status bar — renders task progress and runtime counters
+    /// at the end of the dynamic prompt section.
+    pub status: Arc<RwLock<AgentStatus>>,
+    /// Optional audit handler — invoked on every user permission decision.
+    audit_handler: Option<AuditHandlerFn>,
 }
 
 impl Agent {
@@ -143,7 +151,16 @@ impl Agent {
             mcp_descriptors: HashMap::new(),
             active_skill,
             subagent_runtime_enabled: false,
+            status: Arc::new(RwLock::new(AgentStatus::default())),
+            audit_handler: None,
         }
+    }
+
+    /// Set an optional audit handler that is automatically invoked on every user
+    /// permission decision (Allow/Deny). The handler receives the original
+    /// `PermissionRequest`, the user's `PermissionDecision`, and the `turn_id`.
+    pub fn set_audit_handler(&mut self, handler: AuditHandlerFn) {
+        self.audit_handler = Some(handler);
     }
 
     /// Attach a budget governance guard.
@@ -312,6 +329,8 @@ impl Agent {
             mcp_descriptors: HashMap::new(),
             active_skill: Arc::new(RwLock::new(None)),
             subagent_runtime_enabled: false,
+            status: Arc::new(RwLock::new(AgentStatus::default())),
+            audit_handler: None,
         }
     }
 
@@ -365,8 +384,14 @@ impl Agent {
         self.clear_pending_tool_calls();
         // Reset drift detection — new user message means the user is engaged
         self.consecutive_auto_turns.store(0, std::sync::atomic::Ordering::SeqCst);
+        // Update status bar with current objective
+        {
+            let mut status = self.status.write().await;
+            status.consecutive_auto_turns = 0;
+            status.current_objective = user_message.to_string();
+        }
         self.harness.push_message(Message::user(user_message)).await;
-        self.persist_snapshot("user_message").await;
+        self.persist_snapshot("user_message");
         self.run_turn_streaming(event_tx).await
     }
 
@@ -381,6 +406,14 @@ impl Agent {
                 message: "no pending tool call".to_string(),
             });
         };
+
+        // Invoke audit handler with the original request and the user's decision
+        if let Some(ref handler) = self.audit_handler {
+            if let Some(ref request) = self.pending_permission_snapshot() {
+                let turn_id = self.next_turn_id.load(std::sync::atomic::Ordering::SeqCst);
+                handler(request, &decision, turn_id);
+            }
+        }
 
         self.execute_single_tool(pending, decision, event_tx).await?;
 
@@ -653,37 +686,12 @@ impl Agent {
                 return self.finish_cancelled_turn(turn_id, event_tx, None).await;
             }
 
-            // ── Drift detection: inject ONE reminder after N consecutive auto-turns ──
-            // The reminder persists in the conversation as a user message, so we only
-            // re-inject when compaction may have evicted it.  Check whether a focus
-            // reminder already exists in recent history — if so, skip to avoid filling
-            // context with redundant copies.
-            let auto_turns = self.consecutive_auto_turns.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1;
-            if auto_turns >= DRIFT_DETECTION_THRESHOLD && (auto_turns - DRIFT_DETECTION_THRESHOLD) % DRIFT_DETECTION_INTERVAL == 0 {
-                let already_reminded = self.harness.session_messages().await
-                    .iter()
-                    .rev()
-                    .take(8)
-                    .any(|m| m.content.iter().any(|b| matches!(b, ContentBlock::Text { text } if text.starts_with("Interrupt: Focus Reminder:"))));
-                if !already_reminded {
-                    if let Some(anchor) = self.harness.latest_user_message_text().await {
-                        info!(
-                            auto_turns = auto_turns,
-                            "Drift detection: injecting focus reminder"
-                        );
-                        self.harness.queue_soft_interrupt(
-                            format!(
-                                "Focus Reminder: Your current task is:\n\"{anchor}\"\n\n\
-                                 Are you still working toward this goal? If the task is complete, \
-                                 stop and report your findings. If not, what specific step are you on?",
-                            ),
-                            false, // not urgent
-                        ).await;
-                    }
-                } else {
-                    trace!(auto_turns, "Drift detection: focus reminder already present — skipping");
-                }
-            }
+            // ── Drift detection: increment auto-turn counter for status bar ──
+            // The status bar (rendered at the end of the dynamic prompt) will
+            // display a ⚠️ WARNING when consecutive_auto_turns approaches the limit.
+            // No soft interrupt messages are injected — the status bar provides
+            // continuous awareness without polluting the message history.
+            self.consecutive_auto_turns.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
 
             let summarizer = Self::make_summarizer(
                 self.model.clone(),
@@ -735,6 +743,7 @@ impl Agent {
                 if let Some(ref guard) = self.governance {
                     guard.record_compaction().await;
                 }
+                self.status.write().await.record_compaction();
                 let _ = event_tx
                     .send(AgentEvent::Compaction { event: compaction })
                     .await;
@@ -784,9 +793,24 @@ impl Agent {
                 .as_ref()
                 .map(|s| s.prompt.clone());
 
+            let status_bar = if self.harness.cfg.context.status_bar_enabled {
+                self.status.read().await.render()
+            } else {
+                None
+            };
+            // Apply auto_turn_limit from config
+            {
+                let mut s = self.status.write().await;
+                s.auto_turn_limit = self.harness.cfg.context.status_bar_warn_auto_turns;
+            }
+
             let (split, _context_info) = self
                 .harness
-                .build_system_prompt_split(memory_prompt.as_deref(), active_skill_prompt.as_deref())
+                .build_system_prompt_split(
+                    memory_prompt.as_deref(),
+                    active_skill_prompt.as_deref(),
+                    status_bar.as_deref(),
+                )
                 .await;
             let tools = self.harness.tool_definitions().await;
             let messages = self.harness.session_messages().await;
@@ -874,6 +898,7 @@ impl Agent {
                             if let Some(ref guard) = self.governance {
                                 guard.record_compaction().await;
                             }
+                            self.status.write().await.record_compaction();
                             let _ = event_tx
                                 .send(AgentEvent::Compaction { event: compaction })
                                 .await;
@@ -1174,6 +1199,14 @@ impl Agent {
                 }
                 // Auto-checkpoint: record progress on focused goals
                 self.auto_checkpoint_focused_goals().await;
+                // Update status bar: increment turn + sync drift counter
+                {
+                    let mut status = self.status.write().await;
+                    status.turn = status.turn.saturating_add(1);
+                    status.consecutive_auto_turns = self
+                        .consecutive_auto_turns
+                        .load(std::sync::atomic::Ordering::SeqCst);
+                }
                 info!(final_chars = final_text.len(), thinking_chars = thinking_text.len(), "Turn completed");
                 let outcome = TurnOutcome::Completed { text: final_text };
                 let _ = event_tx
@@ -1212,11 +1245,12 @@ impl Agent {
                     if let Some(ref guard) = self.governance {
                         guard.record_compaction().await;
                     }
+                    self.status.write().await.record_compaction();
                     let _ = event_tx
                         .send(AgentEvent::Compaction { event: compaction })
                         .await;
                 }
-                self.persist_snapshot("turn_completed").await;
+                self.persist_snapshot("turn_completed");
                 return Ok(outcome);
             }
 
@@ -1287,7 +1321,7 @@ impl Agent {
                             .send(AgentEvent::TurnEnd { turn_id, outcome: outcome.clone() })
                             .await;
                         info!("Turn paused awaiting user decision");
-                        self.persist_snapshot("awaiting_permission").await;
+                        self.persist_snapshot("awaiting_permission");
                         return Ok(outcome);
                     }
                 }
@@ -1378,6 +1412,8 @@ impl Agent {
                         if name.starts_with("mcp__") {
                             self.harness.governance_metrics.record_mcp_call();
                         }
+                        // Update status bar tool counter
+                        self.status.write().await.record_tool_call();
                         info!(
                             tool = %name,
                             is_error = output.is_error,
@@ -1494,7 +1530,7 @@ impl Agent {
                 // `CONTEXT_GUARD_THRESHOLD` / `SINGLE_OUTPUT_MAX_FRACTION`.
                 let session_messages = self.harness.session_messages().await;
                 let raw_output_text = output.text.clone();
-                let (mut output_text, trunc_info) = guard_tool_output(
+                let (mut output_text, is_truncated) = guard_tool_output(
                     &self.harness.cfg.compaction,
                     &session_messages,
                     &name,
@@ -1507,7 +1543,7 @@ impl Agent {
                     &self.mcp_descriptors,
                     &name,
                     &raw_output_text,
-                    trunc_info.is_some(),
+                    is_truncated,
                 );
 
                 // Phase 4: unified routing decision + metrics
@@ -1515,7 +1551,7 @@ impl Agent {
                 let routing_input = crate::routing::RoutingInput {
                     tool_name: &name,
                     raw_output_text: &raw_output_text,
-                    truncated_by_context_guard: trunc_info.is_some(),
+                    truncated_by_context_guard: is_truncated,
                     context_pressure,
                     mcp_profile: parse_mcp_tool_name(&name)
                         .map(|(server, _)| server)
@@ -1689,34 +1725,6 @@ impl Agent {
                         output: output.clone(),
                     })
                     .await;
-                // Context pressure feedback: inject soft interrupt when context is tight
-                if let Some(info) = trunc_info {
-                    let pct = info.projected as f64 / info.budget as f64;
-                    let (level, urgent) = if pct > 0.9 {
-                        ("CRITICAL", true)
-                    } else if pct > 0.7 {
-                        ("HIGH", false)
-                    } else if pct > 0.5 {
-                        ("MODERATE", false)
-                    } else {
-                        ("", false)
-                    };
-                    if !level.is_empty() {
-                        self.harness.queue_soft_interrupt(
-                            format!(
-                                "[Context {level}: {:.0}% full ({}/{})]\n\
-                                 Stop reading large files. Instead:\n\
-                                 - Use grep with targeted patterns to find specific code\n\
-                                 - Read only the specific lines you need (use offset + limit)\n\
-                                 - Summarize what you already know and decide next action",
-                                pct * 100.0,
-                                info.current + output_text.len(),
-                                info.budget,
-                            ),
-                            urgent,
-                        ).await;
-                    }
-                }
                 self.harness.push_message(
                     tool_result_msg(call_id, output_text, output.is_error, elapsed_ms),
                 ).await;
@@ -1744,7 +1752,7 @@ impl Agent {
         let _ = event_tx
             .send(AgentEvent::TurnEnd { turn_id, outcome: outcome.clone() })
             .await;
-        self.persist_snapshot("turn_cancelled").await;
+        self.persist_snapshot("turn_cancelled");
         Ok(outcome)
     }
 
@@ -1866,15 +1874,56 @@ impl Agent {
         }
     }
 
-    async fn persist_snapshot(&self, trigger: &str) {
+    /// Persist a session snapshot to disk asynchronously.
+    ///
+    /// The heavy work (JSON serialisation + file I/O) is spawned onto a
+    /// background task so it never blocks the main Agent Loop.
+    fn persist_snapshot(&self, trigger: &str) {
         if !self.harness.cfg.auto_snapshot {
             return;
         }
-        let mut snapshot = self.snapshot().await;
-        snapshot.metadata = Some(serde_json::json!({ "trigger": trigger }));
-        if let Err(err) = self.harness.session_store.save_session(&snapshot) {
-            warn!(session_id = %snapshot.session_id, trigger, error = %err, "failed to persist session snapshot");
-        }
+        let trigger = trigger.to_string();
+        let store = Arc::clone(&self.harness.session_store);
+        let harness = self.harness.clone();
+        let model = self.model.clone();
+        let pending_permission = self.pending_permission_snapshot();
+        let pending_tool_calls: Vec<PendingToolCallSnapshot> = self
+            .pending_tool_calls_snapshot()
+            .iter()
+            .map(PendingToolCallSnapshot::from)
+            .collect();
+        let next_turn_id = self.peek_turn_id();
+
+        tokio::spawn(async move {
+            let ss = harness.session_state_read().await;
+            let snapshot = SessionSnapshot {
+                session_id: ss.id.clone(),
+                parent_id: ss.parent_id.clone(),
+                title: ss.title.clone(),
+                model: ss.model.clone().or_else(|| Some(model.model_id())),
+                provider_key: ss.provider_key.clone(),
+                status: ss.status,
+                working_dir: ss.working_dir.clone(),
+                messages: ss.messages.clone(),
+                full_messages: ss.full_messages.clone(),
+                env_snapshots: ss.env_snapshots.clone(),
+                model_runtime_state: model.runtime_state(),
+                pending_permission,
+                pending_tool_calls,
+                interrupt_state: harness
+                    .interrupt_manager
+                    .try_read()
+                    .map(|guard| guard.snapshot())
+                    .unwrap_or_default(),
+                next_turn_id,
+                metadata: Some(serde_json::json!({ "trigger": trigger })),
+                updated_at: now_secs(),
+                created_at: ss.created_at,
+            };
+            if let Err(err) = store.save_session(&snapshot) {
+                warn!(session_id = %snapshot.session_id, trigger = %snapshot.metadata.as_ref().and_then(|v| v["trigger"].as_str()).unwrap_or(""), error = %err, "failed to persist session snapshot");
+            }
+        });
     }
 }
 
@@ -2299,9 +2348,9 @@ fn guard_tool_output(
     messages: &[Message],
     tool_name: &str,
     output_text: &str,
-) -> (String, Option<GuardTruncationInfo>) {
+) -> (String, bool) {
     if !compaction_cfg.enabled {
-        return (output_text.to_string(), None);
+        return (output_text.to_string(), false);
     }
 
     let budget = compaction_cfg.token_budget;
@@ -2315,7 +2364,7 @@ fn guard_tool_output(
     let needs_trunc = output_len > single_max || projected > threshold;
 
     if !needs_trunc {
-        return (output_text.to_string(), None);
+        return (output_text.to_string(), false);
     }
 
     // How much room do we have?
@@ -2327,7 +2376,7 @@ fn guard_tool_output(
     let max_chars = remaining.min(single_max);
 
     if output_text.len() <= max_chars {
-        return (output_text.to_string(), None);
+        return (output_text.to_string(), false);
     }
 
     // Smart truncation: keep head (25%) + tail (60%) to preserve both
@@ -2389,22 +2438,7 @@ fn guard_tool_output(
         budget = budget,
         "Context guard truncated tool output"
     );
-
-    let info = GuardTruncationInfo {
-        budget,
-        current,
-        projected,
-    };
-
-    (result, Some(info))
-}
-
-/// Info about a guard_tool_output truncation, used by the caller to inject
-/// context-pressure soft interrupts.
-struct GuardTruncationInfo {
-    budget: usize,
-    current: usize,
-    projected: usize,
+    (result, true)
 }
 
 // ── Logging helpers ──
@@ -2440,6 +2474,7 @@ fn format_message_summaries(messages: &[Message]) -> Vec<String> {
             }
             ContentBlock::ToolUse { name, .. } => Some(format!("[tool_call: {name}]")),
             ContentBlock::Image { .. } => Some("[image]".to_string()),
+            ContentBlock::NarrativeSummary { text } => Some(format!("[narrative: {}...]", &text[..text.len().min(80)])),
         }).collect::<Vec<_>>().join(" | ");
         format!("[{role}] {preview}")
     }).collect()

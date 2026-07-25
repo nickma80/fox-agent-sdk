@@ -301,6 +301,7 @@ fn build_ingestion_transcript(messages: &[Message], window: usize) -> String {
                     ContentBlock::ToolUse { name, .. } => Some(name.as_str()),
                     ContentBlock::ToolResult { text, .. } => Some(text.as_str()),
                     ContentBlock::Image { .. } => None,
+                    ContentBlock::NarrativeSummary { .. } => None,
                 })
                 .collect::<Vec<_>>()
                 .join("\n");

@@ -182,7 +182,7 @@ async fn main() {
     // ── Verify custom prompt is active ──
     let (split, info) = agent
         .harness()
-        .build_system_prompt_split(None, None)
+        .build_system_prompt_split(None, None, None)
         .await;
     assert!(
         split.static_part.contains("customer support agent for Acme Corp"),

@@ -584,10 +584,34 @@ mod sdk_tests {
         );
 
         let builder = crate::prompt_builder::PromptBuilder::new("1.0.0", "abc123");
-        let (split, _) = builder.build_split(&session_id, &planning_store, None, &[], None, None, None, None);
+        let (split, _) = builder.build_split(&session_id, &planning_store, None, &[], None, None, None, None, None);
         assert!(split.dynamic_part.contains("implement phase4"));
         assert!(split.dynamic_part.contains("implement phase4"), "dynamic part should contain todo items: {}", split.dynamic_part);
         assert!(split.dynamic_part.contains("spawn worker"));
+    }
+
+    #[test]
+    fn phase5_status_bar_injected_into_prompt() {
+        // Verify that status_text is rendered into the dynamic prompt section.
+        let session_id = format!("phase5-status-{}", uuid::Uuid::new_v4());
+        let builder = crate::prompt_builder::PromptBuilder::new("1.0.0", "abc123");
+        let root = std::env::temp_dir().join(format!("fox-sdk-status-{}", uuid::Uuid::new_v4()));
+        let planning_store: Arc<dyn PlanningStore> = Arc::new(FilePlanningStore::new(root));
+
+        // No status text → should NOT appear
+        let (split_no_status, _) = builder.build_split(
+            &session_id, &planning_store, None, &[], None, None, None, None, None,
+        );
+        assert!(!split_no_status.dynamic_part.contains("Task Status"));
+
+        // With status text → should appear
+        let status_text = "<!-- AGENT_STATUS_BAR -->\n# Task Status\n\n## Runtime\n\
+| Turn | 5 |\n<!-- /AGENT_STATUS_BAR -->";
+        let (split_with_status, _) = builder.build_split(
+            &session_id, &planning_store, None, &[], None, None, None, None, Some(status_text),
+        );
+        assert!(split_with_status.dynamic_part.contains("Task Status"));
+        assert!(split_with_status.dynamic_part.contains("AGENT_STATUS_BAR"));
     }
 
     #[tokio::test]

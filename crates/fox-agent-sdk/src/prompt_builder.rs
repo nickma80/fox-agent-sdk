@@ -67,11 +67,12 @@ impl PromptBuilder {
         active_skill: Option<&str>,
         intent_anchor: Option<&str>,
         narrative_prompt: Option<&str>,
+        status_text: Option<&str>,
     ) -> (SplitPrompt, ContextInfo) {
-        // === Dynamic sections (per-turn) ===
+        // === Dynamic sections (per-turn, ordered by change frequency: low → high) ===
         let mut dynamic_sections: Vec<String> = Vec::new();
 
-        // Intent Anchor — always visible, keeps agent focused on the CURRENT task.
+        // 1. Intent Anchor (低频变) — always visible, keeps agent focused on the CURRENT task.
         // This reflects the LATEST user message (not the first), so when the user
         // changes tasks mid-session, the agent follows the new instruction.
         if let Some(anchor) = intent_anchor {
@@ -85,6 +86,13 @@ impl PromptBuilder {
             ));
         }
 
+        // 2. Narrative session history (低频变) — compaction-generated summaries.
+        // Placed before planning/memory so those sections benefit from prefix cache hits.
+        if let Some(narrative_text) = narrative_prompt {
+            dynamic_sections.push(narrative_text.to_string());
+        }
+
+        // 3. Planning context (中频变) — todo items, plan state, goals.
         let planning_context = render_planning_context_with_store(planning_store.as_ref(), session_id);
         let has_planning_state = !planning_context.is_empty();
 
@@ -92,21 +100,24 @@ impl PromptBuilder {
             dynamic_sections.push(format!("# Planning Context\n\n{}", planning_context));
         }
 
-        // Narrative session history (from compaction) — placed before memory injection
-        // so the model sees turn-by-turn history first, then semantic memory
-        if let Some(narrative_text) = narrative_prompt {
-            dynamic_sections.push(narrative_text.to_string());
-        }
-
+        // 4. Memory injection (中频变) — semantic recall results.
         if let Some(mem) = memory_injection {
             dynamic_sections.push(mem.to_string());
         }
 
+        // 5. Active skill (低频变) — skill prompt overlay.
         if let Some(skill) = active_skill {
-            dynamic_sections.push(format!("# Active Skill\n\n{}", skill));
+            dynamic_sections.push(format!(
+                "You are currently operating under the following skill: \"{skill}\". Follow its instructions."
+            ));
         }
 
-        // === Static sections (cacheable) ===
+        // 6. Agent Status Bar (高频变) — rendered at the end of the dynamic section.
+        // Always visible to the model without polluting the message history.
+        if let Some(bar) = status_text {
+            dynamic_sections.push(bar.to_string());
+        }
+
         let mut static_sections: Vec<String> = Vec::new();
 
         // System template

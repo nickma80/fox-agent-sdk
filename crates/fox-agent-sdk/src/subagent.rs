@@ -100,7 +100,7 @@ impl SubagentRuntime {
                 }
 
                 let (split_prompt, _ctx_info) = harness
-                    .build_system_prompt_split(None, None)
+                    .build_system_prompt_split(None, None, None)
                     .await;
                 let dynamic_str = &split_prompt.static_part;
 

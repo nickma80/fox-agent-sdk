@@ -4,8 +4,9 @@
 //! a chainable, discoverable builder that provides sensible defaults.
 
 use fox_agent_core::{
-    FoxAgentSdkConfig, McpConfig, Model, PermissionResult, PlanningStore, ProviderConfig,
-    SafetyConfig, SessionStore, WorkspaceSandbox, Tool, Skill,
+    FoxAgentSdkConfig, McpConfig, Model, PermissionDecision, PermissionRequest,
+    PermissionResult, PlanningStore, ProviderConfig, SafetyConfig, SessionStore,
+    WorkspaceSandbox, Tool, Skill,
 };
 use fox_agent_providers::{AnthropicCompatibleProvider, DeepSeekProvider, OpenAiCompatibleProvider};
 use fox_agent_swarm::SwarmCoordinator;
@@ -15,7 +16,7 @@ use std::sync::Arc;
 use tokio::sync::RwLock;
 use tracing::info;
 
-use crate::agent::Agent;
+use crate::agent::{Agent, AuditHandlerFn};
 use crate::artifact_tool::ArtifactReadTool;
 use crate::governance::GovernanceGuard;
 use crate::harness::Harness;
@@ -69,6 +70,8 @@ pub struct AgentBuilder {
     tools: Vec<Arc<dyn Tool>>,
     permission_hook:
         Option<Arc<dyn Fn(&str, &serde_json::Value) -> PermissionResult + Send + Sync>>,
+    /// Optional audit handler — auto-invoked on every user permission decision.
+    audit_handler: Option<AuditHandlerFn>,
     system_prompt: Option<String>,
     mcp_servers: Vec<McpServerConfig>,
     mcp_config_override: Option<McpConfig>,
@@ -97,6 +100,7 @@ impl AgentBuilder {
             default_tools: false,
             tools: Vec::new(),
             permission_hook: None,
+            audit_handler: None,
             system_prompt: None,
             mcp_servers: Vec::new(),
             mcp_config_override: None,
@@ -194,6 +198,45 @@ impl AgentBuilder {
         hook: impl Fn(&str, &serde_json::Value) -> PermissionResult + Send + Sync + 'static,
     ) -> Self {
         self.permission_hook = Some(Arc::new(hook));
+        self
+    }
+
+    /// Register an audit handler that is automatically invoked on every user
+    /// permission decision (Allow / Deny), eliminating the need for manual
+    /// `record_audit` calls in every `RequiresUserDecision` match arm.
+    ///
+    /// The handler receives:
+    /// - `&PermissionRequest` — the original request (contains `policy_source`,
+    ///   `tool_name`, `risk_level`, etc.)
+    /// - `&PermissionDecision` — the user's choice
+    /// - `u64` — the `turn_id` at the time of the decision
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// let approval = ApprovalManager::new("session-1", SafetyConfig::default());
+    /// let audit_path = PathBuf::from("./audit.jsonl");
+    ///
+    /// let agent = AgentBuilder::new()
+    ///     .provider_config(ProviderConfig::deepseek(key))
+    ///     .with_default_tools()
+    ///     .with_audit_handler(move |req, dec, turn| {
+    ///         let result = match dec {
+    ///             PermissionDecision::Allow => PermissionResult::Allow,
+    ///             PermissionDecision::Deny { reason } =>
+    ///                 PermissionResult::Deny { reason: reason.clone() },
+    ///         };
+    ///         // approval.record_audit(req, &result, turn) is called
+    ///         // automatically on every permission decision.
+    ///     })
+    ///     .build()
+    ///     .await?;
+    /// ```
+    pub fn with_audit_handler(
+        mut self,
+        handler: impl Fn(&PermissionRequest, &PermissionDecision, u64) + Send + Sync + 'static,
+    ) -> Self {
+        self.audit_handler = Some(Arc::new(handler));
         self
     }
 
@@ -393,6 +436,11 @@ impl AgentBuilder {
 
         let mut agent = Agent::new(model, harness, self.active_skill.clone());
 
+        // Wire audit handler if registered
+        if let Some(handler) = self.audit_handler {
+            agent.set_audit_handler(handler);
+        }
+
         if self.default_tools {
             // Load skills: project (.claude/skills/) + global ({storage_dir}/skills/) + additional
             let working_dir = agent.harness().session_working_dir().cloned();
@@ -418,26 +466,25 @@ impl AgentBuilder {
             agent.harness().load_hooks(&storage_dir).await;
 
             // ── Load plugins ──
-            if let Some(ref plugins_cfg) = sdk_config.plugins {
-                if plugins_cfg.enabled {
-                    let mut pm = agent.harness().plugin_manager.write().await;
-                    if let Ok(count) = pm.discover_installed() {
-                        if count > 0 {
-                            info!(count, "Loaded installed plugins");
-                            // Load plugin skills into registry
-                            let plugin_skills = pm.active_skills();
-                            let plugin_skills_count = plugin_skills.len();
-                            if plugin_skills_count > 0 {
-                                // Drop pm lock before acquiring skill_registry lock
-                                drop(pm);
-                                let mut reg = agent.harness().skill_registry.write().await;
-                                // Re-acquire pm to read skills
-                                let pm2 = agent.harness().plugin_manager.read().await;
-                                for skill in pm2.active_skills() {
-                                    reg.insert(skill);
-                                }
-                                info!(count = plugin_skills_count, "Loaded plugin skills");
+            let plugins_cfg = &sdk_config.plugins;
+            if plugins_cfg.enabled {
+                let mut pm = agent.harness().plugin_manager.write().await;
+                if let Ok(count) = pm.discover_installed() {
+                    if count > 0 {
+                        info!(count, "Loaded installed plugins");
+                        // Load plugin skills into registry
+                        let plugin_skills = pm.active_skills();
+                        let plugin_skills_count = plugin_skills.len();
+                        if plugin_skills_count > 0 {
+                            // Drop pm lock before acquiring skill_registry lock
+                            drop(pm);
+                            let mut reg = agent.harness().skill_registry.write().await;
+                            // Re-acquire pm to read skills
+                            let pm2 = agent.harness().plugin_manager.read().await;
+                            for skill in pm2.active_skills() {
+                                reg.insert(skill);
                             }
+                            info!(count = plugin_skills_count, "Loaded plugin skills");
                         }
                     }
                 }
@@ -642,6 +689,14 @@ impl SwarmRuntimeBuilder {
         hook: impl Fn(&str, &serde_json::Value) -> PermissionResult + Send + Sync + 'static,
     ) -> Self {
         self.inner = self.inner.with_permission_hook(hook);
+        self
+    }
+
+    pub fn with_audit_handler(
+        mut self,
+        handler: impl Fn(&PermissionRequest, &PermissionDecision, u64) + Send + Sync + 'static,
+    ) -> Self {
+        self.inner = self.inner.with_audit_handler(handler);
         self
     }
 

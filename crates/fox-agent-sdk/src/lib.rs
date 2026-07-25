@@ -24,6 +24,7 @@ mod mcp;
 mod hooks;
 mod plugin;
 mod routing;
+mod noise;
 mod subagent;
 mod swarm_runtime;
 

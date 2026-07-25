@@ -20,6 +20,10 @@ pub struct SplitPrompt {
     pub static_part: String,
     /// Dynamic content that changes every turn (memory injection, plan context)
     pub dynamic_part: String,
+    /// Line number of the cache-anchor boundary (number of lines in `static_part`).
+    /// Providers can use this to identify which prefix is eligible for KV caching.
+    /// `None` when there is no static content.
+    pub cache_anchor_line: Option<usize>,
 }
 
 impl SplitPrompt {
@@ -162,9 +166,16 @@ impl PromptBuilder {
     ) -> SplitPrompt {
         let static_part: Vec<String> = static_sections.into_iter().map(|s| s.into()).filter(|s| !s.is_empty()).collect();
         let dynamic_part: Vec<String> = dynamic_sections.into_iter().map(|s| s.into()).filter(|s| !s.is_empty()).collect();
+        let static_joined = static_part.join("\n\n");
+        let cache_anchor_line = if static_joined.is_empty() {
+            None
+        } else {
+            Some(static_joined.lines().count())
+        };
         SplitPrompt {
-            static_part: static_part.join("\n\n"),
+            static_part: static_joined,
             dynamic_part: dynamic_part.join("\n\n"),
+            cache_anchor_line,
         }
     }
 
@@ -520,6 +531,7 @@ mod tests {
         let sp = SplitPrompt {
             static_part: "hello".into(),
             dynamic_part: "world".into(),
+            cache_anchor_line: Some(1),
         };
         assert_eq!(sp.chars(), 12); // "hello\n\nworld" = 12
     }
@@ -529,6 +541,7 @@ mod tests {
         let sp = SplitPrompt {
             static_part: "hello world".into(),
             dynamic_part: String::new(),
+            cache_anchor_line: Some(1),
         };
         assert_eq!(sp.estimated_tokens(), 11 / 4);
     }
@@ -601,5 +614,30 @@ mod tests {
         );
         assert_eq!(sp.static_part, "static1\n\nstatic2");
         assert_eq!(sp.dynamic_part, "dynamic1");
+    }
+
+    #[test]
+    fn test_cache_anchor_line_with_static_content() {
+        let builder = PromptBuilder::new("1.0", "abc");
+        let sp = builder.build_split(
+            vec!["line1\nline2\nline3", "line4"],
+            vec!["dynamic"],
+        );
+        // "line1\nline2\nline3\n\nline4" = 5 lines total
+        assert_eq!(sp.cache_anchor_line, Some(5));
+    }
+
+    #[test]
+    fn test_cache_anchor_line_empty_static() {
+        let builder = PromptBuilder::new("1.0", "abc");
+        let sp = builder.build_split::<String>(vec![], vec!["dynamic".to_string()]);
+        assert_eq!(sp.cache_anchor_line, None);
+    }
+
+    #[test]
+    fn test_cache_anchor_line_single_line() {
+        let builder = PromptBuilder::new("1.0", "abc");
+        let sp = builder.build_split(vec!["hello"], vec!["world"]);
+        assert_eq!(sp.cache_anchor_line, Some(1));
     }
 }

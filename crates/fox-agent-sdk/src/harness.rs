@@ -80,7 +80,9 @@ impl Harness {
     pub fn new(cfg: FoxAgentSdkConfig, working_dir: Option<PathBuf>) -> Self {
         let memory_cfg = cfg.memory.clone();
         let memory_enabled = memory_cfg.enabled;
-        let compaction_cfg = cfg.compaction.clone();
+        let mut compaction_cfg = cfg.compaction.clone();
+        // Bridge l5_llm_summary_enabled to compaction config
+        compaction_cfg.llm_summary_enabled = cfg.context.l5_llm_summary_enabled;
         let safety_cfg = cfg.safety.clone();
         let session_store = resolve_session_store(&cfg, working_dir.as_deref());
         let planning_store = resolve_planning_store(&cfg, working_dir.as_deref());
@@ -113,10 +115,15 @@ impl Harness {
         if let Some(ref path) = cfg.global_agents_md_path {
             prompt_builder = prompt_builder.with_global_agents_md_path(path.clone());
         }
-        let plugin_marketplaces = cfg.plugins.as_ref().map(|p| p.marketplaces.clone()).unwrap_or_default();
+        let plugin_marketplaces = cfg.plugins.marketplaces.clone();
         let plugin_dir_path = storage_root.join("plugins");
         let plugin_proxy = cfg.proxy.clone();
         let routing_cfg = cfg.routing_policy.clone();
+        // Extract circuit breaker config before cfg is moved
+        let cb_cfg = (
+            cfg.context.l5_max_consecutive_failures,
+            cfg.context.l5_cooldown_turns,
+        );
         Self {
             cfg,
             session_id: session.id.clone(),
@@ -125,7 +132,9 @@ impl Harness {
             tool_executor: ToolExecutor::new(),
             memory_state,
             memory_manager,
-            compaction_manager: Arc::new(RwLock::new(CompactionManager::new(compaction_cfg))),
+            compaction_manager: Arc::new(RwLock::new(CompactionManager::new(compaction_cfg).with_circuit_breaker(
+                fox_agent_core::CompactionCircuitBreaker::new(cb_cfg.0, cb_cfg.1),
+            ))),
             safety_system: SafetySystem::new(safety_cfg),
             prompt_builder,
             planning_store,
@@ -155,7 +164,9 @@ impl Harness {
     ) -> Self {
         let memory_cfg = cfg.memory.clone();
         let memory_enabled = memory_cfg.enabled;
-        let compaction_cfg = cfg.compaction.clone();
+        let mut compaction_cfg = cfg.compaction.clone();
+        // Bridge l5_llm_summary_enabled to compaction config
+        compaction_cfg.llm_summary_enabled = cfg.context.l5_llm_summary_enabled;
         let safety_cfg = cfg.safety.clone();
         let session_store = resolve_session_store(&cfg, working_dir.as_deref());
         let planning_store = resolve_planning_store(&cfg, working_dir.as_deref());
@@ -187,10 +198,15 @@ impl Harness {
         if let Some(ref path) = cfg.global_agents_md_path {
             prompt_builder = prompt_builder.with_global_agents_md_path(path.clone());
         }
-        let plugin_marketplaces = cfg.plugins.as_ref().map(|p| p.marketplaces.clone()).unwrap_or_default();
+        let plugin_marketplaces = cfg.plugins.marketplaces.clone();
         let plugin_dir_path = storage_root.join("plugins");
         let plugin_proxy = cfg.proxy.clone();
         let routing_cfg = cfg.routing_policy.clone();
+        // Extract circuit breaker config before cfg is moved
+        let cb_cfg = (
+            cfg.context.l5_max_consecutive_failures,
+            cfg.context.l5_cooldown_turns,
+        );
         Self {
             cfg,
             session_id: session.id.clone(),
@@ -199,7 +215,9 @@ impl Harness {
             tool_executor: ToolExecutor::new(),
             memory_state,
             memory_manager,
-            compaction_manager: Arc::new(RwLock::new(CompactionManager::new(compaction_cfg))),
+            compaction_manager: Arc::new(RwLock::new(CompactionManager::new(compaction_cfg).with_circuit_breaker(
+                fox_agent_core::CompactionCircuitBreaker::new(cb_cfg.0, cb_cfg.1),
+            ))),
             safety_system: SafetySystem::with_permission_hook(safety_cfg, hook),
             prompt_builder,
             planning_store,
@@ -489,7 +507,7 @@ impl Harness {
             .check_with_mcp_metadata(tool_name, input, profile, descriptor)
     }
 
-    pub async fn build_system_prompt_split(&self, memory_prompt: Option<&str>, active_skill: Option<&str>) -> (SplitPrompt, ContextInfo) {
+    pub async fn build_system_prompt_split(&self, memory_prompt: Option<&str>, active_skill: Option<&str>, status_text: Option<&str>) -> (SplitPrompt, ContextInfo) {
         // Collect skill metadata for the static skills list
         let skills = {
             let reg = self.skill_registry.read().await;
@@ -506,6 +524,7 @@ impl Harness {
             active_skill,
             intent_anchor.as_deref(),
             narrative_prompt.as_deref(),
+            status_text,
         )
     }
 
@@ -526,6 +545,48 @@ impl Harness {
             let mut ss = self.session_state.write().await;
             std::mem::take(&mut ss.messages)
         };
+
+        // ── L2: Noise Removal (Phase C) ──
+        // Clean unreferenced lines from tool outputs before compaction.
+        // This reduces context pressure and may avoid unnecessary compaction.
+        if self.cfg.context.l2_noise_removal_enabled {
+            let noise_config = crate::noise::NoiseCleanConfig {
+                enabled: true,
+                reference_threshold: self.cfg.context.l2_noise_reference_threshold,
+                min_output_chars: self.cfg.context.l2_noise_min_output_chars,
+            };
+            let noise_result = crate::noise::clean_noise_from_messages(&mut messages, &noise_config);
+            if noise_result.tools_cleaned > 0 {
+                tracing::debug!(
+                    tools_cleaned = noise_result.tools_cleaned,
+                    lines_removed = noise_result.lines_removed,
+                    chars_saved = noise_result.chars_saved,
+                    "L2 noise removal cleaned tool outputs",
+                );
+            }
+        }
+
+        // ── L3: API-level Micro-compression (Phase E) ──
+        // When context pressure is very high (> 0.9 by default), remove
+        // large tool results from the history that are unlikely to be
+        // referenced again.
+        if self.cfg.context.l3_micro_compression_enabled {
+            let pressure = self.context_pressure().await;
+            if pressure >= self.cfg.context.l3_pressure_threshold {
+                let removed = fox_agent_core::apply_l3_micro_compression(
+                    &mut messages,
+                    self.cfg.context.l3_max_removals,
+                );
+                if removed > 0 {
+                    tracing::warn!(
+                        removed = removed,
+                        pressure = %pressure,
+                        "L3 micro-compression removed large tool results at high pressure",
+                    );
+                }
+            }
+        }
+
         let (event, narratives) = self
             .compaction_manager
             .write()
@@ -533,6 +594,20 @@ impl Harness {
             .maybe_compact(&mut messages, summarizer, mode, turn_start, turn_end)
             .await
             .unzip();
+
+        // ── L4: Archival Summarization (Phase D) ──
+        // Convert NarrativeRecords to NarrativeSummary content blocks that
+        // accumulate over time (unlike L5 which replaces the summary).
+        if self.cfg.context.l4_archival_enabled {
+            if let Some(ref narratives) = narratives {
+                crate::compaction::inject_narrative_summaries(
+                    &mut messages,
+                    narratives,
+                    self.cfg.context.l4_max_narratives,
+                );
+            }
+        }
+
         {
             let mut ss = self.session_state.write().await;
             ss.messages = messages;
@@ -579,7 +654,7 @@ impl Harness {
         &self,
         storage_dir: &std::path::Path,
     ) -> usize {
-        let config = self.cfg.hooks.clone().unwrap_or_default();
+        let config = self.cfg.hooks.clone();
         if !config.enabled {
             return 0;
         }

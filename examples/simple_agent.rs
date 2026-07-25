@@ -14,7 +14,7 @@ use fox_agent_core::{
 };
 use fox_agent_sdk::{
     AgentBuilder, AgentEvent, FoxAgentSdkConfig, InMemoryPlanningStore,
-    PlanningStore, ProviderConfig, TurnOutcome,
+    PermissionDecision, PlanningStore, ProviderConfig, TurnOutcome,
 };
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -23,7 +23,7 @@ use std::sync::Arc;
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // ── Read API key from environment ──
     let api_key = std::env::var("DEEPSEEK_API_KEY")
-        .expect("Set DEEPSEEK_API_KEY to your DeepSeek API key");
+        .unwrap_or_else(|_| "sk-eb41069e23244d0fb40e86d872238d92".to_string());
     // ── Shared planning store so we can read state after the turn ──
     let planning_store: Arc<dyn PlanningStore> = Arc::new(InMemoryPlanningStore::default());
 
@@ -64,7 +64,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         while let Some(ev) = rx.recv().await {
             match ev {
                 AgentEvent::ModelTextDelta { text } => {
-                    print!("{text}");
+                    print!("\n [TextDelta:] {text}");
                     use std::io::Write;
                     std::io::stdout().flush().ok();
                 }
@@ -91,31 +91,71 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 AgentEvent::Error { error } => {
                     eprintln!("\n[ERROR] {error}");
                 }
-                _ => {}
+                _ => {
+                }
             }
         }
     });
 
-    let outcome = agent.run_once_streaming(&prompt, &tx).await?;
+    // ── Run turn loop: handle permission requests interactively ──
+    let mut outcome = agent.run_once_streaming(&prompt, &tx).await?;
 
-    handle.await.ok();
+    loop {
+        match outcome {
+            TurnOutcome::Completed { .. } => {
+                println!("\n=== Done ===");
+                break;
+            }
+            TurnOutcome::RequiresUserDecision { request } => {
+                println!();
+                println!("[!] Permission required — {}", request.prompt);
+                println!("    Tool: {} | Risk: {:?} | Policy: {}",
+                    request.tool_name, request.risk_level, request.policy_source);
+                println!("    Summary: {}", request.tool_summary);
+                println!();
+                println!("    [a]llow  [d]eny  [A]llow all (this session)");
 
-    println!();
+                use std::io::{self, Write};
+                print!("> ");
+                io::stdout().flush().ok();
 
-    match outcome {
-        TurnOutcome::Completed { text: _ } => {
-            println!("\n=== Done ===");
-        }
-        TurnOutcome::RequiresUserDecision { request } => {
-            println!("\n[!] Agent needs permission: {}", request.prompt);
-        }
-        TurnOutcome::Cancelled => {
-            println!("\n[!] Turn was cancelled");
-        }
-        TurnOutcome::Failed { error } => {
-            println!("\n[!] Agent failed: {error}");
+                let mut input = String::new();
+                io::stdin().read_line(&mut input).ok();
+                let decision = match input.trim().to_lowercase().as_str() {
+                    "a" => PermissionDecision::Allow,
+                    "d" => PermissionDecision::Deny {
+                        reason: "user denied".to_string(),
+                    },
+                    "A" => {
+                        // Approve all: allow this one, then set a permissive policy
+                        println!("    [Approving all future requests this session]");
+                        // TODO: configure SafetySystem to auto-approve
+                        PermissionDecision::Allow
+                    }
+                    _ => {
+                        println!("    Unrecognised input, defaulting to deny.");
+                        PermissionDecision::Deny {
+                            reason: "unrecognised input".to_string(),
+                        }
+                    }
+                };
+
+                // Resume the turn with the user's decision
+                outcome = agent.resume_streaming(decision, &tx).await?;
+            }
+            TurnOutcome::Cancelled => {
+                println!("\n[!] Turn was cancelled");
+                break;
+            }
+            TurnOutcome::Failed { error } => {
+                println!("\n[!] Agent failed: {error}");
+                break;
+            }
         }
     }
+
+    // drop(tx);
+    handle.await.ok();
 
     // ── Read planning state (goals, plan, todos) ──
     println!();

@@ -69,6 +69,54 @@ AgentBuilder::new()
     .await?;
 ```
 
+### agent.toml 配置驱动
+
+所有组件（Provider、Model、Memory、Safety、MCP、Skills、Plugins、Compaction）均可通过
+`agent.toml` 声明式配置，`AgentBuilder::sdk_config(cfg)` 一键注入。无需在代码中逐项设置。
+
+```rust
+let cfg = FoxAgentSdkConfig::load_from_file("agent.toml")?;
+let mut agent = AgentBuilder::new()
+    .sdk_config(cfg)
+    .provider_config(ProviderConfig::deepseek(key))
+    .build()
+    .await?;
+```
+
+### 记忆系统
+
+跨会话长期记忆，支持语义召回（embedding 向量）和图结构级联检索：
+
+- **三级作用域** — Session（临时草稿）/ Project（项目知识库）/ Global（用户偏好），物理文件隔离
+- **自动提取** — LLM 从对话中抽取候选记忆 → 去重 → 冲突检测 → 写入
+- **语义召回** — Cascade 模式（Semantic + Keyword + BFS 图扩展），可选 HNSW ANN 加速
+- **上下文注入** — 每轮开始前后台异步召回，按 category 分组 + 字符/条数预算控制后注入 `dynamic_part`
+- **自动提升** — 跨多轮被反复强化的 Session 记忆自动提升到 Project/Global
+- **治理** — 保留策略、大小限制、模型变化自动重嵌、审计日志、GC 清理
+
+```toml
+[memory]
+enabled = true
+auto_extract = true
+auto_extract_scope = "Project"
+injection_max_chars = 1500
+injection_max_per_category = 3
+```
+
+### 会话管理
+
+自动持久化与恢复：
+
+- **auto_snapshot** — 每轮关键节点（用户消息、turn 完成、权限挂起）自动保存完整会话快照
+- **异步写入** — snapshot 序列化 + 文件 I/O 在后台 `tokio::spawn` 中执行，不阻塞 Agent Loop
+- **完整恢复** — 快照包含消息历史、模型运行时状态、挂起权限、中断队列，支持跨重启恢复
+- **存储路径** — `{storage_dir}/sessions/{session_id}.json`（JSON pretty 格式）
+
+```toml
+auto_snapshot = true              # 默认开启
+storage_dir = ".fox-agent-sdk"    # 所有持久化数据的根目录
+```
+
 ### 多 Provider 支持
 
 | Provider   | `provider_name` | 构造函数 |
@@ -182,12 +230,21 @@ approval.cache_decision(
 
 ### 事件录制与回放
 
-捕获每一轮执行用于调试、审计或 CI：
+捕获每一轮执行用于调试、审计或 CI。录制时订阅 AgentEvent channel，
+所有事件自动序列化到 JSONL：
 
 ```rust
-let recorder = EventRecorder::new("session-1", 1);
-// ... 运行 agent ...
-recorder.export_to_file(PathBuf::from("events.jsonl")).await.unwrap();
+let (tx, rx) = mpsc::channel::<AgentEvent>(64);
+let recorder = Arc::new(EventRecorder::new("session-1", 1));
+
+// 后台 task 消费事件并写入文件
+let rec = recorder.clone();
+let output = PathBuf::from("events.jsonl");
+tokio::spawn(async move { rec.run(rx, Some(output)).await });
+
+// 执行 Agent（tx 同时用于 Streaming 和 Recorder）
+agent.run_once_streaming("你好", &tx).await?;
+drop(tx); // 关闭 channel 后 run() 自动退出
 
 // 回放
 let loaded = EventRecorder::load_from_file(&PathBuf::from("events.jsonl")).unwrap();
@@ -277,7 +334,7 @@ cargo run --example custom_tool
 | `ApprovalManager` | `approval_manager::ApprovalManager` | 三层缓存、超时自动拒绝、审计 |
 | `ReplayRunner` | `replay_runner::ReplayRunner` | 黄金转录验证 |
 | `SwarmSupervisor` | `swarm::SwarmSupervisor` | 健康检查、重试、重分配、报告 |
-| `PromptBuilder` | `prompt_builder::PromptBuilder` | 分层 prompt 注入（规划 + 记忆） |
+| `MemoryManager` | `memory::MemoryManager` | 三级作用域记忆、语义召回、注入管线 |
 | `mask_secrets` | `scrub::mask_secrets` | 事件/日志导出的密钥脱敏 |
 
 ## 非功能性特性

@@ -110,6 +110,10 @@ pub struct FoxAgentSdkConfig {
 
     /// Memory system configuration
     pub memory: MemoryConfig,
+    /// Context management (L2 noise removal, L3 micro-compression,
+    /// L4 archival, L5 circuit breaker, status bar).
+    #[serde(rename = "context_management")]
+    pub context: ContextManagementConfig,
     /// Context window compaction configuration
     pub compaction: CompactionConfig,
     /// Tool permission safety configuration
@@ -155,13 +159,15 @@ pub struct FoxAgentSdkConfig {
     ///
     /// When enabled, the SDK executes user-defined scripts at key lifecycle
     /// events (PreToolUse, PostToolUse, PreCompact, etc.).
-    pub hooks: Option<HooksConfig>,
+    #[serde(default)]
+    pub hooks: HooksConfig,
 
     /// Plugin system configuration.
     ///
     /// When enabled, the SDK can install and manage plugins from configured
     /// marketplaces.
-    pub plugins: Option<PluginsConfig>,
+    #[serde(default)]
+    pub plugins: PluginsConfig,
 
     /// Proxy configuration for all outbound HTTP connections.
     ///
@@ -189,6 +195,7 @@ impl Default for FoxAgentSdkConfig {
             provider: None,
             default_model: None,
             memory: MemoryConfig::default(),
+            context: ContextManagementConfig::default(),
             compaction: CompactionConfig::default(),
             safety: SafetyConfig::default(),
             artifact_store: ArtifactStoreConfig::default(),
@@ -198,8 +205,8 @@ impl Default for FoxAgentSdkConfig {
             skills: SkillsConfig::default(),
             budget: BudgetConfig::default(),
             mcp: McpConfig::default(),
-            hooks: None,
-            plugins: None,
+            hooks: HooksConfig::default(),
+            plugins: PluginsConfig::default(),
             proxy: None,
             global_agents_md_path: None,
         }
@@ -728,6 +735,101 @@ impl Default for MemoryConfig {
             retention_days: None,
             memory_size_limit: None,
             rebuild_on_model_change: false,
+        }
+    }
+}
+
+/// Context management configuration — L2 noise removal, L4 archival, L5 circuit breaker.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ContextManagementConfig {
+    /// ── L2: Noise Removal ──
+    /// Whether noise removal is enabled (remove unreferenced lines from tool outputs).
+    #[serde(default)]
+    pub l2_noise_removal_enabled: bool,
+    /// Reference ratio threshold — if the agent references fewer than this
+    /// fraction of output lines, unreferenced lines are removed.
+    #[serde(default = "default_l2_noise_threshold")]
+    pub l2_noise_reference_threshold: f64,
+    /// Minimum output characters to trigger noise check.
+    #[serde(default = "default_l2_noise_min_chars")]
+    pub l2_noise_min_output_chars: usize,
+
+    /// ── L4: Archival Summarization ──
+    /// Whether L4 archival narration is enabled (per-turn structured records
+    /// accumulate as NarrativeSummary blocks instead of a single flat summary).
+    #[serde(default)]
+    pub l4_archival_enabled: bool,
+    /// Maximum number of NarrativeSummary blocks to retain in the message history.
+    /// Oldest narratives are dropped when the limit is exceeded.
+    #[serde(default = "default_l4_max_narratives")]
+    pub l4_max_narratives: usize,
+    /// Per-narrative character budget for the summary text.
+    #[serde(default = "default_l4_per_turn_budget_chars")]
+    pub l4_per_turn_budget_chars: usize,
+
+    /// ── L3: API-level Micro-compression ──
+    /// Whether L3 micro-compression is enabled (removes large unreferenced
+    /// tool results from the message history at high context pressure).
+    #[serde(default)]
+    pub l3_micro_compression_enabled: bool,
+    /// Context pressure threshold (0.0–1.0) where L3 triggers.
+    #[serde(default = "default_l3_pressure_threshold")]
+    pub l3_pressure_threshold: f64,
+    /// Maximum messages to remove per L3 operation.
+    #[serde(default = "default_l3_max_removals")]
+    pub l3_max_removals: usize,
+
+    /// ── L5: Circuit Breaker ──
+    /// Maximum consecutive compaction failures before the breaker opens.
+    #[serde(default = "default_l5_max_consecutive_failures")]
+    pub l5_max_consecutive_failures: u32,
+    /// Number of turns to cool down before retrying after breaker opens.
+    #[serde(default = "default_l5_cooldown_turns")]
+    pub l5_cooldown_turns: u32,
+    /// Bridge to existing `compaction.llm_summary_enabled` — when false,
+    /// compaction uses extractive summarization (no LLM call required).
+    #[serde(default = "default_l5_llm_summary")]
+    pub l5_llm_summary_enabled: bool,
+
+    /// ── Status Bar (Phase A) ──
+    /// Whether the agent status bar is injected into the prompt.
+    #[serde(default = "default_status_bar_enabled")]
+    pub status_bar_enabled: bool,
+    /// Auto-turn count threshold for drift warning display.
+    #[serde(default = "default_status_bar_warn_auto_turns")]
+    pub status_bar_warn_auto_turns: u32,
+}
+
+fn default_l2_noise_threshold() -> f64 { 0.20 }
+fn default_l2_noise_min_chars() -> usize { 1000 }
+fn default_l4_max_narratives() -> usize { 20 }
+fn default_l4_per_turn_budget_chars() -> usize { 500 }
+fn default_l3_pressure_threshold() -> f64 { 0.9 }
+fn default_l3_max_removals() -> usize { 10 }
+fn default_l5_max_consecutive_failures() -> u32 { 3 }
+fn default_l5_cooldown_turns() -> u32 { 5 }
+fn default_l5_llm_summary() -> bool { true }
+fn default_status_bar_enabled() -> bool { true }
+fn default_status_bar_warn_auto_turns() -> u32 { 5 }
+
+impl Default for ContextManagementConfig {
+    fn default() -> Self {
+        Self {
+            l2_noise_removal_enabled: false,
+            l2_noise_reference_threshold: 0.20,
+            l2_noise_min_output_chars: 1000,
+            l4_archival_enabled: false,
+            l4_max_narratives: 20,
+            l4_per_turn_budget_chars: 500,
+            l3_micro_compression_enabled: false,
+            l3_pressure_threshold: 0.9,
+            l3_max_removals: 10,
+            l5_max_consecutive_failures: 3,
+            l5_cooldown_turns: 5,
+            l5_llm_summary_enabled: true,
+            status_bar_enabled: true,
+            status_bar_warn_auto_turns: 5,
         }
     }
 }

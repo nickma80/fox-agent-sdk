@@ -10,7 +10,7 @@ Agent 生命周期管理到高级配置的全部内容。
 1. [Agent 构建](#1-agent-构建)
 2. [Agent 执行](#2-agent-执行)
 3. [会话管理](#3-会话管理)
-4. [工具系统](#4-工具系统)
+4. [工具系统](#4-工具系统)（含工具结果路由）
 5. [权限与安全](#5-权限与安全)
 6. [记忆系统](#6-记忆系统)
 7. [规划系统](#7-规划系统)
@@ -18,11 +18,10 @@ Agent 生命周期管理到高级配置的全部内容。
 9. [运行治理](#9-运行治理)
 10. [事件录制与回放](#10-事件录制与回放)
 11. [MCP 集成](#11-mcp-集成)
-12. [工具结果路由与子 Agent 隔离](#12-工具结果路由与子-agent-隔离)
-13. [域自适应 — 让 Agent 适配任意领域](#13-域自适应--让-agent-适配任意领域)
-14. [Claude Code 兼容：Skills / Hooks / Plugins](#14-claude-code-兼容skills--hooks--plugins)
-15. [进度事件与 TUI 集成](#15-进度事件与-tui-集成)
-16. [故障排查](#16-故障排查)
+12. [域自适应 — 让 Agent 适配任意领域](#12-域自适应--让-agent-适配任意领域)
+13. [Claude Code 兼容：Skills / Hooks / Plugins](#13-claude-code-兼容skills--hooks--plugins)
+14. [进度事件](#14-进度事件)
+15. [故障排查](#15-故障排查)
 
 ---
 
@@ -203,7 +202,7 @@ while let Some(ev) = rx.recv().await {
 | `PermissionRequest` | 需要用户授权 | `request_id: String`、`tool_name: String`、`prompt: String`、`risk_level: String`、`policy_source: String`、`tool_summary: String` |
 | `Compaction` | 上下文压缩 | `event: CompactionEvent` |
 | `MemoryStateChanged` | 记忆状态变更 | `event: MemoryStateEvent` |
-| `MemoryInjected` | 记忆注入 prompt | `count: u32`、`memory_ids: Vec<String>` |
+| `MemoryInjected` | 记忆已注入 context | `count: u32`、`memory_ids: Vec<String>` |
 | `SoftInterruptInjected` | 软中断注入 | `interrupt: InjectedInterrupt` |
 | `Error` | 发生错误 | `error: AgentError` |
 | `McpServerConnected` | MCP 服务器连接 | `server_name: String` |
@@ -228,17 +227,36 @@ LLM 调用工具触发权限检查 → 用户决策 → Agent 恢复执行。`Pe
 use tokio::sync::mpsc;
 let (tx, mut rx) = mpsc::channel::<AgentEvent>(64);
 
-// 第一轮：触发权限
-let outcome = agent.run_once_streaming("删除日志文件", &tx).await?;
-match outcome {
-    TurnOutcome::RequiresUserDecision { request } => {
-        println!("Agent 请求权限: {}", request.prompt);
-        // 用户决策后恢复
-        let decision = PermissionDecision::Allow;
-        // 注意：resume_streaming 复用同一个 tx，继续发送事件
-        let outcome2 = agent.resume_streaming(decision, &tx).await?;
+// 循环处理：权限可能触发多次
+let mut is_first = true;
+let mut decision: Option<PermissionDecision> = None;
+loop {
+    let outcome = if is_first {
+        is_first = false;
+        agent.run_once_streaming("删除日志文件", &tx).await?
+    } else {
+        agent.resume_streaming(decision.take().unwrap(), &tx).await?
+    };
+
+    match outcome {
+        TurnOutcome::Completed { text } => {
+            println!("执行完成: {}", text);
+            break;
+        }
+        TurnOutcome::RequiresUserDecision { request } => {
+            println!("Agent 请求权限: {}", request.prompt);
+            // 收集用户决策，下一轮迭代走 resume_streaming
+            decision = Some(PermissionDecision::Allow);
+        }
+        TurnOutcome::Cancelled => {
+            println!("已取消");
+            break;
+        }
+        TurnOutcome::Failed { error } => {
+            eprintln!("执行失败: {}", error);
+            break;
+        }
     }
-    _ => {}
 }
 ```
 
@@ -327,7 +345,12 @@ pub struct SessionSnapshot {
 ├── planning/         ← 规划数据
 │   ├── goals.json
 │   └── plans.json
-└── memory/           ← 长期记忆图
+├── memory/           ← 长期记忆系统
+│   ├── session_scoped/   ← Session 作用域记忆（临时）
+│   ├── projects/         ← Project 作用域记忆
+│   ├── global.json       ← Global 作用域记忆
+│   └── memory.audit.jsonl
+└── artifacts/        ← Artifact Store（大文件外置存储）
 ```
 
 **存储位置解析规则**（`resolve_storage_root()`）：
@@ -371,10 +394,16 @@ let mut agent = AgentBuilder::new()
 
 ### 3.6 自动快照（auto_snapshot）
 
-`auto_snapshot` 默认为 **`true`**。每次 `run_once()` 或 `run_once_streaming()` 完成后，Agent 会自动：
+`auto_snapshot` 默认为 **`true`**。Agent Loop 在关键生命周期节点自动保存完整会话快照：
 
-1. 调用 `snapshot()` 生成完整的 `SessionSnapshot`
-2. 通过 `SessionStore::save_session()` 写入磁盘
+| 触发点 | 时机 | trigger 标签 |
+|--------|------|-------------|
+| 用户消息到达 | 每轮开始时 | `user_message` |
+| turn 完成 | 工具循环结束 | `turn_completed` |
+| 等待用户权限 | 需要审批时 | `awaiting_permission` |
+| turn 取消 | 被中断时 | `turn_cancelled` |
+
+**快照以异步后台方式写入磁盘**（`tokio::spawn`），JSON 序列化 + 文件 I/O 不阻塞主 Agent Loop。即使写入失败也只记录 warning 日志，不影响 Agent 继续执行。
 
 在 `agent.toml` 中控制：
 ```toml
@@ -425,8 +454,39 @@ let mut agent = AgentBuilder::new()
     .await?;
 ```
 
----
+### 3.8 会话并发与隔离
 
+多个 Agent 实例（对应不同 session）可以同时运行，互不干扰。隔离性来自两个层面：
+
+**实例隔离**：每个 Agent 实例持有独立的 `SessionState` 和 `SessionSnapshot`，通过 `Harness` 中的 `Arc<RwLock<SessionState>>` 保护。不同 Agent 之间不共享任何可变状态，一个 session 的消息历史、权限请求、工具调用队列完全独立。
+
+```rust
+// 两个 session 并发运行，互不干扰
+let agent1 = AgentBuilder::new()
+    .session_id("session-1")
+    .provider_config(ProviderConfig::deepseek(key.clone()))
+    .build().await?;
+
+let agent2 = AgentBuilder::new()
+    .session_id("session-2")
+    .provider_config(ProviderConfig::deepseek(key))
+    .build().await?;
+
+let (tx1, _rx1) = mpsc::channel(64);
+let (tx2, _rx2) = mpsc::channel(64);
+
+// 并发执行
+let (r1, r2) = tokio::join!(
+    agent1.run_once_streaming("分析用户数据", &tx1),
+    agent2.run_once_streaming("生成周报", &tx2),
+);
+```
+
+**存储隔离**：每个 session 以独立的 `{session_id}.json` 文件存储，不同 session 的持久化数据天然分离。`auto_snapshot` 通过 `tokio::spawn` 后台异步写入，不会阻塞其他 session 的运行。
+
+> **注意**：如需更高的并发隔离（如完全独立的 working_dir），可通过 `AgentBuilder::working_dir()` 为不同 Agent 指定不同的项目根目录。
+
+---
 ## 4. 工具系统
 
 ### 4.1 Tool Trait
@@ -517,9 +577,93 @@ let mut agent = AgentBuilder::new()
 - **并发限制**：`GovernanceGuard` 中的 `Semaphore` 控制
 - **优雅关闭**：`graceful_shutdown_requested` 在调用前检查
 
+### 4.7 工具结果路由与子 Agent 隔离
+
+当工具输出非常大时（如全库搜索结果、大文件读取、网页抓取），默认的"工具结果直写消息流"模式会导致主 Agent 上下文被低价值噪声挤占。Fox Agent SDK 通过**统一路由引擎**自动判断如何处理每个工具结果。
+
+#### 三种路由模式
+
+| 模式 | 描述 | 触发条件 |
+|------|------|----------|
+| `Inline` | 结果直接写入消息流 | 小输出，低上下文压力 |
+| `Externalize` | 完整结果存入 artifact store，消息中仅保留摘要和引用 | 大输出或高风险 MCP 工具 |
+| `DelegateToSubagent` | 委托子 Agent 在隔离上下文中执行探索 | 高噪声探索型任务 |
+
+#### 配置
+
+```toml
+[artifact_store]
+enabled = true
+max_artifact_bytes = 1_048_576
+max_session_bytes = 33_554_432
+ephemeral_ttl_hours = 24
+
+[routing_policy]
+enabled = true
+local_externalize_threshold_chars = 8_000
+local_delegate_threshold_chars = 24_000
+context_pressure_threshold = 0.70
+delegate_candidate_tools = ["grep", "glob", "web_fetch", "web_search", "ls", "read"]
+```
+
+#### `artifact_read` 工具
+
+主 Agent 可以通过内置的 `artifact_read` 工具按需分页回读已外置的 artifact，避免重新执行大工具。
+
+```
+参数: artifact_id, offset_chars, limit_chars
+```
+
+#### 子 Agent 委派
+
+当预设的高噪声工具产生大输出时，routing engine 会自动将其委派给子 Agent：
+
+```rust
+// 子 Agent 在隔离上下文中执行，只回传结构化摘要
+SubagentSummary {
+    task_id: "...",
+    objective: "...",
+    findings: [...],
+    evidence_refs: [...],
+    recommendations: [...],
+    uncertainties: [...],
+    next_queries: [...],
+}
+```
+
+也可以手动通过 `subagent` 工具显式委派探索任务。
+
+#### 治理指标
+
+`GovernanceMetrics` 提供跨会话的聚合指标，帮助监控存储压力和路由决策质量：
+
+```
+Routing: N total — inline X%, summarize Y%, externalize Z%, delegate W%
+Artifacts: N writes (M bytes), R reads, GC: D deleted (F bytes freed)
+Sub-agents: N tasks — S success, T timeout, E error
+Compaction: C triggers, MCP: M calls
+```
+
+可通过 `harness.governance_metrics.snapshot().format_summary()` 获取报告。
+
+#### 审计事件
+
+以下事件在 tool→routing→artifact→subagent→summary 链路中全程追踪：
+
+| 事件 | 触发时机 |
+|------|----------|
+| `RoutingDecision` | 路由引擎对每个工具结果作出决策时 |
+| `ArtifactStored` | 工具结果外置存储时（含 server/transport 等 MCP 元数据） |
+| `ArtifactRead` | `artifact_read` 回读时 |
+| `ArtifactGc` | GC 回收过期对象时 |
+| `SubagentTaskStarted` | 子 Agent 任务派发时 |
+| `SubagentTaskCompleted` | 子 Agent 完成任务时（含 findings_count、evidence_count、elapsed_secs） |
+
 ---
 
 ## 5. 权限与安全
+
+> **完整可运行示例**：[`examples/safety_demo.rs`](../examples/safety_demo.rs) — 演示安全策略配置、权限中断处理、审计导出的端到端流程。
 
 ### 5.1 SafetyConfig
 
@@ -563,21 +707,51 @@ pub struct SafetyConfig {
 productive_tool_confirm = true   # 默认开启
 ```
 
+#### 设计意图：为什么需要独立的确认层
+
+`productive_tool_confirm` 解决的是 allowlist/denylist/default_policy 这套规则体系覆盖不到的盲区——**"能不能用"和"该不该问"是两个正交维度**。
+
+| 机制 | 解决的问题 | 典型问题 |
+|------|-----------|---------|
+| allowlist / denylist | **能不能用**（访问控制） | 哪些工具对 Agent 开放 |
+| productive_tool_confirm | **该不该问**（确认策略） | 允许用的工具中，哪些每次都要确认 |
+
+**具体场景**：用户说"帮我看看这段代码为什么有 bug"，Agent 的 LLM 可能自行决定调用 `write` 去修改文件。如果 `write` 在 allowlist 中且 `default_policy=Allow`，这个写操作会静默执行——用户没有授权修改的意图，但 Agent 越权了。
+
+**为什么不能靠 allowlist/denylist 替代**：
+
+- 把 `write` 放进 denylist → 用户说"修复这个 bug"时，每次也要弹确认，体验差
+- `default_policy=Confirm` → 连 `read`、`grep` 等只读工具也会弹确认，干扰太多
+
+`productive_tool_confirm` 做的是**精准分类**：只对"产出类工具"（write / edit / 非只读 bash）强制确认，其他工具照常放行。这样 allowlist 可以宽松配置（开放大量只读工具），而产出类操作始终在用户视线内。
+
+**为什么是后处理层而非另一个规则**：因为它的逻辑是"无论什么路径拿到的 Allow 结果，产出类工具一律提权"。如果把这个逻辑嵌入 allowlist 内部、mcp_auto_approve 内部、default_policy 内部，就需要在三处重复同样的判断——后处理层是最干净的实现方式。
+
 ### 5.2 策略评估流程
+
+> **`productive_tool_confirm` 不是独立步骤，而是附着在 Allow 结果上的后处理层。** 当主决策层返回 Allow 时，若 `productive_tool_confirm=true` 且工具为 write/edit/非只读 bash，则最终结果被提升为 AskUser。
 
 ```
 1. custom_hook（自定义权限钩子 — 最高优先级，跳过所有规则）
    ↓ (未注册则继续)
-2. Denylist（通配符匹配） → 命中 → AskUser
+2. Denylist（通配符匹配） → 命中 → AskUser（直接短路）
    ↓ (未命中)
-3. Allowlist（通配符匹配） → 命中 → Allow
-   ↓ (allowlist 已设置但未命中 → Deny)
-4. MCP auto-approve servers → 工具名以 `mcp__<server>` 开头且在列表中 → Allow
-   ↓
-5. Default Policy → Allow / Deny / Confirm
-   ↓
-6. Productive Tool Confirm → write / edit / 非只读 bash → AskUser
+3. Allowlist（通配符匹配）
+   ├── 命中 → Allow ──→ productive_tool_confirm 后处理 → 最终 Allow 或 AskUser
+   └── 已设置但未命中 → Deny
+   ↓ (allowlist 为 None 时继续)
+4. MCP auto-approve servers
+   ├── 命中 → Allow ──→ productive_tool_confirm 后处理 → 最终 Allow 或 AskUser
+   └── 未命中 ↓
+5. MCP Profile Gating（基于 server 种类/传输方式） → 命中 → AskUser
+   ↓ (未命中或非 MCP 工具)
+6. Default Policy
+   ├── Deny  → 直接返回 Deny
+   ├── Confirm → 直接返回 AskUser
+   └── Allow → productive_tool_confirm 后处理 → 最终 Allow 或 AskUser
 ```
+
+**总结优先级**：`custom_hook > denylist > allowlist > mcp_auto_approve > default_policy`，`productive_tool_confirm` 作为后处理层，覆盖第 3/4/6 步的 Allow 结果。
 
 #### 通配符规则示例
 
@@ -622,68 +796,221 @@ let mut agent = AgentBuilder::new()
 
 ### 5.5 审计与溯源
 
-每个 `PermissionRequest` 携带 `policy_source` 字段，记录决策逻辑来源（`"denylist"`、`"allowlist"`、`"default:confirm"` 等）。完整决策链可导出到 JSONL，用于安全审计和回溯分析。
+每个 `PermissionRequest` 携带 `policy_source` 字段，记录决策逻辑来源（`"denylist"`、`"allowlist"`、`"default:confirm"`、`"productive-tool-confirm"` 等）。SDK 提供两种审计方式：
+
+#### 推荐：`with_audit_handler()` 自动回调
+
+通过 `AgentBuilder::with_audit_handler()` 注册回调，Agent 在每次用户做出权限决策后**自动调用**，无需在每个 `RequiresUserDecision` 分支中手写 `record_audit`：
 
 ```rust
-approval.record_audit(&request, &result, turn_id).await;
+use fox_agent_sdk::{AgentBuilder, ApprovalManager, PermissionDecision, PermissionResult};
+
+let approval = ApprovalManager::new("session-1", SafetyConfig::default());
+let audit_path = std::path::PathBuf::from("./audit/permissions.jsonl");
+
+let agent = AgentBuilder::new()
+    .provider_config(ProviderConfig::deepseek(key))
+    .with_default_tools()
+    .with_safety_policy(safety)
+    // 审计回调 — SDK 自动在每次权限决策时调用
+    .with_audit_handler(move |req, dec, turn| {
+        let result = match dec {
+            PermissionDecision::Allow => PermissionResult::Allow,
+            PermissionDecision::Deny { reason } =>
+                PermissionResult::Deny { reason: reason.clone() },
+        };
+        // record_audit 自动触发，无需在 RequireUserDecision 分支中手写
+        approval.record_audit(req, &result, *turn).await;
+    })
+    .build()
+    .await?;
+
+// 应用层只需处理业务逻辑，审计已由回调自动覆盖
+let mut is_first = true;
+let mut decision: Option<PermissionDecision> = None;
+loop {
+    let outcome = if is_first {
+        is_first = false;
+        agent.run_once_streaming("帮我优化代码", &tx).await?
+    } else {
+        agent.resume_streaming(decision.take().unwrap(), &tx).await?
+    };
+
+    match outcome {
+        TurnOutcome::RequiresUserDecision { request } => {
+            println!("需要确认: {} ({})", request.tool_name, request.policy_source);
+            decision = Some(PermissionDecision::Allow); // 审计自动记录
+        }
+        TurnOutcome::Completed { text } => break,
+        _ => break,
+    }
+}
+```
+
+回调接收三个参数：
+- `&PermissionRequest` — 原始权限请求（含 `policy_source`、`tool_name`、`risk_level` 等）
+- `&PermissionDecision` — 用户的最终决策（Allow / Deny）
+- `u64` — 决策发生时的 turn ID
+
+#### 手动方式（备选）
+
+如果不需要自动回调，也可以手动调用 `ApprovalManager::record_audit()`：
+
+```rust
+let approval = ApprovalManager::new("session-1", SafetyConfig::default());
+
+match outcome {
+    TurnOutcome::RequiresUserDecision { request } => {
+        let decision = PermissionDecision::Allow;
+        let result = PermissionResult::Allow;
+        approval.record_audit(&request, &result, turn_id).await;
+    }
+    // ...
+}
+
+// 导出审计日志
 approval.export_audit(&audit_path).await?;
 ```
+
+#### 导出的 JSONL 示例
+
+```jsonl
+{"timestamp":1719900000,"session_id":"session-abc123","turn_id":1,"tool_name":"write","input":{"file_path":"/project/main.rs","content":"// optimized code..."},"decision":{"AskUser":{"request":{"request_id":"req-001","tool_name":"write","prompt":"`write` is a modification tool and requires your confirmation","risk_level":"High","policy_source":"productive-tool-confirm","tool_summary":"write"}}},"request_id":"req-001","latency_ms":12}
+```
+
+每条记录包含：`timestamp`、`session_id`、`turn_id`、`tool_name`、`input`、`decision`（含 `policy_source`）、`latency_ms`。
 
 ---
 
 ## 6. 记忆系统
 
-### 6.1 架构概览
+Fox Agent SDK 内建完整的语义长期记忆系统，支持跨会话知识积累与召回。
 
-Fox Agent SDK 内建记忆系统，支持跨会话学习和召回：
+### 6.1 三级作用域模型
+
+记忆按生命周期分为三个隔离的作用域：
+
+| 作用域 | 存储路径 | 共享范围 | 用途 |
+|--------|---------|-----|------|
+| `Session` | `memory/session_scoped/{session_id}.json` | 仅当前会话 | 中间假设、任务草稿、临时记忆 |
+| `Project` | `memory/projects/{hash}.json` | 同工作目录的所有会话 | 项目规范、代码习惯、架构决策 |
+| `Global` | `memory/global.json` | 所有项目、所有会话 | 用户偏好、全局约定 |
+
+**Session → Project 提升**：跨多轮被反复强化的 Session 记忆可自动（`auto_promote_enabled`，strength 达阈值）或手动（`promote_memory`）提升到 Project/Global。提升为单向：不能降级回 Session。
+
+### 6.2 架构概览
 
 ```
-MemoryManager → 生命周期管理
-MemoryGraph   → 图结构存储
-Extractor     → LLM 驱动提取
-EmbeddingProvider → 语义嵌入
-ANN 索引      → 快速语义搜索
+MemoryManager → 统一入口（CRUD、召回、治理）
+MemoryGraph   → 图结构存储（节点 + 标签 + 聚类 + 边）
+Extractor     → LLM 驱动从对话中抽取候选记忆
+RelevanceChecker → LLM 校验记忆相关性与冲突
+EmbeddingProvider → 语义向量化（Rust 本地推理）
+ANN 索引      → HNSW 快速语义搜索（vectorlite）
 ```
 
-### 6.2 配置示例
+### 6.3 配置示例
+
+```toml
+[memory]
+enabled = true                       # 启用记忆系统
+embedding_enabled = true             # 启用语义召回
+embedding_model_id = "Qwen/Qwen3-Embedding-0.6B"
+# embedding_model_path = "/local/path/to/model"
+
+# 召回与注入预算
+max_candidates = 30
+max_results = 10
+injection_max_chars = 1500           # 注入 prompt 的最大字符数
+injection_max_per_category = 3       # 每类最多注入条数
+max_graph_depth = 2                  # 图 BFS 扩展深度
+
+# 自动提取
+auto_extract = true                  # 从对话中自动抽取记忆
+auto_extract_scope = "Project"       # "Project" 或 "Global"
+auto_extract_message_window = 6      # 转录窗口（最近 N 条消息）
+auto_extract_max_items_per_turn = 4  # 每轮最多提取条数
+
+# 自动提升
+auto_promote_enabled = false         # 开启后 strength ≥ 3 自动提升到 Project
+auto_promote_strength_threshold = 3
+auto_promote_target = "Project"
+
+# 去重与聚类
+dedupe_similarity_threshold = 0.92
+cluster_similarity_threshold = 0.9
+cluster_min_members = 2
+
+# 冲突处理
+contradiction_policy = "MarkContradictionEdge"
+# Ignore | Supersede | DowngradeConfidence | MarkContradictionEdge
+
+# 治理
+# retention_days = 90
+# memory_size_limit = 10000
+rebuild_on_model_change = false     # embedding 模型变化时自动重嵌
+```
 
 ```rust
+// 代码中编程配置
 let mem_config = MemoryConfig {
     enabled: true,
-    extraction_interval_turns: 3,    // 每 3 轮触发提取
-    max_recall_entries: 10,         // 召回条数上限
-    embedding_model: "mistral-text-embed".to_string(),
+    auto_extract: true,
+    auto_extract_scope: MemoryScope::Project,
+    injection_max_chars: 1500,
+    injection_max_per_category: 3,
     ..Default::default()
 };
-// 记忆存储于 {storage_dir}/memory/（由 FoxAgentSdkConfig.storage_dir 控制）
+// 记忆存储于 {storage_dir}/memory/
+// 由 FoxAgentSdkConfig.storage_dir 控制根目录
 ```
 
-### 6.3 MemoryEntry 结构
+### 6.4 MemoryEntry 结构
 
 ```rust
 pub struct MemoryEntry {
-    pub id: String,
-    pub content: String,
-    pub category: MemoryCategory,       // Fact / Preference / Entity / Correction / Narrative
-    pub scope: MemoryScope,            // Session / Project / Global / All
-    pub trust_level: TrustLevel,       // Low / Medium / High
+    pub id: String,                     // UUID v4
+    pub category: MemoryCategory,       // Fact | Preference | Entity | Correction | Narrative | Custom
+    pub content: String,                // 记忆原文
+    pub tags: Vec<String>,              // 标签列表
+    pub search_text: String,            // 规范化搜索文本
     pub created_at: DateTime<Utc>,
-    pub tags: Vec<String>,
-    pub embeddings: Option<Vec<f32>>,
+    pub updated_at: DateTime<Utc>,
+    pub access_count: u32,              // 访问计数
+    pub source: Option<String>,         // auto_extract | manual | promoted_from:session
+    pub trust: TrustLevel,              // High | Medium | Low
+    pub strength: u32,                  // 强化次数
+    pub active: bool,                   // 启用/禁用状态
+    pub superseded_by: Option<String>,  // 被取代的 ID
+    pub reinforcements: Vec<Reinforcement>,  // 强化面包屑（session_id, message_index, timestamp）
+    pub embedding: Option<Vec<f32>>,    // 语义向量
+    pub embedding_model: Option<String>, // 模型标识
+    pub embedding_version: Option<String>, // 模型版本
+    pub confidence: f32,                // 置信度（0-1），支持时间衰减和访问加成
 }
 ```
 
-### 6.3a Narrative 叙事记忆
+### 6.5 MemoryCategory 类别
 
-`MemoryCategory::Narrative` 是一种特殊分类——存储的不是单个事实，而是**会话的"叙事结构"**：
-用户要求了什么、Agent 做了什么、结果是什么、做出了什么决策。
+| 类别 | 含义 | 实例 |
+|------|------|------|
+| `Fact` | 客观事实 | "项目使用 PostgreSQL 作为数据库" |
+| `Preference` | 用户偏好 | "用户偏好中文回复，代码注释用英文" |
+| `Correction` | 纠错信息 | "上次关于 API 端点的结论有误，正确端点是 /api/v2" |
+| `Entity` | 实体/概念 | "AuthService 负责所有认证与授权逻辑" |
+| `Narrative` | 叙事记录 | 会话的结构化叙事（compaction 自动生成），见 §8.2 |
+| `Custom(name)` | 自定义类别 | 领域特定的记忆分类 |
 
-每条 Narrative 记忆由 compaction 自动生成，格式为结构化 JSON：
+### 6.6 Narrative 叙事记忆
+
+`MemoryCategory::Narrative` 存储**会话的叙事结构**：用户要求了什么、Agent 做了什么、结果是什么。
+
+每条 Narrative 由 compaction 自动生成：
 
 ```json
 {
   "user_intent": "分析 Sprint 3 完成度",
-  "actions_taken": ["read docs/plan.md", "grep Sprint 3", "read 5 files"],
+  "actions_taken": ["read docs/plan.md", "grep Sprint 3"],
   "findings": ["Sprint 3.1 已完成", "Sprint 3.4 有编译错误"],
   "files_modified": [],
   "decisions": ["需要先修复编译错误再继续"],
@@ -691,22 +1018,142 @@ pub struct MemoryEntry {
 }
 ```
 
-叙事记忆在后续 turn 的 prompt 中自动注入为 `## Session History` section，提供结构化的对话历史。
+Narrative 在后续 turn 的 prompt 中注入为 `## Session History` section。
 
-### 6.4 召回模式
+### 6.7 召回模式
 
-- **Relevant**：LLM 相关性校验 + 语义检索（精确但慢）
-- **Recent**：最近记忆（快速但可能不精确）
-- **Hybrid**：混合策略（平衡精度和速度）
+| 模式 | 种子来源 | 排序权重 | 需要 embedding |
+|------|---------|---------|---------------|
+| **Recent** | 全部 active 记忆 | `recency × 0.85 + trust × 0.15` | 否 |
+| **Keyword** | `search_text` 关键词匹配 | `keyword × 0.65 + recency × 0.2 + trust × 0.15` | 否 |
+| **Semantic** | 全量 cosine 相似度 | `cosine × 0.7 + recency × 0.15 + trust × 0.15` | 是 |
+| **Cascade** | Semantic/Keyword top-k(×2) → BFS 图扩展 | seed score + graph score + recency + trust | 阶梯式 |
 
-### 6.5 记忆工作流
+当 embedding 不可用时自动回退到 Keyword 模式。
+
+### 6.8 ANN 索引（可选）
+
+启用 ANN 后，Semantic 召回通过 HNSW 索引加速（引擎：`vectorlite`）：
+
+```toml
+ann_enabled = true
+ann_min_vectors = 256               # 达到此向量数才启用 ANN
+ann_candidate_multiplier = 8        # ANN 候选数 = limit × 此值
+```
+
+索引文件存储在 `{graph_path}.ann.bin`，首次 semantic recall 时惰性构建。数据变化后自动失效并重建。
+
+### 6.9 记忆注入 Context 的完整流程
 
 ```
-1. 用户: "我更喜欢中文回复"
-2. MemoryExtractor 从消息中提取 → MemoryEntry { category: Preference, ... }
-3. 下次会话: 当前消息触发 recall
-4. 相关记忆注入 → system prompt dynamic 部分
-5. Agent: "好的，我会用中文回复"
+每轮 turn 开始前：
+
+1. trigger_memory_for_next_turn()               [后台 tokio::spawn]
+   └── 提取最新 user message 文本作为 query
+   └── recall(MemoryScope::All, Cascade)
+        ├── 返回 RecallHit 列表（按综合得分排序）
+        └── select_recall_hits_for_injection()
+             ├── per-category ≤ max_per_category 条（默认 3）
+             └── 总字符数 ≤ injection_max_chars（默认 1500）
+
+2. format_recall_hits_prompt()
+   └── 按 category 分组：## Corrections → ## Facts → ## Preferences → ## Entities
+   └── 固定顺序确保纠错信息最优先
+
+3. take_memory_injection_for_prompt()
+   └── 消费 pending injection，写入 dynamic_part 的 "4. Memory injection" 节
+
+4. system prompt = static_part + dynamic_part
+   └── 发送给 LLM
+```
+
+### 6.10 Ingestion Pipeline（写入流水线）
+
+```
+对话转录（最近 N 条消息）
+  │
+  ▼
+[1] MemoryExtractor::extract()           ← LLM 抽取候选记忆
+  │
+  ▼
+[2] For each candidate:
+  ├── embed 生成语义向量
+  ├── verify_relevance（LLM 校验）
+  ├── find_duplicate → reinforce（strength+1, confidence+0.05）
+  ├── find_contradiction → apply_contradiction_policy
+  └── remember → 写入 graph + 持久化
+```
+
+### 6.11 冲突处理策略
+
+| 策略 | 行为 |
+|------|------|
+| `Ignore` | 新旧共存，不做处理 |
+| `Supersede` | 新记忆取代旧（旧标记 inactive + superseded_by） |
+| `DowngradeConfidence` | 旧记忆置信度衰减 `contradiction_confidence_decay` |
+| `MarkContradictionEdge` | 创建双向 `Contradicts` 边 |
+
+### 6.12 存储布局
+
+```
+{storage_dir}/
+├── sessions/                          ← SessionSnapshot（会话快照）
+│   └── {session_id}.json
+└── memory/                            ← 记忆系统根目录
+    ├── session_scoped/                ← Session 记忆（临时，会话结束后无意义）
+    │   └── {session_id}.json
+    ├── projects/                      ← Project 记忆（跨会话共享）
+    │   └── {project_hash}.json
+    │   └── {project_hash}.ann.bin     ← HNSW 索引
+    ├── global.json                    ← Global 记忆
+    ├── global.ann.bin                 ← HNSW 索引
+    └── memory.audit.jsonl             ← 审计日志
+```
+
+### 6.13 治理与运维
+
+| 操作 | 方法 | 说明 |
+|------|------|------|
+| 写入 | `remember(entry, scope)` | 自动 embed + 持久化 |
+| 召回 | `recall(query, limit, mode, scope)` | 4 种策略 |
+| 搜索 | `search(text, scope)` | 精确关键词搜索 |
+| 删除 | `forget(id)` | 从图中移除 |
+| 禁用 | `disable_memory(id)` / `enable_memory(id)` | 标记 active 字段 |
+| 脱敏 | `redact_memory(id, replacement)` | 替换内容 + 重新 embed |
+| 提升 | `promote_memory(id, Session → Project)` | 单向，不可降级 |
+| 导出 | `export_to_path(scope, path)` | JSON bundle |
+| 导入 | `import_from_path(path, merge)` | 合并或替换 |
+| GC | `gc(max_age_hours)` | 清理过期文件（含 session_scoped） |
+| 压缩 | `compact(scope)` | 保留策略 + 大小限制 |
+| 重嵌 | `reembed(scope)` | 模型变化后重建所有 embedding |
+
+SDK 层 API：
+
+```rust
+// 写入
+let mem_manager = agent.harness().memory_manager();
+mem_manager.add_memory("用户偏好中文回复").await;
+
+// 也可以直接操作 core MemoryManager：
+let core = mem_manager.core();
+core.remember(entry, MemoryScope::Project)?;
+core.recall(Some("中文偏好"), 5, RecallMode::Cascade, MemoryScope::All)?;
+```
+
+### 6.14 记忆工作流示例
+
+```
+1. 第 1 轮: 用户说 "我更喜欢中文回复"
+   → auto_extract 从转录中提取 → MemoryEntry { category: Preference, content: "用户偏好中文回复" }
+   → 写入 Project scope（配置了 auto_extract_scope = "Project"）
+
+2. 第 2 轮: 用户说 "帮我重构支付模块"
+   → 每轮开始前 trigger_recall → 以 "帮我重构支付模块" 为 query → 召回
+   → 匹配到 "用户偏好中文回复" → 注入 dynamic_part
+   → Agent 用中文回复
+
+3. 第 3+ 轮: 类似偏好被反复 reinforce → strength 累积
+   → 若 auto_promote_enabled = true，strength ≥ 3 时自动提升到 Project
 ```
 
 ---
@@ -982,91 +1429,7 @@ mcp_auto_approve_servers = ["akshare", "filesystem"]
 
 ---
 
-## 12. 工具结果路由与子 Agent 隔离
-
-当工具输出非常大时（如全库搜索结果、大文件读取、网页抓取），默认的"工具结果直写消息流"模式会导致主 Agent 上下文被低价值噪声挤占。Fox Agent SDK 通过**统一路由引擎**自动判断如何处理每个工具结果。
-
-### 12.1 三种路由模式
-
-| 模式 | 描述 | 触发条件 |
-|------|------|----------|
-| `Inline` | 结果直接写入消息流 | 小输出，低上下文压力 |
-| `Externalize` | 完整结果存入 artifact store，消息中仅保留摘要和引用 | 大输出或高风险 MCP 工具 |
-| `DelegateToSubagent` | 委托子 Agent 在隔离上下文中执行探索 | 高噪声探索型任务 |
-
-### 12.2 配置
-
-```toml
-[artifact_store]
-enabled = true
-max_artifact_bytes = 1_048_576
-max_session_bytes = 33_554_432
-ephemeral_ttl_hours = 24
-
-[routing_policy]
-enabled = true
-local_externalize_threshold_chars = 8_000
-local_delegate_threshold_chars = 24_000
-context_pressure_threshold = 0.70
-delegate_candidate_tools = ["grep", "glob", "web_fetch", "web_search", "ls", "read"]
-```
-
-### 12.3 `artifact_read` 工具
-
-主 Agent 可以通过内置的 `artifact_read` 工具按需分页回读已外置的 artifact，避免重新执行大工具。
-
-```
-参数: artifact_id, offset_chars, limit_chars
-```
-
-### 12.4 子 Agent 委派
-
-当预设的高噪声工具产生大输出时，routing engine 会自动将其委派给子 Agent：
-
-```rust
-// 子 Agent 在隔离上下文中执行，只回传结构化摘要
-SubagentSummary {
-    task_id: "...",
-    objective: "...",
-    findings: [...],
-    evidence_refs: [...],
-    recommendations: [...],
-    uncertainties: [...],
-    next_queries: [...],
-}
-```
-
-也可以手动通过 `subagent` 工具显式委派探索任务。
-
-### 12.5 治理指标
-
-`GovernanceMetrics` 提供跨会话的聚合指标，帮助监控存储压力和路由决策质量：
-
-```
-Routing: N total — inline X%, summarize Y%, externalize Z%, delegate W%
-Artifacts: N writes (M bytes), R reads, GC: D deleted (F bytes freed)
-Sub-agents: N tasks — S success, T timeout, E error
-Compaction: C triggers, MCP: M calls
-```
-
-可通过 `harness.governance_metrics.snapshot().format_summary()` 获取报告。
-
-### 12.6 审计事件
-
-以下事件在 tool→routing→artifact→subagent→summary 链路中全程追踪：
-
-| 事件 | 触发时机 |
-|------|----------|
-| `RoutingDecision` | 路由引擎对每个工具结果作出决策时 |
-| `ArtifactStored` | 工具结果外置存储时（含 server/transport 等 MCP 元数据） |
-| `ArtifactRead` | `artifact_read` 回读时 |
-| `ArtifactGc` | GC 回收过期对象时 |
-| `SubagentTaskStarted` | 子 Agent 任务派发时 |
-| `SubagentTaskCompleted` | 子 Agent 完成任务时（含 findings_count、evidence_count、elapsed_secs） |
-
----
-
-## 13. 域自适应 — 让 Agent 适配任意领域
+## 12. 域自适应 — 让 Agent 适配任意领域
 
 Fox Agent SDK 是**通用 Agent 运行时**，同一个 Agent 二进制可以在 coding、量化交易、数据分析、运维、文档写作等截然不同的领域工作。域自适应通过三层递进机制实现。
 
@@ -1194,7 +1557,7 @@ let mut agent = AgentBuilder::new()
 
 ---
 
-## 14. Claude Code 兼容：Skills / Hooks / Plugins
+## 13. Claude Code 兼容：Skills / Hooks / Plugins
 
 Fox Agent SDK 全面兼容 Claude Code 的三种扩展机制，让你可以直接复用 Claude Code
 生态中的 Skill、Hook 和 Plugin。
@@ -1580,7 +1943,7 @@ INFO Loaded 2 plugin skills
 
 ---
 
-## 15. 进度事件与 TUI 集成
+## 14. 进度事件
 
 SDK 提供丰富的事件流，应用层（如 TUI）可通过 `AgentEvent` channel 订阅实时进度。
 
@@ -1697,7 +2060,7 @@ Some(AgentEvent::SoftInterruptInjected { interrupt }) => {
 
 ---
 
-## 16. 故障排查
+## 15. 故障排查
 
 | 问题 | 可能原因 | 解决方案 |
 |------|---------|---------|

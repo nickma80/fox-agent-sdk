@@ -166,7 +166,7 @@ impl MemoryGraphCache {
 static GRAPH_CACHE: std::sync::OnceLock<Mutex<MemoryGraphCache>> = std::sync::OnceLock::new();
 
 fn graph_cache() -> &'static Mutex<MemoryGraphCache> {
-    GRAPH_CACHE.get_or_init(|| Mutex::new(MemoryGraphCache::new(32)))
+    GRAPH_CACHE.get_or_init(|| Mutex::new(MemoryGraphCache::new(128)))
 }
 
 /// Try to get cached graph.
@@ -225,29 +225,48 @@ pub fn gc_memory_files(storage_dir: &Path, max_age_hours: u64) -> Result<GCResul
 
     // GC project files
     let projects_dir = storage_dir.join("projects");
-    if projects_dir.exists() {
-        if let Ok(entries) = std::fs::read_dir(&projects_dir) {
-            for entry in entries.flatten() {
-                let path = entry.path();
-                if path.extension().map(|e| e == "json").unwrap_or(false) {
-                    scanned += 1;
-                    if let Ok(meta) = std::fs::metadata(&path) {
-                        if let Ok(modified) = meta.modified() {
-                            if now.duration_since(modified).unwrap_or(Duration::ZERO) > max_age {
-                                let backup = path.with_extension("json.bak");
-                                let _ = std::fs::remove_file(&path);
-                                let _ = std::fs::remove_file(&backup);
-                                invalidate_cache(&path);
-                                removed += 1;
-                            }
-                        }
+    remove_expired_files(&projects_dir, "json", max_age, &now, &mut scanned, &mut removed);
+
+    // GC session-scoped memory files (session-scoped memories are ephemeral;
+    // once the owning session is gone these files serve no purpose, so we
+    // apply the same max-age policy here).
+    let sessions_dir = storage_dir.join("session_scoped");
+    remove_expired_files(&sessions_dir, "json", max_age, &now, &mut scanned, &mut removed);
+
+    Ok(GCResult { removed_files: removed, total_scanned: scanned })
+}
+
+fn remove_expired_files(
+    dir: &std::path::Path,
+    extension: &str,
+    max_age: Duration,
+    now: &SystemTime,
+    scanned: &mut usize,
+    removed: &mut usize,
+) {
+    if !dir.exists() {
+        return;
+    }
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.extension().map(|e| e == extension).unwrap_or(false) {
+            *scanned += 1;
+            if let Ok(meta) = std::fs::metadata(&path) {
+                if let Ok(modified) = meta.modified() {
+                    if now.duration_since(modified).unwrap_or(Duration::ZERO) > max_age {
+                        let backup = path.with_extension(format!("{extension}.bak"));
+                        let _ = std::fs::remove_file(&path);
+                        let _ = std::fs::remove_file(&backup);
+                        invalidate_cache(&path);
+                        *removed += 1;
                     }
                 }
             }
         }
     }
-
-    Ok(GCResult { removed_files: removed, total_scanned: scanned })
 }
 
 #[cfg(test)]

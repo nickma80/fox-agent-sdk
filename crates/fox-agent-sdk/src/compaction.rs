@@ -1,6 +1,6 @@
 use fox_agent_core::{
-    CompactionConfig, CompactionEvent, CompactionTrigger, ContentBlock, Message, NarrativeRecord,
-    Role,
+    CompactionCircuitBreaker, CompactionConfig, CompactionEvent, CompactionTrigger, ContentBlock,
+    Message, NarrativeRecord, Role,
 };
 use std::future::Future;
 use std::pin::Pin;
@@ -38,11 +38,24 @@ pub struct CompactionManager {
     cfg: CompactionConfig,
     compaction_count: u64,
     turns_since_last_compaction: u32,
+    /// L5 circuit breaker — prevents compaction thrashing loops.
+    circuit_breaker: CompactionCircuitBreaker,
 }
 
 impl CompactionManager {
     pub fn new(cfg: CompactionConfig) -> Self {
-        Self { cfg, compaction_count: 0, turns_since_last_compaction: 0 }
+        Self {
+            cfg,
+            compaction_count: 0,
+            turns_since_last_compaction: 0,
+            circuit_breaker: CompactionCircuitBreaker::default(),
+        }
+    }
+
+    /// Attach a pre-configured circuit breaker (e.g. from [`ContextManagementConfig`]).
+    pub fn with_circuit_breaker(mut self, breaker: CompactionCircuitBreaker) -> Self {
+        self.circuit_breaker = breaker;
+        self
     }
 
     /// Check whether compaction is possible (not exceeded max count).
@@ -100,6 +113,16 @@ impl CompactionManager {
             return None;
         }
 
+        // L5 circuit breaker — prevent thrashing loops
+        if !self.circuit_breaker.allow_compaction(turn_end) {
+            tracing::warn!(
+                state = ?self.circuit_breaker.state,
+                consecutive_failures = self.circuit_breaker.consecutive_failures,
+                "L5 circuit breaker OPEN — skipping compaction",
+            );
+            return None;
+        }
+
         let trigger = if token_trigger {
             CompactionTrigger::TokenBudget
         } else if approaching_trigger {
@@ -108,7 +131,19 @@ impl CompactionManager {
             CompactionTrigger::TurnCount
         };
 
-        Some(self.do_compact(messages, trigger, Some(summarizer), turn_start, turn_end).await)
+        self.circuit_breaker.record_pre_compact(messages.len());
+        let result = self.do_compact(messages, trigger, Some(summarizer), turn_start, turn_end).await;
+        self.circuit_breaker.report(messages.len(), turn_end);
+
+        if !self.circuit_breaker.is_closed() {
+            tracing::warn!(
+                state = ?self.circuit_breaker.state,
+                consecutive_failures = self.circuit_breaker.consecutive_failures,
+                "L5 circuit breaker tripped — compaction did not reduce message count",
+            );
+        }
+
+        Some(result)
     }
 
     /// Force compaction immediately (e.g. Manual trigger or context-limit retry).
@@ -269,6 +304,156 @@ pub(crate) fn extract_narrative_records(
     vec![record]
 }
 
+// ── L4: Archival Summarization (Phase D) ──
+
+/// Format a NarrativeRecord into compact markdown suitable for a
+/// NarrativeSummary content block.
+pub(crate) fn format_narrative_for_prompt(record: &NarrativeRecord, max_chars: usize) -> String {
+    let mut parts: Vec<String> = Vec::new();
+    parts.push(format!(
+        "## Turn {}-{}: {}",
+        record.turn_range.0, record.turn_range.1, record.user_intent
+    ));
+
+    if !record.actions_taken.is_empty() {
+        let actions = record.actions_taken.iter()
+            .take(5)
+            .map(|a| format!("  - {a}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        parts.push(format!("Actions:\n{actions}"));
+    }
+
+    if !record.findings.is_empty() {
+        let findings = record.findings.iter()
+            .take(3)
+            .map(|f| format!("  - {f}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        parts.push(format!("Findings:\n{findings}"));
+    }
+
+    if !record.files_modified.is_empty() {
+        let files = record.files_modified.iter()
+            .take(5)
+            .map(|f| format!("  - {f}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        parts.push(format!("Files:\n{files}"));
+    }
+
+    if !record.decisions.is_empty() {
+        let decs = record.decisions.iter()
+            .take(3)
+            .map(|d| format!("  - {d}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        parts.push(format!("Decisions:\n{decs}"));
+    }
+
+    let text = parts.join("\n\n");
+    if text.len() <= max_chars {
+        text
+    } else {
+        // Truncate to budget while keeping structure
+        let truncated: String = text.chars().take(max_chars.saturating_sub(20)).collect();
+        format!("{truncated}\n\n... (truncated)")
+    }
+}
+
+/// Inject NarrativeRecords as NarrativeSummary content blocks into the message
+/// history. These accumulate over time — old narratives are retained (up to
+/// `max_narratives`) rather than replaced.
+///
+/// Narratives are inserted after the existing conversation summary (if any),
+/// before the preserved messages from recent turns.
+pub(crate) fn inject_narrative_summaries(
+    messages: &mut Vec<Message>,
+    narratives: &[NarrativeRecord],
+    max_narratives: usize,
+) {
+    if narratives.is_empty() {
+        return;
+    }
+
+    // Build narrative summary content blocks
+    let narrative_msgs: Vec<Message> = narratives
+        .iter()
+        .map(|rec| {
+            let text = format_narrative_for_prompt(rec, 500);
+            Message {
+                role: Role::System,
+                content: vec![ContentBlock::NarrativeSummary { text }],
+            }
+        })
+        .collect();
+
+    // Remove old NarrativeSummary blocks if over the limit.
+    // Count existing narratives + new ones.
+    let existing_count = messages
+        .iter()
+        .filter(|m| m.content.iter().any(|b| matches!(b, ContentBlock::NarrativeSummary { .. })))
+        .count();
+
+    // Insert new narratives after any existing conversation summary,
+    // but before the rest of the messages.
+    // Find the index of the last 'Conversation summary:' system message
+    let insert_pos = messages
+        .iter()
+        .position(|m| {
+            m.role == Role::System
+                && m.content.first().map_or(false, |b| {
+                    matches!(b, ContentBlock::NarrativeSummary { .. })
+                })
+        })
+        .map(|pos| pos + 1) // After the first narrative
+        .unwrap_or_else(|| {
+            // No existing narratives — insert after conversation summary if present
+            messages
+                .iter()
+                .position(|m| {
+                    m.role == Role::System
+                        && m.content.first().map_or(false, |b| {
+                            matches!(b, ContentBlock::Text { text } if text.starts_with("Conversation summary:"))
+                        })
+                })
+                .map(|pos| pos + 1)
+                .unwrap_or(0)
+        });
+
+    // Splice the new narrative messages into position
+    for (offset, msg) in narrative_msgs.into_iter().enumerate() {
+        messages.insert(insert_pos + offset, msg);
+    }
+
+    // Trim total NarrativeSummary blocks to max_narratives
+    let total_narratives = existing_count + narratives.len();
+    if total_narratives > max_narratives {
+        let to_remove = total_narratives - max_narratives;
+        let mut removed = 0usize;
+        messages.retain(|m| {
+            let is_narrative = m.content.iter().any(|b| matches!(b, ContentBlock::NarrativeSummary { .. }));
+            if is_narrative && removed < to_remove {
+                removed += 1;
+                false
+            } else {
+                true
+            }
+        });
+        tracing::debug!(
+            removed = to_remove,
+            max = max_narratives,
+            "L4 archival trimmed old narratives"
+        );
+    }
+
+    tracing::debug!(
+        new_narratives = narratives.len(),
+        total = total_narratives.min(max_narratives),
+        "L4 archival injected narrative summaries",
+    );
+}
+
 // ── Internal helpers (moved from util.rs) ──
 
 /// Mechanical (non-LLM) transcript builder used both as the LLM prompt input
@@ -290,6 +475,7 @@ fn mechanical_transcript(messages: &[Message]) -> String {
                 ContentBlock::Text { text } => text.as_str(),
                 ContentBlock::Reasoning { text } => text.as_str(),
                 ContentBlock::ToolResult { text, .. } => text.as_str(),
+                ContentBlock::NarrativeSummary { text } => text.as_str(),
                 ContentBlock::ToolUse { .. } | ContentBlock::Image { .. } => "",
             };
             // Safe truncation: uses char_indices() to find the byte offset
@@ -323,6 +509,7 @@ pub(crate) fn message_chars(messages: &[Message]) -> usize {
         ContentBlock::Reasoning { text } => text.len(),
         ContentBlock::ToolResult { text, .. } => text.len(),
         ContentBlock::ToolUse { .. } | ContentBlock::Image { .. } => 0,
+        ContentBlock::NarrativeSummary { .. } => 0,
     }).sum()
 }
 

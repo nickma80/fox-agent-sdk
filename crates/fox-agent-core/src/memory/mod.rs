@@ -336,10 +336,10 @@ impl MemoryManager {
         let dir = if self.test_mode {
             self.storage_dir.clone()
         } else {
-            self.storage_dir.join("sessions")
+            self.storage_dir.join("session_scoped")
         };
         std::fs::create_dir_all(&dir)
-            .map_err(|e| format!("failed to create sessions dir: {e}"))?;
+            .map_err(|e| format!("failed to create session_scoped dir: {e}"))?;
         Ok(dir.join(format!("{safe_id}.json")))
     }
 

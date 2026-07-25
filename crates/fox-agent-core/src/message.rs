@@ -48,6 +48,7 @@ impl Message {
             }
             ContentBlock::Image { data, .. } => data.len(),
             ContentBlock::ToolResult { text, call_id, .. } => text.len() + call_id.len(),
+            ContentBlock::NarrativeSummary { text } => text.len(),
         }).sum()
     }
 }
@@ -72,4 +73,9 @@ pub enum ContentBlock {
     /// Tool execution result injected into the conversation
     #[serde(rename = "tool_result")]
     ToolResult { call_id: String, text: String, is_error: bool },
+    /// L4 archival narrative summary — a compact, structured record of a turn
+    /// range produced by the compaction summarizer. Accumulates over time
+    /// rather than replacing earlier summaries.
+    #[serde(rename = "narrative_summary")]
+    NarrativeSummary { text: String },
 }

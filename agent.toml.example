@@ -119,6 +119,59 @@ max_compaction_count = 10        # default: 10
 min_compaction_gap_turns = 20    # default: 20
 llm_summary_enabled = true       # default: true — LLM structured narrative extraction
 
+# ── Context Management ──────────────────────────────────────
+# Layered context management pipeline (L2–L5).
+# All layers are opt-in — disabled by default.
+#
+# Layers (executed in order):
+#   L2: Noise Removal  — strip unreferenced lines from tool outputs
+#   L3: Micro-compression — remove large tool results at high pressure
+#   L4: Archival Summaries — accumulate per-turn structured narratives
+#   L5: Circuit Breaker — prevent compaction thrashing loops
+#   Status Bar — agent progress overlay in the dynamic prompt
+#
+# TOML key: [context_management]
+
+[context_management]
+
+# ── L2: Noise Removal ──
+# When enabled, unreferenced lines in tool outputs (grep, glob, read,
+# web_search, web_fetch) are replaced with omission markers.
+# Full content is always recoverable via artifact_read.
+l2_noise_removal_enabled = false       # default
+l2_noise_reference_threshold = 0.20    # default — remove if < 20% lines referenced
+l2_noise_min_output_chars = 1000       # default — skip outputs smaller than this
+
+# ── L3: Micro-compression ──
+# When context pressure exceeds the threshold, large tool results
+# (> 4000 chars) are removed from the message history. The preceding
+# tool_use message is also removed (becomes meaningless without result).
+l3_micro_compression_enabled = false   # default
+l3_pressure_threshold = 0.9            # default — 0.0–1.0, triggers at 90%
+l3_max_removals = 10                   # default — max messages to remove per pass
+
+# ── L4: Archival Summaries ──
+# After each compaction, inject per-turn NarrativeSummary blocks
+# into the message history. These accumulate over time (unlike L5
+# which replaces old messages). Oldest narratives are trimmed when
+# the count exceeds l4_max_narratives.
+l4_archival_enabled = false            # default
+l4_max_narratives = 20                 # default — max archived turn records
+l4_per_turn_budget_chars = 500         # default — max chars per narrative
+
+# ── L5: Circuit Breaker ──
+# Prevents infinite compaction loops. When compaction fails to reduce
+# message count for N consecutive attempts, the breaker opens and
+# blocks further compaction for cooldown_turns.
+l5_max_consecutive_failures = 3        # default — failures before opening
+l5_cooldown_turns = 5                  # default — turns to wait before retry
+l5_llm_summary_enabled = true          # default — bridges to compaction.llm_summary_enabled
+
+# ── Status Bar (Phase A) ──
+# Agent runtime status overlay at the end of the dynamic prompt.
+status_bar_enabled = true              # default
+status_bar_warn_auto_turns = 5         # default — show ⚠️ drift warning at this threshold
+
 # ── Safety ──────────────────────────────────────────────────
 
 [safety]

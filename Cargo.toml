@@ -57,6 +57,10 @@ path = "examples/planning_demo.rs"
 name = "tool_routing"
 path = "examples/tool_routing.rs"
 
+[[example]]
+name = "safety_demo"
+path = "examples/safety_demo.rs"
+
 [dependencies]
 fox-agent-sdk = { path = "crates/fox-agent-sdk" }
 fox-agent-core = { path = "crates/fox-agent-core" }
