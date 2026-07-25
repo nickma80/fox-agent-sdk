@@ -53,6 +53,10 @@ path = "examples/langchain_users.rs"
 name = "planning_demo"
 path = "examples/planning_demo.rs"
 
+[[example]]
+name = "tool_routing"
+path = "examples/tool_routing.rs"
+
 [dependencies]
 fox-agent-sdk = { path = "crates/fox-agent-sdk" }
 fox-agent-core = { path = "crates/fox-agent-core" }

@@ -4,7 +4,10 @@
 //! definitions into the SDK's `Tool` trait so that MCP tools appear to
 //! the agent like any other registered tool.
 
-use fox_agent_core::{Tool, ToolContext, ToolError, ToolOutput};
+use fox_agent_core::{
+    McpServerKind, McpServerProfile, McpToolDescriptorSnapshot, McpTransportKind, Tool,
+    ToolContext, ToolError, ToolOutput,
+};
 use fox_agent_mcp::{
     McpClient, McpClientError, StdioTransport, StdioTransportConfig,
     SseTransport, SseTransportConfig,
@@ -44,6 +47,8 @@ pub struct McpServerConfig {
     pub transport: McpTransportMode,
     /// If true, all tools from this server are auto-approved.
     pub auto_approve: bool,
+    /// Optional server-level profile used by routing/safety layers.
+    pub profile: Option<McpServerProfile>,
     /// If set, only expose tools with these names.
     pub tools_only: Option<Vec<String>>,
     /// Request timeout in milliseconds (for stdio) or seconds (for SSE).
@@ -62,6 +67,7 @@ impl Default for McpServerConfig {
                 startup_grace_ms: Some(5_000),
             },
             auto_approve: false,
+            profile: None,
             tools_only: None,
             request_timeout_ms: Some(30_000),
         }
@@ -83,6 +89,50 @@ pub struct McpTool {
     description: String,
     parameters_schema: Value,
     client: McpClient,
+}
+
+fn infer_transport_kind(mode: &McpTransportMode) -> McpTransportKind {
+    match mode {
+        McpTransportMode::Stdio { .. } => McpTransportKind::Stdio,
+        McpTransportMode::Sse { .. } => McpTransportKind::Sse,
+    }
+}
+
+fn infer_server_kind(cfg: &McpServerConfig) -> McpServerKind {
+    if let Some(profile) = &cfg.profile
+        && profile.kind != McpServerKind::Unknown
+    {
+        return profile.kind;
+    }
+    let name = cfg.name.to_lowercase();
+    if name.contains("filesystem") || name.contains("file") {
+        McpServerKind::Filesystem
+    } else if name.contains("browser") {
+        McpServerKind::Browser
+    } else if name.contains("shell") || name.contains("terminal") {
+        McpServerKind::Shell
+    } else if matches!(&cfg.transport, McpTransportMode::Sse { .. }) {
+        McpServerKind::ExternalApi
+    } else {
+        McpServerKind::Unknown
+    }
+}
+
+pub fn effective_profile(cfg: &McpServerConfig) -> McpServerProfile {
+    let mut profile = cfg.profile.clone().unwrap_or_default();
+    if profile.server_name.is_empty() {
+        profile.server_name = cfg.name.clone();
+    }
+    if profile.transport == McpTransportKind::Unknown {
+        profile.transport = infer_transport_kind(&cfg.transport);
+    }
+    if profile.kind == McpServerKind::Unknown {
+        profile.kind = infer_server_kind(cfg);
+    }
+    if cfg.auto_approve {
+        profile.auto_approve = true;
+    }
+    profile
 }
 
 /// Convert `mcp://server/tool` to a provider-safe name.
@@ -167,7 +217,7 @@ fn build_transport(cfg: &McpServerConfig) -> Box<dyn fox_agent_mcp::McpTransport
 /// Returns `McpClientError` if a mandatory server fails to connect.
 pub async fn connect_and_discover_tools(
     servers: &[McpServerConfig],
-) -> Result<(Vec<Arc<dyn Tool>>, McpClient), McpClientError> {
+) -> Result<(Vec<Arc<dyn Tool>>, McpClient, Vec<McpToolDescriptorSnapshot>), McpClientError> {
     let client = McpClient::new();
 
     // Phase 1: connect all servers
@@ -185,6 +235,26 @@ pub async fn connect_and_discover_tools(
 
     // Phase 2: discover all tools
     let definitions = client.list_tools().await?;
+    let snapshots: Vec<McpToolDescriptorSnapshot> = definitions
+        .iter()
+        .map(|def| {
+            let sanitised = sanitise_tool_name(&def.name);
+            let server_name = def
+                .name
+                .strip_prefix("mcp://")
+                .and_then(|rest| rest.split('/').next())
+                .unwrap_or_default()
+                .to_string();
+            McpToolDescriptorSnapshot {
+                server_name,
+                tool_name: sanitised,
+                original_name: def.name.clone(),
+                description: def.description.clone(),
+                input_schema: def.parameters_schema.clone(),
+                output_hint: None,
+            }
+        })
+        .collect();
 
     // Phase 3: build tool wrappers (each gets a cloned client)
     let tools: Vec<Arc<dyn Tool>> = definitions
@@ -200,7 +270,7 @@ pub async fn connect_and_discover_tools(
         })
         .collect();
 
-    Ok((tools, client))
+    Ok((tools, client, snapshots))
 }
 
 /// Build a system-prompt section listing connected MCP resources and prompts.

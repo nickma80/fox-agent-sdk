@@ -9,6 +9,8 @@ mod session;
 mod memory;
 mod safety;
 mod compaction;
+mod artifact_store;
+mod artifact_tool;
 mod prompt_builder;
 mod harness;
 mod builder;
@@ -21,12 +23,15 @@ mod agent;
 mod mcp;
 mod hooks;
 mod plugin;
+mod routing;
+mod subagent;
 mod swarm_runtime;
 
 pub use session::*;
 pub use memory::{MemoryInjection, MemoryInjectionEvent, MemoryInjectionState};
 pub use safety::*;
 pub use compaction::*;
+pub use artifact_tool::*;
 
 pub use harness::*;
 pub use builder::*;

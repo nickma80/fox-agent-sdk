@@ -16,9 +16,10 @@ use tokio::sync::RwLock;
 use tracing::info;
 
 use crate::agent::Agent;
+use crate::artifact_tool::ArtifactReadTool;
 use crate::governance::GovernanceGuard;
 use crate::harness::Harness;
-use crate::mcp::{McpServerConfig, build_mcp_context_summary, connect_and_discover_tools};
+use crate::mcp::{McpServerConfig, build_mcp_context_summary, connect_and_discover_tools, effective_profile};
 use crate::swarm_runtime::SwarmRuntime;
 
 // ── Provider factory ──
@@ -454,6 +455,25 @@ impl AgentBuilder {
             ).await;
         }
 
+        if sdk_config.artifact_store.enabled {
+            let artifact_tool = Arc::new(ArtifactReadTool::new(
+                agent.harness().artifact_store.clone(),
+            ));
+            agent.harness().register_tool(artifact_tool).await;
+        }
+
+        // Phase 3: register subagent tool for isolated exploration
+        {
+            let subagent_tool = Arc::new(crate::subagent::SubagentTool {
+                parent_harness: agent.harness.clone(),
+                parent_model: agent.model.clone(),
+                artifact_store: agent.harness().artifact_store.clone(),
+                event_tx: None,
+            });
+            agent.harness().register_tool(subagent_tool).await;
+            agent.subagent_runtime_enabled = true;
+        }
+
         for tool in self.tools {
             agent.harness().register_tool(tool).await;
         }
@@ -461,7 +481,7 @@ impl AgentBuilder {
         // Connect MCP servers and register their tools
         if !self.mcp_servers.is_empty() {
             match connect_and_discover_tools(&self.mcp_servers).await {
-                Ok((mcp_tools, mcp_client)) => {
+                Ok((mcp_tools, mcp_client, descriptors)) => {
                     for tool in mcp_tools {
                         agent.harness().register_tool(tool).await;
                     }
@@ -472,6 +492,15 @@ impl AgentBuilder {
                         agent.set_mcp_context(mcp_ctx);
                     }
 
+                    let profiles = self
+                        .mcp_servers
+                        .iter()
+                        .map(|cfg| {
+                            let profile = effective_profile(cfg);
+                            (profile.server_name.clone(), profile)
+                        })
+                        .collect();
+                    agent.set_mcp_runtime_metadata(profiles, descriptors);
                     agent.mcp_client = Some(mcp_client);
                 }
                 Err(e) => {

@@ -18,10 +18,11 @@ Agent 生命周期管理到高级配置的全部内容。
 9. [运行治理](#9-运行治理)
 10. [事件录制与回放](#10-事件录制与回放)
 11. [MCP 集成](#11-mcp-集成)
-12. [域自适应 — 让 Agent 适配任意领域](#12-域自适应--让-agent-适配任意领域)
-13. [Claude Code 兼容：Skills / Hooks / Plugins](#13-claude-code-兼容skills--hooks--plugins)
-14. [进度事件与 TUI 集成](#14-进度事件与-tui-集成)
-15. [故障排查](#15-故障排查)
+12. [工具结果路由与子 Agent 隔离](#12-工具结果路由与子-agent-隔离)
+13. [域自适应 — 让 Agent 适配任意领域](#13-域自适应--让-agent-适配任意领域)
+14. [Claude Code 兼容：Skills / Hooks / Plugins](#14-claude-code-兼容skills--hooks--plugins)
+15. [进度事件与 TUI 集成](#15-进度事件与-tui-集成)
+16. [故障排查](#16-故障排查)
 
 ---
 
@@ -981,7 +982,91 @@ mcp_auto_approve_servers = ["akshare", "filesystem"]
 
 ---
 
-## 12. 域自适应 — 让 Agent 适配任意领域
+## 12. 工具结果路由与子 Agent 隔离
+
+当工具输出非常大时（如全库搜索结果、大文件读取、网页抓取），默认的"工具结果直写消息流"模式会导致主 Agent 上下文被低价值噪声挤占。Fox Agent SDK 通过**统一路由引擎**自动判断如何处理每个工具结果。
+
+### 12.1 三种路由模式
+
+| 模式 | 描述 | 触发条件 |
+|------|------|----------|
+| `Inline` | 结果直接写入消息流 | 小输出，低上下文压力 |
+| `Externalize` | 完整结果存入 artifact store，消息中仅保留摘要和引用 | 大输出或高风险 MCP 工具 |
+| `DelegateToSubagent` | 委托子 Agent 在隔离上下文中执行探索 | 高噪声探索型任务 |
+
+### 12.2 配置
+
+```toml
+[artifact_store]
+enabled = true
+max_artifact_bytes = 1_048_576
+max_session_bytes = 33_554_432
+ephemeral_ttl_hours = 24
+
+[routing_policy]
+enabled = true
+local_externalize_threshold_chars = 8_000
+local_delegate_threshold_chars = 24_000
+context_pressure_threshold = 0.70
+delegate_candidate_tools = ["grep", "glob", "web_fetch", "web_search", "ls", "read"]
+```
+
+### 12.3 `artifact_read` 工具
+
+主 Agent 可以通过内置的 `artifact_read` 工具按需分页回读已外置的 artifact，避免重新执行大工具。
+
+```
+参数: artifact_id, offset_chars, limit_chars
+```
+
+### 12.4 子 Agent 委派
+
+当预设的高噪声工具产生大输出时，routing engine 会自动将其委派给子 Agent：
+
+```rust
+// 子 Agent 在隔离上下文中执行，只回传结构化摘要
+SubagentSummary {
+    task_id: "...",
+    objective: "...",
+    findings: [...],
+    evidence_refs: [...],
+    recommendations: [...],
+    uncertainties: [...],
+    next_queries: [...],
+}
+```
+
+也可以手动通过 `subagent` 工具显式委派探索任务。
+
+### 12.5 治理指标
+
+`GovernanceMetrics` 提供跨会话的聚合指标，帮助监控存储压力和路由决策质量：
+
+```
+Routing: N total — inline X%, summarize Y%, externalize Z%, delegate W%
+Artifacts: N writes (M bytes), R reads, GC: D deleted (F bytes freed)
+Sub-agents: N tasks — S success, T timeout, E error
+Compaction: C triggers, MCP: M calls
+```
+
+可通过 `harness.governance_metrics.snapshot().format_summary()` 获取报告。
+
+### 12.6 审计事件
+
+以下事件在 tool→routing→artifact→subagent→summary 链路中全程追踪：
+
+| 事件 | 触发时机 |
+|------|----------|
+| `RoutingDecision` | 路由引擎对每个工具结果作出决策时 |
+| `ArtifactStored` | 工具结果外置存储时（含 server/transport 等 MCP 元数据） |
+| `ArtifactRead` | `artifact_read` 回读时 |
+| `ArtifactGc` | GC 回收过期对象时 |
+| `SubagentTaskStarted` | 子 Agent 任务派发时 |
+| `SubagentTaskCompleted` | 子 Agent 完成任务时（含 findings_count、evidence_count、elapsed_secs） |
+
+---
+
+## 13. 域自适应 — 让 Agent 适配任意领域
 
 Fox Agent SDK 是**通用 Agent 运行时**，同一个 Agent 二进制可以在 coding、量化交易、数据分析、运维、文档写作等截然不同的领域工作。域自适应通过三层递进机制实现。
 
@@ -1109,7 +1194,7 @@ let mut agent = AgentBuilder::new()
 
 ---
 
-## 13. Claude Code 兼容：Skills / Hooks / Plugins
+## 14. Claude Code 兼容：Skills / Hooks / Plugins
 
 Fox Agent SDK 全面兼容 Claude Code 的三种扩展机制，让你可以直接复用 Claude Code
 生态中的 Skill、Hook 和 Plugin。
@@ -1495,7 +1580,7 @@ INFO Loaded 2 plugin skills
 
 ---
 
-## 14. 进度事件与 TUI 集成
+## 15. 进度事件与 TUI 集成
 
 SDK 提供丰富的事件流，应用层（如 TUI）可通过 `AgentEvent` channel 订阅实时进度。
 
@@ -1612,7 +1697,7 @@ Some(AgentEvent::SoftInterruptInjected { interrupt }) => {
 
 ---
 
-## 15. 故障排查
+## 16. 故障排查
 
 | 问题 | 可能原因 | 解决方案 |
 |------|---------|---------|

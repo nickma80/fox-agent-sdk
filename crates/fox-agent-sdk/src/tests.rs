@@ -1,12 +1,17 @@
 #[cfg(test)]
 mod sdk_tests {
     use crate::*;
+    use crate::routing::{GovernanceMetrics, RoutingInput, RoutingPolicyEngine};
     use fox_agent_core::{
         AgentEvent, AgentError, CompactionConfig, DefaultModel, DefaultSafetyPolicy,
         FilePlanningStore, FoxAgentSdkConfig, MemoryConfig, MemoryStateEvent,
-        Message, Model, PermissionDecision, PermissionRequest, PermissionResult, PlanningStore,
-        PlanStatus, PlanPriority, SafetyConfig, StreamEvent, TokenUsage, Tool, ToolContext, ToolError,
-        ToolOutput, TurnOutcome, ErrorKind,
+        Message, McpServerKind, McpServerProfile, McpToolDescriptorSnapshot, McpTransportKind,
+        Model, PermissionDecision, PermissionRequest, PermissionResult, PlanningStore,
+        PlanStatus, PlanPriority, SafetyConfig, StreamEvent, TokenUsage, Tool, ToolContext,
+        ToolError, ToolOutput, TurnOutcome, ErrorKind,
+        ArtifactProducer, ArtifactRetentionClass, ArtifactType, ArtifactStoreConfig,
+        EvidenceRef, SubagentOutcome, SubagentSummary, SubagentTask,
+        RoutingPolicyConfig, ToolResultRouting,
     };
     use fox_agent_providers::MockProvider;
     use fox_agent_tools::{TodoItem, TodoStatus, TodoPriority, PlanItem};
@@ -14,6 +19,12 @@ mod sdk_tests {
     use std::sync::Arc;
 
     struct EchoTool;
+
+    struct StaticTool {
+        name: &'static str,
+        description: &'static str,
+        text: String,
+    }
 
     #[async_trait::async_trait]
     impl Tool for EchoTool {
@@ -25,6 +36,18 @@ mod sdk_tests {
         async fn execute(&self, input: Value, _ctx: ToolContext) -> Result<ToolOutput, ToolError> {
             let text = input.get("text").and_then(|v| v.as_str()).unwrap_or_default().to_string();
             Ok(ToolOutput { text, is_error: false, json: None })
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl Tool for StaticTool {
+        fn name(&self) -> &str { self.name }
+        fn description(&self) -> &str { self.description }
+        fn parameters_schema(&self) -> Value {
+            json!({"type":"object","properties":{}})
+        }
+        async fn execute(&self, _input: Value, _ctx: ToolContext) -> Result<ToolOutput, ToolError> {
+            Ok(ToolOutput { text: self.text.clone(), is_error: false, json: None })
         }
     }
 
@@ -222,6 +245,262 @@ mod sdk_tests {
             }
         }
         assert!(saw_consumed);
+    }
+
+    #[tokio::test]
+    async fn phase1_artifact_events_are_emitted() {
+        let provider = MockProvider::new("mock");
+        provider.push_script(vec![
+            StreamEvent::ToolUse { id: "c1".into(), name: "long_echo".into(), input: json!({}) },
+            StreamEvent::MessageStop { stop_reason: None },
+        ]);
+        provider.push_script(vec![
+            StreamEvent::TextDelta { text: "done".into() },
+            StreamEvent::MessageStop { stop_reason: None },
+        ]);
+
+        let model: Arc<dyn Model> = Arc::new(DefaultModel::new(Arc::new(provider), "mock-1"));
+        let harness = Harness::new(FoxAgentSdkConfig {
+            compaction: CompactionConfig { enabled: true, token_budget: 1000, ..Default::default() },
+            safety: SafetyConfig { default_policy: DefaultSafetyPolicy::Allow, ..Default::default() },
+            ..Default::default()
+        }, None);
+        harness.register_tool(Arc::new(StaticTool {
+            name: "long_echo",
+            description: "returns a large payload",
+            text: "x".repeat(4000),
+        })).await;
+        let mut agent = Agent::new(model, harness, Arc::new(tokio::sync::RwLock::new(None)));
+
+        let (tx, mut rx) = tokio::sync::mpsc::channel(64);
+        let outcome = agent.run_once_streaming("go", &tx).await.unwrap();
+
+        let mut saw_stored = false;
+        for _ in 0..32 {
+            let ev = tokio::time::timeout(std::time::Duration::from_millis(200), rx.recv()).await.ok().flatten();
+            let Some(ev) = ev else { break };
+            if let AgentEvent::ArtifactStored { tool_name, .. } = ev {
+                assert_eq!(tool_name, "long_echo");
+                saw_stored = true;
+                break;
+            }
+        }
+
+        assert!(saw_stored);
+        assert!(matches!(outcome, TurnOutcome::Completed { .. }));
+    }
+
+    #[tokio::test]
+    async fn phase1_artifact_read_emits_event() {
+        let provider = MockProvider::new("mock");
+        let harness = Harness::new(FoxAgentSdkConfig {
+            safety: SafetyConfig { default_policy: DefaultSafetyPolicy::Allow, ..Default::default() },
+            ..Default::default()
+        }, None);
+
+        let record = harness.artifact_store.put_text(
+            harness.session_id(),
+            ArtifactProducer::Tool { tool_name: "read".to_string() },
+            ArtifactType::FileChunk,
+            ArtifactRetentionClass::Ephemeral,
+            "abcdefghij".to_string(),
+            json!({}),
+        ).await.unwrap().record;
+
+        harness.register_tool(Arc::new(ArtifactReadTool::new(harness.artifact_store.clone()))).await;
+
+        provider.push_script(vec![
+            StreamEvent::ToolUse {
+                id: "c1".into(),
+                name: "artifact_read".into(),
+                input: json!({"artifact_id": record.artifact_id, "offset_chars": 1, "limit_chars": 3}),
+            },
+            StreamEvent::MessageStop { stop_reason: None },
+        ]);
+        provider.push_script(vec![
+            StreamEvent::TextDelta { text: "done".into() },
+            StreamEvent::MessageStop { stop_reason: None },
+        ]);
+
+        let model: Arc<dyn Model> = Arc::new(DefaultModel::new(Arc::new(provider), "mock-1"));
+        let mut agent = Agent::new(model, harness, Arc::new(tokio::sync::RwLock::new(None)));
+        let (tx, mut rx) = tokio::sync::mpsc::channel(64);
+        let _ = agent.run_once_streaming("go", &tx).await.unwrap();
+
+        let mut saw_read = false;
+        for _ in 0..32 {
+            let ev = tokio::time::timeout(std::time::Duration::from_millis(200), rx.recv()).await.ok().flatten();
+            let Some(ev) = ev else { break };
+            if let AgentEvent::ArtifactRead { artifact_id, returned_chars, offset_chars, limit_chars, .. } = ev {
+                assert_eq!(artifact_id, record.artifact_id);
+                assert_eq!(returned_chars, 3);
+                assert_eq!(offset_chars, 1);
+                assert_eq!(limit_chars, 3);
+                saw_read = true;
+                break;
+            }
+        }
+        assert!(saw_read);
+    }
+
+    #[tokio::test]
+    async fn phase2_mcp_profile_externalizes_large_result() {
+        let provider = MockProvider::new("mock");
+        provider.push_script(vec![
+            StreamEvent::ToolUse { id: "c1".into(), name: "mcp__filesystem__read_file".into(), input: json!({}) },
+            StreamEvent::MessageStop { stop_reason: None },
+        ]);
+        provider.push_script(vec![
+            StreamEvent::TextDelta { text: "done".into() },
+            StreamEvent::MessageStop { stop_reason: None },
+        ]);
+
+        let model: Arc<dyn Model> = Arc::new(DefaultModel::new(Arc::new(provider), "mock-1"));
+        let harness = Harness::new(FoxAgentSdkConfig {
+            compaction: CompactionConfig { enabled: true, token_budget: 100_000, ..Default::default() },
+            safety: SafetyConfig { default_policy: DefaultSafetyPolicy::Allow, ..Default::default() },
+            ..Default::default()
+        }, None);
+        harness.register_tool(Arc::new(StaticTool {
+            name: "mcp__filesystem__read_file",
+            description: "mock filesystem MCP read",
+            text: "x".repeat(2500),
+        })).await;
+
+        let mut agent = Agent::new(model, harness, Arc::new(tokio::sync::RwLock::new(None)));
+        agent.set_mcp_runtime_metadata(
+            std::iter::once((
+                "filesystem".to_string(),
+                McpServerProfile {
+                    server_name: "filesystem".to_string(),
+                    kind: McpServerKind::Filesystem,
+                    transport: McpTransportKind::Stdio,
+                    auto_approve: false,
+                    allowed_tools: Vec::new(),
+                    capability_tags: Vec::new(),
+                },
+            )).collect(),
+            vec![McpToolDescriptorSnapshot {
+                server_name: "filesystem".to_string(),
+                tool_name: "mcp__filesystem__read_file".to_string(),
+                original_name: "mcp://filesystem/read_file".to_string(),
+                description: "Read a file from filesystem".to_string(),
+                input_schema: json!({}),
+                output_hint: None,
+            }],
+        );
+
+        let (tx, mut rx) = tokio::sync::mpsc::channel(64);
+        let _ = agent.run_once_streaming("go", &tx).await.unwrap();
+
+        let mut saw_externalized_output = false;
+        let mut saw_artifact_metadata = false;
+        for _ in 0..32 {
+            let ev = tokio::time::timeout(std::time::Duration::from_millis(200), rx.recv()).await.ok().flatten();
+            let Some(ev) = ev else { break };
+            match ev {
+                AgentEvent::ToolCallEnd { output, .. } => {
+                    if output.text.contains("[OUTPUT EXTERNALIZED: artifact_id=") {
+                        saw_externalized_output = true;
+                    }
+                }
+                AgentEvent::ArtifactStored {
+                    artifact_type,
+                    server_name,
+                    server_kind,
+                    transport,
+                    original_tool_name,
+                    externalized_reason,
+                    ..
+                } => {
+                    assert_eq!(artifact_type, "McpFilesystemSnapshot");
+                    assert_eq!(server_name.as_deref(), Some("filesystem"));
+                    assert_eq!(server_kind.as_deref(), Some("filesystem"));
+                    assert_eq!(transport.as_deref(), Some("stdio"));
+                    assert_eq!(original_tool_name.as_deref(), Some("mcp://filesystem/read_file"));
+                    assert_eq!(externalized_reason.as_deref(), Some("mcp:filesystem-large"));
+                    saw_artifact_metadata = true;
+                }
+                _ => {}
+            }
+            if saw_externalized_output && saw_artifact_metadata { break; }
+        }
+        assert!(saw_externalized_output);
+        assert!(saw_artifact_metadata);
+    }
+
+    #[tokio::test]
+    async fn phase2_artifact_read_emits_mcp_audit_fields() {
+        let provider = MockProvider::new("mock");
+        let harness = Harness::new(FoxAgentSdkConfig {
+            safety: SafetyConfig { default_policy: DefaultSafetyPolicy::Allow, ..Default::default() },
+            ..Default::default()
+        }, None);
+
+        let record = harness.artifact_store.put_text(
+            harness.session_id(),
+            ArtifactProducer::Mcp {
+                server_name: "filesystem".to_string(),
+                tool_name: "read_file".to_string(),
+            },
+            ArtifactType::McpFilesystemSnapshot,
+            ArtifactRetentionClass::Referenced,
+            "hello from filesystem artifact".to_string(),
+            json!({
+                "tool_name": "mcp__filesystem__read_file",
+                "server_name": "filesystem",
+                "server_kind": "filesystem",
+                "transport": "stdio",
+                "original_tool_name": "mcp://filesystem/read_file",
+            }),
+        ).await.unwrap().record;
+
+        harness.register_tool(Arc::new(ArtifactReadTool::new(harness.artifact_store.clone()))).await;
+
+        provider.push_script(vec![
+            StreamEvent::ToolUse {
+                id: "c1".into(),
+                name: "artifact_read".into(),
+                input: json!({"artifact_id": record.artifact_id, "offset_chars": 0, "limit_chars": 5}),
+            },
+            StreamEvent::MessageStop { stop_reason: None },
+        ]);
+        provider.push_script(vec![
+            StreamEvent::TextDelta { text: "done".into() },
+            StreamEvent::MessageStop { stop_reason: None },
+        ]);
+
+        let model: Arc<dyn Model> = Arc::new(DefaultModel::new(Arc::new(provider), "mock-1"));
+        let mut agent = Agent::new(model, harness, Arc::new(tokio::sync::RwLock::new(None)));
+        let (tx, mut rx) = tokio::sync::mpsc::channel(64);
+        let _ = agent.run_once_streaming("go", &tx).await.unwrap();
+
+        let mut saw_read = false;
+        for _ in 0..32 {
+            let ev = tokio::time::timeout(std::time::Duration::from_millis(200), rx.recv()).await.ok().flatten();
+            let Some(ev) = ev else { break };
+            if let AgentEvent::ArtifactRead {
+                artifact_id,
+                source_tool_name,
+                artifact_type,
+                server_name,
+                server_kind,
+                transport,
+                original_tool_name,
+                ..
+            } = ev {
+                assert_eq!(artifact_id, record.artifact_id);
+                assert_eq!(source_tool_name.as_deref(), Some("mcp__filesystem__read_file"));
+                assert_eq!(artifact_type.as_deref(), Some("McpFilesystemSnapshot"));
+                assert_eq!(server_name.as_deref(), Some("filesystem"));
+                assert_eq!(server_kind.as_deref(), Some("filesystem"));
+                assert_eq!(transport.as_deref(), Some("stdio"));
+                assert_eq!(original_tool_name.as_deref(), Some("mcp://filesystem/read_file"));
+                saw_read = true;
+                break;
+            }
+        }
+        assert!(saw_read);
     }
 
     #[tokio::test]
@@ -822,5 +1101,412 @@ mod sdk_tests {
 
         let tool_events = runner.events_by_source("tool");
         assert_eq!(tool_events.len(), 1);
+    }
+
+    // ── Phase 2 integration tests ──
+
+    #[test]
+    fn phase2_should_externalize_browser_html() {
+        let profiles = std::iter::once((
+            "browser".to_string(),
+            McpServerProfile {
+                server_name: "browser".to_string(),
+                kind: McpServerKind::Browser,
+                transport: McpTransportKind::Stdio,
+                auto_approve: false,
+                allowed_tools: Vec::new(),
+                capability_tags: Vec::new(),
+            },
+        )).collect::<std::collections::HashMap<_, _>>();
+        let descriptors = std::iter::once((
+            "mcp__browser__navigate".to_string(),
+            McpToolDescriptorSnapshot {
+                server_name: "browser".to_string(),
+                tool_name: "mcp__browser__navigate".to_string(),
+                original_name: "mcp://browser/navigate".to_string(),
+                description: "Navigate to a web page and return HTML content".to_string(),
+                input_schema: json!({}),
+                output_hint: None,
+            },
+        )).collect::<std::collections::HashMap<_, _>>();
+
+        let artifact_cfg = ArtifactStoreConfig::default();
+        let result = crate::agent::should_externalize_tool_result(
+            &artifact_cfg,
+            &profiles,
+            &descriptors,
+            "mcp__browser__navigate",
+            "<html><body><p>Hello World</p></body></html>",
+            false,
+        );
+        assert!(result.should_externalize, "browser HTML should be externalized");
+        assert_eq!(result.reason.as_deref(), Some("mcp:browser-html"));
+    }
+
+    #[tokio::test]
+    async fn phase2_artifact_stored_has_externalized_reason() {
+        let provider = MockProvider::new("mock");
+        provider.push_script(vec![
+            StreamEvent::ToolUse { id: "c1".into(), name: "mcp__filesystem__read_file".into(), input: json!({}) },
+            StreamEvent::MessageStop { stop_reason: None },
+        ]);
+        provider.push_script(vec![
+            StreamEvent::TextDelta { text: "done".into() },
+            StreamEvent::MessageStop { stop_reason: None },
+        ]);
+
+        let model: Arc<dyn Model> = Arc::new(DefaultModel::new(Arc::new(provider), "mock-1"));
+        let harness = Harness::new(FoxAgentSdkConfig {
+            compaction: CompactionConfig { enabled: true, token_budget: 100_000, ..Default::default() },
+            safety: SafetyConfig { default_policy: DefaultSafetyPolicy::Allow, ..Default::default() },
+            ..Default::default()
+        }, None);
+        harness.register_tool(Arc::new(StaticTool {
+            name: "mcp__filesystem__read_file",
+            description: "mock filesystem MCP read",
+            text: "x".repeat(2000),
+        })).await;
+
+        let mut agent = Agent::new(model, harness, Arc::new(tokio::sync::RwLock::new(None)));
+        agent.set_mcp_runtime_metadata(
+            std::iter::once((
+                "filesystem".to_string(),
+                McpServerProfile {
+                    server_name: "filesystem".to_string(),
+                    kind: McpServerKind::Filesystem,
+                    transport: McpTransportKind::Stdio,
+                    auto_approve: false,
+                    allowed_tools: Vec::new(),
+                    capability_tags: Vec::new(),
+                },
+            )).collect(),
+            vec![McpToolDescriptorSnapshot {
+                server_name: "filesystem".to_string(),
+                tool_name: "mcp__filesystem__read_file".to_string(),
+                original_name: "mcp://filesystem/read_file".to_string(),
+                description: "Read a file from filesystem".to_string(),
+                input_schema: json!({}),
+                output_hint: None,
+            }],
+        );
+
+        let (tx, mut rx) = tokio::sync::mpsc::channel(64);
+        let _ = agent.run_once_streaming("go", &tx).await.unwrap();
+
+        let mut saw_reason = false;
+        for _ in 0..32 {
+            let ev = tokio::time::timeout(std::time::Duration::from_millis(200), rx.recv()).await.ok().flatten();
+            let Some(ev) = ev else { break };
+            if let AgentEvent::ArtifactStored { artifact_type, retention_class, server_kind, externalized_reason, .. } = ev {
+                assert!(!artifact_type.is_empty(), "artifact_type must be set");
+                assert!(!retention_class.is_empty(), "retention_class must be set");
+                assert_eq!(server_kind.as_deref(), Some("filesystem"));
+                assert_eq!(externalized_reason.as_deref(), Some("mcp:filesystem-large"));
+                saw_reason = true;
+                break;
+            }
+        }
+        assert!(saw_reason, "ArtifactStored must carry externalized_reason and classification fields");
+    }
+
+    #[tokio::test]
+    async fn phase2_unprofiled_mcp_asks_user() {
+        let provider = MockProvider::new("mock");
+        provider.push_script(vec![
+            StreamEvent::ToolUse { id: "c1".into(), name: "mcp__unknown__tool".into(), input: json!({}) },
+            StreamEvent::MessageStop { stop_reason: None },
+        ]);
+
+        let model: Arc<dyn Model> = Arc::new(DefaultModel::new(Arc::new(provider), "mock-1"));
+        let harness = Harness::new(FoxAgentSdkConfig {
+            safety: SafetyConfig { default_policy: DefaultSafetyPolicy::Allow, ..Default::default() },
+            ..Default::default()
+        }, None);
+        harness.register_tool(Arc::new(StaticTool {
+            name: "mcp__unknown__tool",
+            description: "unknown MCP tool",
+            text: "output".to_string(),
+        })).await;
+
+        let mut agent = Agent::new(model, harness, Arc::new(tokio::sync::RwLock::new(None)));
+        // Provide a profile with Unknown kind — no metadata = conservative
+        agent.set_mcp_runtime_metadata(
+            std::iter::once((
+                "unknown".to_string(),
+                McpServerProfile {
+                    server_name: "unknown".to_string(),
+                    kind: McpServerKind::Unknown,
+                    transport: McpTransportKind::Stdio,
+                    auto_approve: false,
+                    allowed_tools: Vec::new(),
+                    capability_tags: Vec::new(),
+                },
+            )).collect(),
+            vec![McpToolDescriptorSnapshot {
+                server_name: "unknown".to_string(),
+                tool_name: "mcp__unknown__tool".to_string(),
+                original_name: "mcp://unknown/tool".to_string(),
+                description: "An unrecognised tool".to_string(),
+                input_schema: json!({}),
+                output_hint: None,
+            }],
+        );
+
+        let (tx, _rx) = tokio::sync::mpsc::channel(16);
+        let outcome = agent.run_once_streaming("go", &tx).await.unwrap();
+        assert!(
+            matches!(outcome, TurnOutcome::RequiresUserDecision { ref request }
+                if request.risk_level == RiskLevel::Medium),
+            "unprofiled MCP tool should require user confirmation; got {outcome:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn phase2_artifact_store_stats_by_type() {
+        let harness = Harness::new(FoxAgentSdkConfig::default(), None);
+
+        let _ = harness.artifact_store.put_text(
+            harness.session_id(),
+            ArtifactProducer::Mcp { server_name: "fs".to_string(), tool_name: "read".to_string() },
+            ArtifactType::McpFilesystemSnapshot,
+            ArtifactRetentionClass::Referenced,
+            "abc".to_string(),
+            json!({}),
+        ).await.unwrap();
+
+        let _ = harness.artifact_store.put_text(
+            harness.session_id(),
+            ArtifactProducer::Mcp { server_name: "api".to_string(), tool_name: "search".to_string() },
+            ArtifactType::McpExternalApiPayload,
+            ArtifactRetentionClass::Ephemeral,
+            "defg".to_string(),
+            json!({}),
+        ).await.unwrap();
+
+        let _ = harness.artifact_store.put_text(
+            harness.session_id(),
+            ArtifactProducer::Tool { tool_name: "read".to_string() },
+            ArtifactType::FileChunk,
+            ArtifactRetentionClass::Ephemeral,
+            "hi".to_string(),
+            json!({}),
+        ).await.unwrap();
+
+        let stats = harness.artifact_store.stats_by_type(
+            harness.session_id(),
+        ).await.unwrap();
+
+        assert_eq!(stats.total_count, 3);
+        assert!(stats.total_bytes > 0);
+        assert!(stats.by_type.contains_key("McpFilesystemSnapshot"));
+        assert!(stats.by_type.contains_key("McpExternalApiPayload"));
+        assert!(stats.by_type.contains_key("FileChunk"));
+
+        let summary = stats.format_summary();
+        assert!(summary.contains("3 artifacts"));
+        assert!(summary.contains("McpFilesystemSnapshot"));
+    }
+
+    // ── Phase 3: sub-agent isolation tests ──
+
+    #[test]
+    fn phase3_subagent_summary_format_is_compact() {
+        let summary = SubagentSummary {
+            task_id: "task_1".into(),
+            objective: "test objective".into(),
+            outcome: SubagentOutcome::Completed,
+            findings: vec!["Found 3 files".into(), "All files use UTF-8".into()],
+            evidence_refs: vec![
+                EvidenceRef {
+                    artifact_id: "art_abc".into(),
+                    label: "file list".into(),
+                    snippet: "src/main.rs\nsrc/lib.rs".into(),
+                }
+            ],
+            recommendations: vec!["Refactor to use async".into()],
+            uncertainties: vec!["Not sure about Windows paths".into()],
+            next_queries: vec!["Check Windows compat".into()],
+            token_usage: None,
+            turns_used: 3,
+            elapsed_secs: 5,
+        };
+
+        let formatted = summary.format_for_main_context();
+        assert!(formatted.contains("[sub-agent task_1] completed"));
+        assert!(formatted.contains("Found 3 files"));
+        assert!(formatted.contains("Evidence: 1 artifact"));
+        assert!(formatted.contains("Refactor to use async"));
+        assert!(formatted.contains("Not sure about Windows paths"));
+        // Verify it's compact (well under 1000 chars for a real summary)
+        assert!(formatted.len() < 500);
+    }
+
+    #[test]
+    fn phase3_subagent_summary_error_outcome() {
+        let summary = SubagentSummary {
+            task_id: "err_1".into(),
+            objective: "test objective".into(),
+            outcome: SubagentOutcome::Error("connection reset".into()),
+            findings: vec![],
+            evidence_refs: vec![],
+            recommendations: vec![],
+            uncertainties: vec!["Failed to connect".into()],
+            next_queries: vec![],
+            token_usage: None,
+            turns_used: 1,
+            elapsed_secs: 2,
+        };
+        let formatted = summary.format_for_main_context();
+        assert!(formatted.contains("error: connection reset"));
+    }
+
+    #[test]
+    fn phase3_subagent_task_serde_roundtrip() {
+        let task = SubagentTask {
+            task_id: "t1".into(),
+            objective: "Find all TODOs".into(),
+            context: "Project uses Rust".into(),
+            tools: vec!["read".into(), "grep".into()],
+            max_turns: 10,
+            timeout_secs: 60,
+        };
+        let json = serde_json::to_string(&task).unwrap();
+        let restored: SubagentTask = serde_json::from_str(&json).unwrap();
+        assert_eq!(restored.task_id, "t1");
+        assert_eq!(restored.objective, "Find all TODOs");
+        assert_eq!(restored.tools.len(), 2);
+        assert_eq!(restored.max_turns, 10);
+    }
+
+    #[test]
+    fn phase3_evidence_ref_serde_roundtrip() {
+        let eref = EvidenceRef {
+            artifact_id: "a1".into(),
+            label: "search results".into(),
+            snippet: "TODO: fix this".into(),
+        };
+        let json = serde_json::to_string(&eref).unwrap();
+        let restored: EvidenceRef = serde_json::from_str(&json).unwrap();
+        assert_eq!(restored.artifact_id, "a1");
+        assert_eq!(restored.snippet, "TODO: fix this");
+    }
+    // ── Phase 4: routing policy and governance metrics tests ──
+
+    #[test]
+    fn phase4_routing_engine_inline_for_small_output() {
+        let cfg = RoutingPolicyConfig::default();
+        let engine = RoutingPolicyEngine::new(cfg);
+        let artifact_cfg = ArtifactStoreConfig::default();
+        let input = RoutingInput::simple("bash", "short output");
+        let result = engine.decide(&input, &artifact_cfg);
+        assert!(matches!(result, ToolResultRouting::Inline));
+    }
+
+    #[test]
+    fn phase4_routing_engine_externalize_for_large_output() {
+        let cfg = RoutingPolicyConfig::default();
+        let engine = RoutingPolicyEngine::new(cfg);
+        let artifact_cfg = ArtifactStoreConfig::default();
+        let large = "x".repeat(10_000);
+        let input = RoutingInput::simple("read", &large);
+        let result = engine.decide(&input, &artifact_cfg);
+        assert!(matches!(result, ToolResultRouting::Externalize | ToolResultRouting::DelegateToSubagent),
+            "large output should externalize or delegate, got {result:?}");
+    }
+
+    #[test]
+    fn phase4_routing_engine_truncated_forces_externalize() {
+        let cfg = RoutingPolicyConfig::default();
+        let engine = RoutingPolicyEngine::new(cfg);
+        let artifact_cfg = ArtifactStoreConfig::default();
+        let mut input = RoutingInput::simple("read", "small");
+        input.truncated_by_context_guard = true;
+        let result = engine.decide(&input, &artifact_cfg);
+        assert_eq!(result, ToolResultRouting::Externalize,
+            "truncated by context guard must externalize");
+    }
+
+    #[test]
+    fn phase4_routing_engine_delegate_candidate() {
+        let cfg = RoutingPolicyConfig::default();
+        let engine = RoutingPolicyEngine::new(cfg);
+        let artifact_cfg = ArtifactStoreConfig::default();
+        let large = "x".repeat(30_000);
+        let input = RoutingInput::simple("grep", &large);
+        let result = engine.decide(&input, &artifact_cfg);
+        assert_eq!(result, ToolResultRouting::DelegateToSubagent,
+            "grep with 30k chars should delegate to sub-agent");
+    }
+
+    #[test]
+    fn phase4_routing_engine_high_pressure_escalates() {
+        let cfg = RoutingPolicyConfig::default();
+        let engine = RoutingPolicyEngine::new(cfg);
+        let artifact_cfg = ArtifactStoreConfig::default();
+        let mut input = RoutingInput::simple("read", "moderate output");
+        input.context_pressure = 0.85; // above 0.70 threshold
+        let result = engine.decide(&input, &artifact_cfg);
+        assert!(matches!(result, ToolResultRouting::Externalize | ToolResultRouting::DelegateToSubagent),
+            "high pressure should escalate to externalize or delegate, got {result:?}");
+    }
+
+    #[test]
+    fn phase4_governance_metrics_atomic_counters() {
+        let m = GovernanceMetrics::new();
+        m.record_routing(ToolResultRouting::Inline);
+        m.record_routing(ToolResultRouting::Externalize);
+        m.record_routing(ToolResultRouting::Externalize);
+        m.record_artifact_write(1000);
+        m.record_artifact_write(2000);
+        m.record_artifact_read();
+        m.record_subagent_success();
+        m.record_compaction();
+
+        let snap = m.snapshot();
+        assert_eq!(snap.inline_count, 1);
+        assert_eq!(snap.externalize_count, 2);
+        assert_eq!(snap.artifact_write_count, 2);
+        assert_eq!(snap.artifact_write_bytes, 3000);
+        assert_eq!(snap.artifact_read_count, 1);
+        assert_eq!(snap.subagent_task_count, 1);
+        assert_eq!(snap.subagent_success_count, 1);
+        assert_eq!(snap.compaction_trigger_count, 1);
+    }
+
+    #[test]
+    fn phase4_metrics_snapshot_format() {
+        let m = GovernanceMetrics::new();
+        m.record_routing(ToolResultRouting::Inline);
+        m.record_routing(ToolResultRouting::Externalize);
+        m.record_routing(ToolResultRouting::DelegateToSubagent);
+        m.record_artifact_write(500);
+        m.record_subagent_success();
+        let snap = m.snapshot();
+        let formatted = snap.format_summary();
+        assert!(formatted.contains("Governance Metrics"));
+        assert!(formatted.contains("inline"));
+        assert!(formatted.contains("externalize"));
+        assert!(formatted.contains("delegate"));
+        assert!(formatted.contains("Artifacts"));
+        assert!(formatted.contains("Sub-agents"));
+        assert!(formatted.contains("Compaction"));
+    }
+
+    #[test]
+    fn phase4_routing_config_default_delegate_tools() {
+        let cfg = RoutingPolicyConfig::default();
+        assert!(cfg.delegate_candidate_tools.contains(&"grep".to_string()));
+        assert!(cfg.delegate_candidate_tools.contains(&"read".to_string()));
+        assert!(cfg.delegate_candidate_tools.contains(&"web_fetch".to_string()));
+        assert!(cfg.local_externalize_threshold_chars > 0);
+        assert!(cfg.local_delegate_threshold_chars > cfg.local_externalize_threshold_chars);
+    }
+
+    #[test]
+    fn phase4_message_total_chars() {
+        let msg = Message::user("hello world");
+        assert_eq!(msg.total_chars(), 11);
+        let tool = Message::tool_result("c1", "output text", false);
+        assert!(tool.total_chars() > 10);
     }
 }

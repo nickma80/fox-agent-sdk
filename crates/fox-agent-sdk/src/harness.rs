@@ -1,8 +1,9 @@
 use fox_agent_core::{
     ContextInfo, FoxAgentSdkConfig, HooksConfig, InterruptManager, InjectedInterrupt, MemoryStateEvent,
-    PermissionResult, PlanningStore, SessionStore, SkillInfo, SkillRegistry, SplitPrompt, Tool, ToolContext,
-    ToolDefinition, ToolError, ToolOutput, WorkspaceSandbox, FilePlanningStore, FileSessionStore,
-    set_default_planning_store, Role,
+    McpServerProfile, McpToolDescriptorSnapshot, PermissionResult, PlanningStore, SessionStore,
+    SkillInfo, SkillRegistry, SplitPrompt, Tool, ToolContext, ToolDefinition, ToolError,
+    ToolOutput, WorkspaceSandbox, FilePlanningStore, FileSessionStore, set_default_planning_store,
+    Role,
 };
 use fox_agent_tools::ToolExecutor;
 use std::collections::HashMap;
@@ -10,13 +11,15 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Instant;
 use tokio::sync::RwLock;
-use tracing::{debug, info};
+use tracing::{debug, info, warn};
 
+use crate::artifact_store::{ArtifactStore, DisabledArtifactStore, FileArtifactStore};
 use crate::compaction::CompactionManager;
 use crate::hooks::{HookContext, HookDecision, HookEvent, HookManager};
 use crate::memory::{MemoryInjection, MemoryInjectionState, MemoryManager};
 use crate::plugin::PluginManager;
 use crate::prompt_builder::PromptBuilder;
+use crate::routing::{GovernanceMetrics, RoutingPolicyEngine};
 use crate::safety::SafetySystem;
 use crate::session::SessionState;
 
@@ -43,7 +46,8 @@ pub struct Harness {
     session_id: String,
     /// Immutable working directory, hoisted for cheap synchronous access.
     session_working_dir: Option<PathBuf>,
-    tool_executor: ToolExecutor,
+    /// Tool executor — made public so examples/tests can exercise individual tools.
+    pub tool_executor: ToolExecutor,
     pub memory_state: Arc<RwLock<MemoryInjectionState>>,
     pub memory_manager: MemoryManager,
     pub compaction_manager: Arc<RwLock<CompactionManager>>,
@@ -51,6 +55,7 @@ pub struct Harness {
     pub prompt_builder: PromptBuilder,
     pub planning_store: Arc<dyn PlanningStore>,
     pub session_store: Arc<dyn SessionStore>,
+    pub artifact_store: Arc<dyn ArtifactStore>,
     pub skill_registry: Arc<RwLock<SkillRegistry>>,
     pub interrupt_manager: Arc<RwLock<InterruptManager>>,
     pub hook_manager: Arc<RwLock<HookManager>>,
@@ -65,6 +70,10 @@ pub struct Harness {
     /// Simple read-tool cache keyed by (file_path, offset, limit) to avoid
     /// re-reading the same file segment within a 60s window.
     read_cache: Arc<RwLock<HashMap<ReadCacheKey, CachedRead>>>,
+    /// Unified routing policy engine (Phase 4).
+    pub routing_engine: RoutingPolicyEngine,
+    /// Aggregate governance metrics (Phase 4).
+    pub governance_metrics: GovernanceMetrics,
 }
 
 impl Harness {
@@ -77,6 +86,12 @@ impl Harness {
         let planning_store = resolve_planning_store(&cfg, working_dir.as_deref());
         set_default_planning_store(planning_store.clone());
         let storage_root = resolve_storage_root(&cfg, working_dir.as_deref());
+        let artifact_root = resolve_artifact_root(&cfg, working_dir.as_deref());
+        let artifact_store: Arc<dyn ArtifactStore> = if cfg.artifact_store.enabled {
+            Arc::new(FileArtifactStore::new(cfg.artifact_store.clone(), artifact_root))
+        } else {
+            Arc::new(DisabledArtifactStore)
+        };
         let session = SessionState::new(working_dir);
         let memory_manager = MemoryManager::new(memory_cfg.clone())
             .with_storage_dir(storage_root.join("memory"))
@@ -88,6 +103,10 @@ impl Harness {
             compaction_enabled = compaction_cfg.enabled,
             "Harness created"
         );
+        // Validate routing policy config at startup
+        if let Err(e) = cfg.routing_policy.validate() {
+            warn!("routing_policy validation: {e} — using defaults");
+        }
         let version = env!("CARGO_PKG_VERSION").to_string();
         let git_hash = std::env::var("FOX_AGENT_GIT_HASH").unwrap_or_else(|_| "unknown".to_string());
         let mut prompt_builder = PromptBuilder::new(version, git_hash);
@@ -97,6 +116,7 @@ impl Harness {
         let plugin_marketplaces = cfg.plugins.as_ref().map(|p| p.marketplaces.clone()).unwrap_or_default();
         let plugin_dir_path = storage_root.join("plugins");
         let plugin_proxy = cfg.proxy.clone();
+        let routing_cfg = cfg.routing_policy.clone();
         Self {
             cfg,
             session_id: session.id.clone(),
@@ -110,6 +130,7 @@ impl Harness {
             prompt_builder,
             planning_store,
             session_store,
+            artifact_store,
             skill_registry: Arc::new(RwLock::new(SkillRegistry::default())),
             interrupt_manager: Arc::new(RwLock::new(InterruptManager::default())),
             hook_manager: Arc::new(RwLock::new(HookManager::new(
@@ -122,6 +143,8 @@ impl Harness {
             first_user_message: Arc::new(RwLock::new(None)),
             latest_user_message: Arc::new(RwLock::new(None)),
             read_cache: Arc::new(RwLock::new(HashMap::new())),
+            routing_engine: RoutingPolicyEngine::new(routing_cfg),
+            governance_metrics: GovernanceMetrics::new(),
         }
     }
 
@@ -138,6 +161,12 @@ impl Harness {
         let planning_store = resolve_planning_store(&cfg, working_dir.as_deref());
         set_default_planning_store(planning_store.clone());
         let storage_root = resolve_storage_root(&cfg, working_dir.as_deref());
+        let artifact_root = resolve_artifact_root(&cfg, working_dir.as_deref());
+        let artifact_store: Arc<dyn ArtifactStore> = if cfg.artifact_store.enabled {
+            Arc::new(FileArtifactStore::new(cfg.artifact_store.clone(), artifact_root))
+        } else {
+            Arc::new(DisabledArtifactStore)
+        };
         let session = SessionState::new(working_dir);
         let memory_manager = MemoryManager::new(memory_cfg.clone())
             .with_storage_dir(storage_root.join("memory"))
@@ -148,6 +177,10 @@ impl Harness {
             memory_enabled = memory_enabled,
             "Harness created with custom permission hook"
         );
+        // Validate routing policy config at startup
+        if let Err(e) = cfg.routing_policy.validate() {
+            warn!("routing_policy validation: {e} — using defaults");
+        }
         let version = env!("CARGO_PKG_VERSION").to_string();
         let git_hash = std::env::var("FOX_AGENT_GIT_HASH").unwrap_or_else(|_| "unknown".to_string());
         let mut prompt_builder = PromptBuilder::new(version, git_hash);
@@ -157,6 +190,7 @@ impl Harness {
         let plugin_marketplaces = cfg.plugins.as_ref().map(|p| p.marketplaces.clone()).unwrap_or_default();
         let plugin_dir_path = storage_root.join("plugins");
         let plugin_proxy = cfg.proxy.clone();
+        let routing_cfg = cfg.routing_policy.clone();
         Self {
             cfg,
             session_id: session.id.clone(),
@@ -170,6 +204,7 @@ impl Harness {
             prompt_builder,
             planning_store,
             session_store,
+            artifact_store,
             skill_registry: Arc::new(RwLock::new(SkillRegistry::default())),
             interrupt_manager: Arc::new(RwLock::new(InterruptManager::default())),
             hook_manager: Arc::new(RwLock::new(HookManager::new(
@@ -182,12 +217,29 @@ impl Harness {
             first_user_message: Arc::new(RwLock::new(None)),
             latest_user_message: Arc::new(RwLock::new(None)),
             read_cache: Arc::new(RwLock::new(HashMap::new())),
+            routing_engine: RoutingPolicyEngine::new(routing_cfg),
+            governance_metrics: GovernanceMetrics::new(),
         }
     }
 
     pub async fn register_tool(&self, tool: Arc<dyn Tool>) {
         info!(name = %tool.name(), "Registering tool");
         self.tool_executor.register_tool(tool).await;
+    }
+
+    /// Estimate context pressure (0.0–1.0) based on current message volume
+    /// vs. the compaction token budget. Used by the routing policy engine to
+    /// decide whether to escalate routing decisions.
+    pub async fn context_pressure(&self) -> f64 {
+        let token_budget = self.cfg.compaction.token_budget as f64;
+        if token_budget == 0.0 {
+            return 0.0;
+        }
+        let messages = self.session_messages().await;
+        let total_chars: usize = messages.iter().map(|m| m.total_chars()).sum();
+        // Approximate: ~4 chars per token
+        let pressure = (total_chars as f64 / 4.0) / token_budget;
+        pressure.clamp(0.0, 1.0)
     }
 
     // ── Session state accessors ──
@@ -426,6 +478,17 @@ impl Harness {
         self.safety_system.check(tool_name, input)
     }
 
+    pub async fn check_tool_permission_with_mcp_metadata(
+        &self,
+        tool_name: &str,
+        input: &serde_json::Value,
+        profile: Option<&McpServerProfile>,
+        descriptor: Option<&McpToolDescriptorSnapshot>,
+    ) -> PermissionResult {
+        self.safety_system
+            .check_with_mcp_metadata(tool_name, input, profile, descriptor)
+    }
+
     pub async fn build_system_prompt_split(&self, memory_prompt: Option<&str>, active_skill: Option<&str>) -> (SplitPrompt, ContextInfo) {
         // Collect skill metadata for the static skills list
         let skills = {
@@ -614,6 +677,19 @@ fn resolve_storage_root(
         }
     }
     cfg.storage_dir.clone()
+}
+
+fn resolve_artifact_root(
+    cfg: &FoxAgentSdkConfig,
+    working_dir: Option<&std::path::Path>,
+) -> std::path::PathBuf {
+    let base = &cfg.artifact_store.base_dir;
+    if base.is_relative() {
+        if let Some(dir) = working_dir {
+            return dir.join(base);
+        }
+    }
+    base.clone()
 }
 
 fn resolve_session_store(

@@ -7,7 +7,7 @@ use crate::compaction::CompactionEvent;
 use crate::interrupt::InjectedInterrupt;
 use crate::memory::MemoryStateEvent;
 use crate::provider::{ProviderError, TokenUsage};
-use crate::tool::{ToolError, ToolOutput};
+use crate::tool::{ToolError, ToolOutput, ToolResultRouting};
 
 // ── Outcome ──
 
@@ -241,9 +241,71 @@ pub enum AgentEvent {
     /// Emitted every 3s after the first 5s of tool execution. Purely
     /// informational; the TUI can use this to show elapsed time.
     ToolExecutionProgress { call_id: String, tool_name: String, elapsed_secs: u64 },
+    /// A large tool result was externalized into the artifact store.
+    ArtifactStored {
+        artifact_id: String,
+        tool_name: String,
+        call_id: String,
+        size_bytes: u64,
+        artifact_type: String,
+        retention_class: String,
+        server_name: Option<String>,
+        server_kind: Option<String>,
+        transport: Option<String>,
+        original_tool_name: Option<String>,
+        externalized_reason: Option<String>,
+    },
+    /// An artifact was read back into the workflow via `artifact_read`.
+    ArtifactRead {
+        artifact_id: String,
+        tool_name: String,
+        returned_chars: usize,
+        offset_chars: usize,
+        limit_chars: usize,
+        source_tool_name: Option<String>,
+        artifact_type: Option<String>,
+        server_name: Option<String>,
+        server_kind: Option<String>,
+        transport: Option<String>,
+        original_tool_name: Option<String>,
+    },
+    /// Artifact store garbage collection reclaimed storage.
+    ArtifactGc {
+        scope: String,
+        deleted: u64,
+        kept: u64,
+        bytes_freed: u64,
+        session_quota_evictions: u64,
+        store_quota_evictions: u64,
+    },
     /// Plan progress updated. Emitted when the plan tool detects a change
     /// in completed/total ratios. Enables TUI to show overall progress.
     PlanProgress { completed: usize, total: usize, current_item: Option<String> },
+    /// A sub-agent task was dispatched (Phase 3).
+    SubagentTaskStarted {
+        task_id: String,
+        objective: String,
+        max_turns: u32,
+    },
+    /// A sub-agent task completed with a summary (Phase 3).
+    SubagentTaskCompleted {
+        task_id: String,
+        outcome: String,
+        findings_count: u32,
+        evidence_count: u32,
+        turns_used: u32,
+        elapsed_secs: u64,
+        summary_text: String,
+    },
+    /// Routing policy engine decided how to handle a tool result (Phase 4).
+    RoutingDecision {
+        tool_name: String,
+        call_id: String,
+        routing: ToolResultRouting,
+        context_pressure: f64,
+        output_size: usize,
+        reason: Option<String>,
+    },
 }
 
 /// Type alias for the sender side of the agent event channel.
@@ -303,7 +365,37 @@ pub enum EnvelopePayload {
     McpServerConnected { server_name: String },
     McpServerDisconnected { server_name: String, error: Option<String> },
     ToolExecutionProgress { call_id: String, tool_name: String, elapsed_secs: u64 },
+    ArtifactStored {
+        artifact_id: String,
+        tool_name: String,
+        call_id: String,
+        size_bytes: u64,
+        artifact_type: String,
+        retention_class: String,
+        server_name: Option<String>,
+        server_kind: Option<String>,
+        transport: Option<String>,
+        original_tool_name: Option<String>,
+        externalized_reason: Option<String>,
+    },
+    ArtifactRead {
+        artifact_id: String,
+        tool_name: String,
+        returned_chars: usize,
+        offset_chars: usize,
+        limit_chars: usize,
+        source_tool_name: Option<String>,
+        artifact_type: Option<String>,
+        server_name: Option<String>,
+        server_kind: Option<String>,
+        transport: Option<String>,
+        original_tool_name: Option<String>,
+    },
+    ArtifactGc { scope: String, deleted: u64, kept: u64, bytes_freed: u64, session_quota_evictions: u64, store_quota_evictions: u64 },
     PlanProgress { completed: usize, total: usize, current_item: Option<String> },
+    SubagentTaskStarted { task_id: String, objective: String, max_turns: u32 },
+    SubagentTaskCompleted { task_id: String, outcome: String, findings_count: u32, evidence_count: u32, turns_used: u32, elapsed_secs: u64, summary_text: String },
+    RoutingDecision { tool_name: String, call_id: String, routing: ToolResultRouting, context_pressure: f64, output_size: usize, reason: Option<String> },
     Error { kind: String, message: String },
 }
 
@@ -432,11 +524,110 @@ impl From<&AgentEvent> for EnvelopePayload {
                     elapsed_secs: *elapsed_secs,
                 }
             }
+            AgentEvent::ArtifactStored {
+                artifact_id,
+                tool_name,
+                call_id,
+                size_bytes,
+                artifact_type,
+                retention_class,
+                server_name,
+                server_kind,
+                transport,
+                original_tool_name,
+                externalized_reason,
+            } => {
+                EnvelopePayload::ArtifactStored {
+                    artifact_id: artifact_id.clone(),
+                    tool_name: tool_name.clone(),
+                    call_id: call_id.clone(),
+                    size_bytes: *size_bytes,
+                    artifact_type: artifact_type.clone(),
+                    retention_class: retention_class.clone(),
+                    server_name: server_name.clone(),
+                    server_kind: server_kind.clone(),
+                    transport: transport.clone(),
+                    original_tool_name: original_tool_name.clone(),
+                    externalized_reason: externalized_reason.clone(),
+                }
+            }
+            AgentEvent::ArtifactRead {
+                artifact_id,
+                tool_name,
+                returned_chars,
+                offset_chars,
+                limit_chars,
+                source_tool_name,
+                artifact_type,
+                server_name,
+                server_kind,
+                transport,
+                original_tool_name,
+            } => {
+                EnvelopePayload::ArtifactRead {
+                    artifact_id: artifact_id.clone(),
+                    tool_name: tool_name.clone(),
+                    returned_chars: *returned_chars,
+                    offset_chars: *offset_chars,
+                    limit_chars: *limit_chars,
+                    source_tool_name: source_tool_name.clone(),
+                    artifact_type: artifact_type.clone(),
+                    server_name: server_name.clone(),
+                    server_kind: server_kind.clone(),
+                    transport: transport.clone(),
+                    original_tool_name: original_tool_name.clone(),
+                }
+            }
+            AgentEvent::ArtifactGc {
+                scope,
+                deleted,
+                kept,
+                bytes_freed,
+                session_quota_evictions,
+                store_quota_evictions,
+            } => {
+                EnvelopePayload::ArtifactGc {
+                    scope: scope.clone(),
+                    deleted: *deleted,
+                    kept: *kept,
+                    bytes_freed: *bytes_freed,
+                    session_quota_evictions: *session_quota_evictions,
+                    store_quota_evictions: *store_quota_evictions,
+                }
+            }
             AgentEvent::PlanProgress { completed, total, current_item } => {
                 EnvelopePayload::PlanProgress {
                     completed: *completed,
                     total: *total,
                     current_item: current_item.clone(),
+                }
+            }
+            AgentEvent::SubagentTaskStarted { task_id, objective, max_turns } => {
+                EnvelopePayload::SubagentTaskStarted {
+                    task_id: task_id.clone(),
+                    objective: objective.clone(),
+                    max_turns: *max_turns,
+                }
+            }
+            AgentEvent::SubagentTaskCompleted { task_id, outcome, findings_count, evidence_count, turns_used, elapsed_secs, summary_text } => {
+                EnvelopePayload::SubagentTaskCompleted {
+                    task_id: task_id.clone(),
+                    outcome: outcome.clone(),
+                    findings_count: *findings_count,
+                    evidence_count: *evidence_count,
+                    turns_used: *turns_used,
+                    elapsed_secs: *elapsed_secs,
+                    summary_text: summary_text.clone(),
+                }
+            }
+            AgentEvent::RoutingDecision { tool_name, call_id, routing, context_pressure, output_size, reason } => {
+                EnvelopePayload::RoutingDecision {
+                    tool_name: tool_name.clone(),
+                    call_id: call_id.clone(),
+                    routing: *routing,
+                    context_pressure: *context_pressure,
+                    output_size: *output_size,
+                    reason: reason.clone(),
                 }
             }
             AgentEvent::Error { error } => EnvelopePayload::Error {

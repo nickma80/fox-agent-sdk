@@ -1,5 +1,6 @@
 use fox_agent_core::{
-    DefaultSafetyPolicy, PermissionRequest, PermissionResult, RiskLevel, SafetyConfig,
+    DefaultSafetyPolicy, McpServerKind, McpServerProfile, McpToolDescriptorSnapshot,
+    McpTransportKind, PermissionRequest, PermissionResult, RiskLevel, SafetyConfig,
 };
 use serde_json::Value;
 use std::sync::Arc;
@@ -151,6 +152,16 @@ impl SafetySystem {
     /// 6. Default policy → Allow / Deny / Confirm
     /// 7. Productive tool confirm → escalate write/edit/bash to AskUser
     pub fn check(&self, tool_name: &str, input: &serde_json::Value) -> PermissionResult {
+        self.check_with_mcp_metadata(tool_name, input, None, None)
+    }
+
+    pub fn check_with_mcp_metadata(
+        &self,
+        tool_name: &str,
+        input: &serde_json::Value,
+        profile: Option<&McpServerProfile>,
+        descriptor: Option<&McpToolDescriptorSnapshot>,
+    ) -> PermissionResult {
         // If a custom permission hook is registered, delegate to it
         if let Some(ref hook) = self.inner.custom_hook {
             return hook(tool_name, input);
@@ -194,7 +205,12 @@ impl SafetySystem {
             }
         }
 
-        // Rule 4: default policy
+        // Rule 4: MCP profile-aware gating
+        if let Some(result) = self.apply_mcp_profile_confirm(tool_name, profile, descriptor) {
+            return result;
+        }
+
+        // Rule 5: default policy
         let result = match self.inner.cfg.default_policy {
             DefaultSafetyPolicy::Allow => PermissionResult::Allow,
             DefaultSafetyPolicy::Deny => PermissionResult::Deny {
@@ -212,8 +228,199 @@ impl SafetySystem {
             },
         };
 
-        // Rule 5: productive tool confirmation
+        // Rule 6: productive tool confirmation
         self.apply_productive_tool_confirm(tool_name, input, result)
+    }
+
+    fn apply_mcp_profile_confirm(
+        &self,
+        tool_name: &str,
+        profile: Option<&McpServerProfile>,
+        descriptor: Option<&McpToolDescriptorSnapshot>,
+    ) -> Option<PermissionResult> {
+        if !tool_name.starts_with("mcp__") {
+            return None;
+        }
+        let profile = profile?;
+
+        let descriptor_summary = descriptor
+            .map(|d| {
+                if d.description.is_empty() {
+                    d.original_name.clone()
+                } else {
+                    format!("{} ({})", d.description, d.original_name)
+                }
+            })
+            .unwrap_or_else(|| tool_name.to_string());
+        let original_name = descriptor
+            .map(|d| d.original_name.as_str())
+            .unwrap_or(tool_name);
+
+        let destructive_keywords = [
+            "write",
+            "delete",
+            "remove",
+            "create",
+            "rename",
+            "move",
+            "click",
+            "submit",
+            "type",
+            "fill",
+            "upload",
+            "press",
+            "execute",
+            "run",
+            "post",
+            "patch",
+            "put",
+        ];
+        let interactive_browser_keywords = [
+            "click",
+            "submit",
+            "type",
+            "fill",
+            "upload",
+            "press",
+            "select",
+            "drag",
+        ];
+        let readonly_keywords = [
+            "read",
+            "list",
+            "search",
+            "find",
+            "fetch",
+            "get",
+            "snapshot",
+            "screenshot",
+            "inspect",
+            "extract",
+        ];
+        let descriptor_lower = descriptor_summary.to_lowercase();
+        let looks_destructive = destructive_keywords
+            .iter()
+            .any(|kw| descriptor_lower.contains(kw));
+        let looks_browser_interactive = interactive_browser_keywords
+            .iter()
+            .any(|kw| descriptor_lower.contains(kw));
+        let looks_readonly = readonly_keywords
+            .iter()
+            .any(|kw| descriptor_lower.contains(kw));
+        let capability_is_mutating = profile.capability_tags.iter().any(|tag| {
+            matches!(
+                tag.as_str(),
+                "write" | "mutate" | "delete" | "shell" | "execute" | "browser-interactive"
+            )
+        });
+        let capability_is_remote = profile.capability_tags.iter().any(|tag| {
+            matches!(tag.as_str(), "network" | "remote" | "http")
+        });
+
+        let ask = |risk_level: RiskLevel, policy_source: &str, prompt: String| {
+            Some(PermissionResult::AskUser {
+                request: PermissionRequest::new(tool_name, prompt).with_risk(
+                    risk_level,
+                    policy_source,
+                    descriptor_summary.clone(),
+                ),
+            })
+        };
+
+        match profile.kind {
+            McpServerKind::ReadOnly
+                if profile.transport == McpTransportKind::Sse || capability_is_remote =>
+            {
+                ask(
+                    RiskLevel::Medium,
+                    "mcp-profile:readonly-remote",
+                    format!(
+                        "Remote read-only MCP tool `{original_name}` requires your confirmation"
+                    ),
+                )
+            }
+            McpServerKind::Shell => ask(
+                if looks_destructive || capability_is_mutating {
+                    RiskLevel::Critical
+                } else {
+                    RiskLevel::High
+                },
+                if looks_destructive || capability_is_mutating {
+                    "mcp-profile:shell-destructive"
+                } else {
+                    "mcp-profile:shell"
+                },
+                format!("MCP shell tool `{original_name}` requires your confirmation"),
+            ),
+            McpServerKind::Browser if looks_browser_interactive || capability_is_mutating => ask(
+                RiskLevel::Critical,
+                "mcp-profile:browser-interactive",
+                format!(
+                    "Interactive MCP browser tool `{original_name}` requires your confirmation"
+                ),
+            ),
+            McpServerKind::Browser => ask(
+                RiskLevel::High,
+                if looks_readonly {
+                    "mcp-profile:browser-read"
+                } else {
+                    "mcp-profile:browser"
+                },
+                format!(
+                    "MCP browser tool `{original_name}` may interact with remote pages and requires your confirmation"
+                ),
+            ),
+            McpServerKind::ExternalApi if looks_destructive || capability_is_mutating => ask(
+                RiskLevel::Critical,
+                "mcp-profile:external-api-write",
+                format!(
+                    "Mutating MCP external API tool `{original_name}` requires your confirmation"
+                ),
+            ),
+            McpServerKind::ExternalApi => ask(
+                RiskLevel::High,
+                if looks_readonly {
+                    "mcp-profile:external-api-read"
+                } else {
+                    "mcp-profile:external-api"
+                },
+                format!(
+                    "MCP external API tool `{original_name}` performs remote calls and requires your confirmation"
+                ),
+            ),
+            McpServerKind::Filesystem if looks_destructive => ask(
+                RiskLevel::High,
+                "mcp-profile:filesystem-write",
+                format!("MCP filesystem tool `{original_name}` looks mutating and requires your confirmation"),
+            ),
+            McpServerKind::Unknown if profile.transport == McpTransportKind::Sse && looks_destructive => ask(
+                RiskLevel::Critical,
+                "mcp-profile:sse-unknown-write",
+                format!(
+                    "Remote MCP tool `{original_name}` uses SSE transport and looks mutating, so it requires your confirmation"
+                ),
+            ),
+            McpServerKind::Unknown if profile.transport == McpTransportKind::Sse => ask(
+                RiskLevel::High,
+                "mcp-profile:sse-unknown",
+                format!("Remote MCP tool `{original_name}` uses SSE transport and requires your confirmation"),
+            ),
+            // Unknown MCP servers via Stdio still need confirmation — we don't
+            // know what they can do, so treat them conservatively.
+            McpServerKind::Unknown if looks_destructive || capability_is_mutating => ask(
+                RiskLevel::High,
+                "mcp-profile:unknown-destructive",
+                format!(
+                    "Unrecognised MCP tool `{original_name}` looks mutating and requires your confirmation"
+                ),
+            ),
+            McpServerKind::Unknown => ask(
+                RiskLevel::Medium,
+                "mcp-profile:unknown",
+                format!("Unrecognised MCP tool `{original_name}` requires your confirmation"),
+            ),
+            _ => None,
+        }
     }
 
     /// When `productive_tool_confirm` is enabled, write/edit/non-readonly-bash
@@ -384,6 +591,7 @@ mod tests {
         let system = SafetySystem::new(cfg);
         assert!(matches!(system.check("read", &serde_json::json!({})), PermissionResult::Allow));
         assert!(matches!(system.check("grep", &serde_json::json!({})), PermissionResult::Allow));
+        assert!(matches!(system.check("artifact_read", &serde_json::json!({})), PermissionResult::Allow));
     }
 
     #[test]
@@ -396,6 +604,190 @@ mod tests {
         let system = SafetySystem::new(cfg);
         let result = system.check("write", &serde_json::json!({"file_path": "test.rs"}));
         assert!(matches!(result, PermissionResult::Allow));
+    }
+
+    #[test]
+    fn test_mcp_external_api_requires_confirmation() {
+        let cfg = SafetyConfig {
+            default_policy: DefaultSafetyPolicy::Allow,
+            ..Default::default()
+        };
+        let system = SafetySystem::new(cfg);
+        let profile = McpServerProfile {
+            server_name: "remote_api".to_string(),
+            kind: McpServerKind::ExternalApi,
+            transport: McpTransportKind::Sse,
+            auto_approve: false,
+            allowed_tools: Vec::new(),
+            capability_tags: Vec::new(),
+        };
+        let descriptor = McpToolDescriptorSnapshot {
+            server_name: "remote_api".to_string(),
+            tool_name: "mcp__remote_api__search".to_string(),
+            original_name: "mcp://remote_api/search".to_string(),
+            description: "Search remote API".to_string(),
+            input_schema: serde_json::json!({}),
+            output_hint: None,
+        };
+        let result = system.check_with_mcp_metadata(
+            "mcp__remote_api__search",
+            &serde_json::json!({}),
+            Some(&profile),
+            Some(&descriptor),
+        );
+        assert!(matches!(result, PermissionResult::AskUser { .. }));
+    }
+
+    #[test]
+    fn test_mcp_external_api_read_uses_read_policy_source() {
+        let cfg = SafetyConfig {
+            default_policy: DefaultSafetyPolicy::Allow,
+            ..Default::default()
+        };
+        let system = SafetySystem::new(cfg);
+        let profile = McpServerProfile {
+            server_name: "remote_api".to_string(),
+            kind: McpServerKind::ExternalApi,
+            transport: McpTransportKind::Sse,
+            auto_approve: false,
+            allowed_tools: Vec::new(),
+            capability_tags: vec!["remote".to_string()],
+        };
+        let descriptor = McpToolDescriptorSnapshot {
+            server_name: "remote_api".to_string(),
+            tool_name: "mcp__remote_api__list_orders".to_string(),
+            original_name: "mcp://remote_api/list_orders".to_string(),
+            description: "List orders from remote API".to_string(),
+            input_schema: serde_json::json!({}),
+            output_hint: None,
+        };
+        let result = system.check_with_mcp_metadata(
+            "mcp__remote_api__list_orders",
+            &serde_json::json!({}),
+            Some(&profile),
+            Some(&descriptor),
+        );
+        match result {
+            PermissionResult::AskUser { request } => {
+                assert_eq!(request.risk_level, RiskLevel::High);
+                assert_eq!(request.policy_source, "mcp-profile:external-api-read");
+            }
+            other => panic!("expected AskUser, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_mcp_readonly_sse_requires_confirmation() {
+        let cfg = SafetyConfig {
+            default_policy: DefaultSafetyPolicy::Allow,
+            ..Default::default()
+        };
+        let system = SafetySystem::new(cfg);
+        let profile = McpServerProfile {
+            server_name: "docs".to_string(),
+            kind: McpServerKind::ReadOnly,
+            transport: McpTransportKind::Sse,
+            auto_approve: false,
+            allowed_tools: Vec::new(),
+            capability_tags: vec!["remote".to_string()],
+        };
+        let descriptor = McpToolDescriptorSnapshot {
+            server_name: "docs".to_string(),
+            tool_name: "mcp__docs__search".to_string(),
+            original_name: "mcp://docs/search".to_string(),
+            description: "Search remote docs".to_string(),
+            input_schema: serde_json::json!({}),
+            output_hint: None,
+        };
+        let result = system.check_with_mcp_metadata(
+            "mcp__docs__search",
+            &serde_json::json!({}),
+            Some(&profile),
+            Some(&descriptor),
+        );
+        match result {
+            PermissionResult::AskUser { request } => {
+                assert_eq!(request.risk_level, RiskLevel::Medium);
+                assert_eq!(request.policy_source, "mcp-profile:readonly-remote");
+            }
+            other => panic!("expected AskUser, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_mcp_unknown_stdio_requires_confirmation() {
+        let cfg = SafetyConfig {
+            default_policy: DefaultSafetyPolicy::Allow,
+            ..Default::default()
+        };
+        let system = SafetySystem::new(cfg);
+        let profile = McpServerProfile {
+            server_name: "unknown_srv".to_string(),
+            kind: McpServerKind::Unknown,
+            transport: McpTransportKind::Stdio,
+            auto_approve: false,
+            allowed_tools: Vec::new(),
+            capability_tags: Vec::new(),
+        };
+        let descriptor = McpToolDescriptorSnapshot {
+            server_name: "unknown_srv".to_string(),
+            tool_name: "mcp__unknown_srv__list".to_string(),
+            original_name: "mcp://unknown_srv/list".to_string(),
+            description: "List something".to_string(),
+            input_schema: serde_json::json!({}),
+            output_hint: None,
+        };
+        let result = system.check_with_mcp_metadata(
+            "mcp__unknown_srv__list",
+            &serde_json::json!({}),
+            Some(&profile),
+            Some(&descriptor),
+        );
+        match result {
+            PermissionResult::AskUser { request } => {
+                assert_eq!(request.risk_level, RiskLevel::Medium);
+                assert_eq!(request.policy_source, "mcp-profile:unknown");
+            }
+            other => panic!("expected AskUser for unknown stdio MCP, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_mcp_unknown_stdio_destructive_requires_high_risk() {
+        let cfg = SafetyConfig {
+            default_policy: DefaultSafetyPolicy::Allow,
+            ..Default::default()
+        };
+        let system = SafetySystem::new(cfg);
+        let profile = McpServerProfile {
+            server_name: "unknown_srv".to_string(),
+            kind: McpServerKind::Unknown,
+            transport: McpTransportKind::Stdio,
+            auto_approve: false,
+            allowed_tools: Vec::new(),
+            capability_tags: vec!["mutate".to_string()],
+        };
+        let descriptor = McpToolDescriptorSnapshot {
+            server_name: "unknown_srv".to_string(),
+            tool_name: "mcp__unknown_srv__delete".to_string(),
+            original_name: "mcp://unknown_srv/delete".to_string(),
+            description: "Delete items".to_string(),
+            input_schema: serde_json::json!({}),
+            output_hint: None,
+        };
+        let result = system.check_with_mcp_metadata(
+            "mcp__unknown_srv__delete",
+            &serde_json::json!({}),
+            Some(&profile),
+            Some(&descriptor),
+        );
+        match result {
+            PermissionResult::AskUser { request } => {
+                assert_eq!(request.risk_level, RiskLevel::High);
+                assert_eq!(request.policy_source, "mcp-profile:unknown-destructive");
+            }
+            other => panic!("expected AskUser (High) for unknown destructive MCP, got {other:?}"),
+        }
     }
 
     #[test]

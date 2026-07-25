@@ -36,6 +36,20 @@ impl Message {
             content: vec![ContentBlock::ToolResult { call_id: call_id.into(), text: text.into(), is_error }],
         }
     }
+
+    /// Total character count across all content blocks, used for context
+    /// pressure estimation.
+    pub fn total_chars(&self) -> usize {
+        self.content.iter().map(|block| match block {
+            ContentBlock::Text { text } => text.len(),
+            ContentBlock::Reasoning { text } => text.len(),
+            ContentBlock::ToolUse { name, input, .. } => {
+                name.len() + serde_json::to_string(input).map(|s| s.len()).unwrap_or(0)
+            }
+            ContentBlock::Image { data, .. } => data.len(),
+            ContentBlock::ToolResult { text, call_id, .. } => text.len() + call_id.len(),
+        }).sum()
+    }
 }
 
 /// A single content block within a message (text, reasoning, image, tool call, tool result, etc.).

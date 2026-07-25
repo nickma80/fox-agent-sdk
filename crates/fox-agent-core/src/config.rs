@@ -114,6 +114,11 @@ pub struct FoxAgentSdkConfig {
     pub compaction: CompactionConfig,
     /// Tool permission safety configuration
     pub safety: SafetyConfig,
+    /// Artifact store configuration for externalized large tool outputs.
+    pub artifact_store: ArtifactStoreConfig,
+    /// Routing policy configuration (Phase 4) — decides how tool results
+    /// are handled: inline, externalized, or delegated to sub-agent.
+    pub routing_policy: RoutingPolicyConfig,
 
     /// Unified storage root directory for all persisted SDK data.
     ///
@@ -186,6 +191,8 @@ impl Default for FoxAgentSdkConfig {
             memory: MemoryConfig::default(),
             compaction: CompactionConfig::default(),
             safety: SafetyConfig::default(),
+            artifact_store: ArtifactStoreConfig::default(),
+            routing_policy: RoutingPolicyConfig::default(),
             storage_dir: std::path::PathBuf::from(".fox-agent-sdk"),
             auto_snapshot: true,
             skills: SkillsConfig::default(),
@@ -417,7 +424,168 @@ impl FoxAgentSdkConfig {
                     }
                 }
             }
+
+            if let Some(base_dir_str) = self.artifact_store.base_dir.to_str() {
+                if base_dir_str.starts_with("~") {
+                    self.artifact_store.base_dir = expand(base_dir_str);
+                }
+            }
         }
+    }
+}
+
+// ── Artifact Store Configuration ──
+
+/// Compression algorithm used when storing large text artifacts.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub enum ArtifactCompression {
+    #[default]
+    None,
+    Gzip,
+    Zstd,
+}
+
+/// Eviction strategy used by the artifact store garbage collector.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub enum ArtifactEvictionPolicy {
+    TtlOnly,
+    Lru,
+    #[default]
+    TtlLruUnrefFirst,
+}
+
+/// Configuration for the artifact store that holds externalized tool outputs.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ArtifactStoreConfig {
+    /// Whether the artifact store is enabled.
+    pub enabled: bool,
+    /// Root directory where artifacts are stored.
+    pub base_dir: std::path::PathBuf,
+    /// Maximum size allowed for a single artifact.
+    pub max_artifact_bytes: u64,
+    /// Maximum cumulative size per session.
+    pub max_session_bytes: u64,
+    /// Maximum cumulative size per workspace / project.
+    pub max_project_bytes: u64,
+    /// Hard global size limit across the artifact store.
+    pub max_global_bytes: u64,
+    /// Default TTL for ephemeral artifacts in hours.
+    pub ephemeral_ttl_hours: u64,
+    /// Default TTL for referenced artifacts in hours.
+    pub referenced_ttl_hours: u64,
+    /// Default TTL for pinned artifacts in hours. `0` means no TTL.
+    pub pinned_ttl_hours: u64,
+    /// Whether to compress large text artifacts.
+    pub compress_large_text: bool,
+    /// Compression algorithm for persisted artifacts.
+    pub compression: ArtifactCompression,
+    /// Whether duplicate content should be deduplicated by content hash.
+    pub deduplicate_by_content_hash: bool,
+    /// Run garbage collection on startup.
+    pub gc_on_startup: bool,
+    /// Run garbage collection when the session ends.
+    pub gc_on_session_end: bool,
+    /// Run a quota check and GC after each write.
+    pub gc_after_write: bool,
+    /// GC high watermark ratio.
+    pub gc_high_watermark: f64,
+    /// GC low watermark ratio.
+    pub gc_low_watermark: f64,
+    /// Eviction policy used by GC.
+    pub eviction_policy: ArtifactEvictionPolicy,
+    /// Allow summary-only fallback when the store is full or constrained.
+    pub allow_summary_only_fallback: bool,
+    /// Default TTL for remote MCP artifacts in hours.
+    pub mcp_remote_ttl_hours: u64,
+    /// Whether to persist full payloads for MCP search tools.
+    pub mcp_search_store_full_payload: bool,
+    /// Whether to persist full HTML for MCP browser tools.
+    pub mcp_browser_store_full_html: bool,
+}
+
+impl Default for ArtifactStoreConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            base_dir: std::path::PathBuf::from(".fox-agent-sdk/artifacts"),
+            max_artifact_bytes: 1_048_576,
+            max_session_bytes: 33_554_432,
+            max_project_bytes: 268_435_456,
+            max_global_bytes: 1_073_741_824,
+            ephemeral_ttl_hours: 24,
+            referenced_ttl_hours: 168,
+            pinned_ttl_hours: 0,
+            compress_large_text: false,
+            compression: ArtifactCompression::None,
+            deduplicate_by_content_hash: true,
+            gc_on_startup: true,
+            gc_on_session_end: true,
+            gc_after_write: true,
+            gc_high_watermark: 0.85,
+            gc_low_watermark: 0.70,
+            eviction_policy: ArtifactEvictionPolicy::TtlLruUnrefFirst,
+            allow_summary_only_fallback: true,
+            mcp_remote_ttl_hours: 12,
+            mcp_search_store_full_payload: false,
+            mcp_browser_store_full_html: false,
+        }
+    }
+}
+
+// ── Routing Policy Configuration (Phase 4) ──
+
+/// Configuration for the unified routing policy engine that decides how
+/// tool results should be handled (inline, externalized, or delegated to
+/// a sub-agent).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct RoutingPolicyConfig {
+    /// Master switch for the routing policy engine.
+    pub enabled: bool,
+    /// Characters threshold above which a non-MCP local tool result
+    /// is externalized instead of inlined.
+    pub local_externalize_threshold_chars: usize,
+    /// Characters threshold above which a local tool result triggers
+    /// sub-agent delegation (exploration-style tools only).
+    pub local_delegate_threshold_chars: usize,
+    /// Context pressure (0.0–1.0) above which the engine escalates
+    /// from inline → externalize → delegate.
+    pub context_pressure_threshold: f64,
+    /// Tool name patterns that should always be eligible for sub-agent
+    /// delegation when the output is large enough (wildcards supported).
+    pub delegate_candidate_tools: Vec<String>,
+}
+
+impl Default for RoutingPolicyConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            local_externalize_threshold_chars: 8_000,
+            local_delegate_threshold_chars: 24_000,
+            context_pressure_threshold: 0.70,
+            delegate_candidate_tools: vec![
+                "grep".into(),
+                "glob".into(),
+                "web_fetch".into(),
+                "web_search".into(),
+                "ls".into(),
+                "read".into(),
+            ],
+        }
+    }
+}
+
+impl RoutingPolicyConfig {
+    /// Validate configuration values (called at startup).
+    pub fn validate(&self) -> Result<(), String> {
+        if !(0.0..=1.0).contains(&self.context_pressure_threshold) {
+            return Err(format!(
+                "routing_policy.context_pressure_threshold must be in 0.0–1.0, got {}",
+                self.context_pressure_threshold
+            ));
+        }
+        Ok(())
     }
 }
 
@@ -1067,6 +1235,89 @@ pub enum McpRiskLevel {
     Critical,
 }
 
+/// Coarse-grained category for an MCP server's capability profile.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub enum McpServerKind {
+    ReadOnly,
+    ExternalApi,
+    Filesystem,
+    Shell,
+    Browser,
+    #[default]
+    Unknown,
+}
+
+/// Normalized transport kind for MCP servers.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub enum McpTransportKind {
+    Stdio,
+    Sse,
+    #[default]
+    Unknown,
+}
+
+/// Server-level policy profile for MCP tools.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct McpServerProfile {
+    /// Stable MCP server name.
+    pub server_name: String,
+    /// Capability category of the MCP server.
+    pub kind: McpServerKind,
+    /// Transport kind used by the server.
+    pub transport: McpTransportKind,
+    /// Whether tools from this server may be auto-approved.
+    pub auto_approve: bool,
+    /// Explicit tool allowlist patterns for this server.
+    pub allowed_tools: Vec<String>,
+    /// Optional capability tags used by policy/routing logic.
+    pub capability_tags: Vec<String>,
+}
+
+impl Default for McpServerProfile {
+    fn default() -> Self {
+        Self {
+            server_name: String::new(),
+            kind: McpServerKind::Unknown,
+            transport: McpTransportKind::Unknown,
+            auto_approve: false,
+            allowed_tools: Vec::new(),
+            capability_tags: Vec::new(),
+        }
+    }
+}
+
+/// Snapshot of an MCP tool descriptor captured at discovery time.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct McpToolDescriptorSnapshot {
+    /// Owning MCP server name.
+    pub server_name: String,
+    /// Provider-safe tool name exposed to the model.
+    pub tool_name: String,
+    /// Original MCP routing name (e.g. `mcp://server/tool`).
+    pub original_name: String,
+    /// Human-readable description from the server.
+    pub description: String,
+    /// Input schema returned by MCP tools/list.
+    pub input_schema: serde_json::Value,
+    /// Optional hint about the expected output shape or size.
+    pub output_hint: Option<String>,
+}
+
+impl Default for McpToolDescriptorSnapshot {
+    fn default() -> Self {
+        Self {
+            server_name: String::new(),
+            tool_name: String::new(),
+            original_name: String::new(),
+            description: String::new(),
+            input_schema: serde_json::json!({}),
+            output_hint: None,
+        }
+    }
+}
+
 impl Default for McpConfig {
     fn default() -> Self {
         Self {
@@ -1082,5 +1333,40 @@ impl Default for McpConfig {
             expose_resources: false,
             max_resources_per_injection: default_max_resources(),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn artifact_store_defaults_are_stable() {
+        let cfg = ArtifactStoreConfig::default();
+        assert!(cfg.enabled);
+        assert_eq!(cfg.base_dir, std::path::PathBuf::from(".fox-agent-sdk/artifacts"));
+        assert!(cfg.gc_high_watermark > cfg.gc_low_watermark);
+        assert_eq!(cfg.compression, ArtifactCompression::None);
+        assert_eq!(cfg.eviction_policy, ArtifactEvictionPolicy::TtlLruUnrefFirst);
+    }
+
+    #[test]
+    fn sdk_config_deserializes_artifact_store_block() {
+        let raw = r#"
+            [artifact_store]
+            enabled = true
+            base_dir = ".fox-agent-sdk/artifacts"
+            max_artifact_bytes = 2048
+            compression = "Gzip"
+
+            [mcp]
+            enabled = true
+        "#;
+
+        let cfg: FoxAgentSdkConfig = toml::from_str(raw).expect("config should deserialize");
+        assert!(cfg.artifact_store.enabled);
+        assert_eq!(cfg.artifact_store.max_artifact_bytes, 2048);
+        assert_eq!(cfg.artifact_store.compression, ArtifactCompression::Gzip);
+        assert!(cfg.mcp.enabled);
     }
 }

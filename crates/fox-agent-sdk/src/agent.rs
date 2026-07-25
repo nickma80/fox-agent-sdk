@@ -4,9 +4,12 @@ use fox_agent_core::{
     PermissionResult, PendingToolCallSnapshot, ProviderError, Role, SessionSnapshot, Skill,
     StreamEvent, ToolContext, ToolError, ToolExecutionMode, ToolOutput, TurnOutcome,
     load_goals_with_store, now_secs, save_goals_with_store,
+    ArtifactProducer, ArtifactRetentionClass, ArtifactType, McpServerKind, McpServerProfile,
+    McpToolDescriptorSnapshot, ToolResultRouting,
 };
 use fox_agent_mcp::McpClient;
 use futures::StreamExt;
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Instant;
 use tokio::sync::RwLock;
@@ -114,8 +117,14 @@ pub struct Agent {
     governance: Option<GovernanceGuard>,
     /// MCP client for external tool servers.
     pub mcp_client: Option<McpClient>,
+    /// Server-level MCP profile registry keyed by server name.
+    mcp_profiles: HashMap<String, McpServerProfile>,
+    /// Descriptor snapshots keyed by sanitised tool name.
+    mcp_descriptors: HashMap<String, McpToolDescriptorSnapshot>,
     /// Currently active skill (loaded on-demand by Agent via `skill` tool).
     pub active_skill: Arc<RwLock<Option<Skill>>>,
+    /// Sub-agent runtime for isolated task exploration (Phase 3).
+    pub subagent_runtime_enabled: bool,
 }
 
 impl Agent {
@@ -130,13 +139,28 @@ impl Agent {
             consecutive_auto_turns: std::sync::atomic::AtomicU32::new(0),
             governance: None,
             mcp_client: None,
+            mcp_profiles: HashMap::new(),
+            mcp_descriptors: HashMap::new(),
             active_skill,
+            subagent_runtime_enabled: false,
         }
     }
 
     /// Attach a budget governance guard.
     pub fn set_governance(&mut self, guard: GovernanceGuard) {
         self.governance = Some(guard);
+    }
+
+    pub fn set_mcp_runtime_metadata(
+        &mut self,
+        profiles: HashMap<String, McpServerProfile>,
+        descriptors: Vec<McpToolDescriptorSnapshot>,
+    ) {
+        self.mcp_profiles = profiles;
+        self.mcp_descriptors = descriptors
+            .into_iter()
+            .map(|snapshot| (snapshot.tool_name.clone(), snapshot))
+            .collect();
     }
 
     /// Get the budget governance guard, if attached.
@@ -284,7 +308,10 @@ impl Agent {
             consecutive_auto_turns: std::sync::atomic::AtomicU32::new(0),
             governance: None,
             mcp_client: None,
+            mcp_profiles: HashMap::new(),
+            mcp_descriptors: HashMap::new(),
             active_skill: Arc::new(RwLock::new(None)),
+            subagent_runtime_enabled: false,
         }
     }
 
@@ -1220,7 +1247,19 @@ impl Agent {
                 let call_id = tc.call_id.clone();
                 let input = tc.input.clone();
 
-                match self.harness.check_tool_permission(&name, &input).await {
+                let permission_profile = parse_mcp_tool_name(&name)
+                    .and_then(|(server, _)| self.mcp_profiles.get(server));
+                let permission_descriptor = self.mcp_descriptors.get(&name);
+                match self
+                    .harness
+                    .check_tool_permission_with_mcp_metadata(
+                        &name,
+                        &input,
+                        permission_profile,
+                        permission_descriptor,
+                    )
+                    .await
+                {
                     PermissionResult::Allow => { debug!(tool = %name, "Tool auto-allowed"); }
                     PermissionResult::Deny { reason } => {
                         info!(tool = %name, reason = %reason, "Tool denied by policy");
@@ -1335,6 +1374,10 @@ impl Agent {
                         if let Some(ref guard) = self.governance {
                             guard.record_tool_success().await;
                         }
+                        // Record MCP call metrics
+                        if name.starts_with("mcp__") {
+                            self.harness.governance_metrics.record_mcp_call();
+                        }
                         info!(
                             tool = %name,
                             is_error = output.is_error,
@@ -1445,23 +1488,207 @@ impl Agent {
                     }
                 }
 
+                // P2: context guard — truncate huge tool outputs before they
+                // enter the message stream (avoids wasting tokens and memory on
+                // 10 MB file reads / grep explosions).  Mirrors jcode's
+                // `CONTEXT_GUARD_THRESHOLD` / `SINGLE_OUTPUT_MAX_FRACTION`.
+                let session_messages = self.harness.session_messages().await;
+                let raw_output_text = output.text.clone();
+                let (mut output_text, trunc_info) = guard_tool_output(
+                    &self.harness.cfg.compaction,
+                    &session_messages,
+                    &name,
+                    &raw_output_text,
+                );
+
+                let externalize_decision = should_externalize_tool_result(
+                    &self.harness.cfg.artifact_store,
+                    &self.mcp_profiles,
+                    &self.mcp_descriptors,
+                    &name,
+                    &raw_output_text,
+                    trunc_info.is_some(),
+                );
+
+                // Phase 4: unified routing decision + metrics
+                let context_pressure = self.harness.context_pressure().await;
+                let routing_input = crate::routing::RoutingInput {
+                    tool_name: &name,
+                    raw_output_text: &raw_output_text,
+                    truncated_by_context_guard: trunc_info.is_some(),
+                    context_pressure,
+                    mcp_profile: parse_mcp_tool_name(&name)
+                        .map(|(server, _)| server)
+                        .and_then(|s| self.mcp_profiles.get(s)),
+                    mcp_descriptor: self.mcp_descriptors.get(&name),
+                    consecutive_exploration_turns: if name == "grep" || name == "glob" || name == "read" { 1 } else { 0 },
+                };
+                let routing_decision = self.harness.routing_engine.decide(
+                    &routing_input,
+                    &self.harness.cfg.artifact_store,
+                );
+                self.harness.governance_metrics.record_routing(routing_decision);
+
+                let _ = event_tx
+                    .send(AgentEvent::RoutingDecision {
+                        tool_name: name.clone(),
+                        call_id: call_id.clone(),
+                        routing: routing_decision,
+                        context_pressure,
+                        output_size: raw_output_text.len(),
+                        reason: externalize_decision.reason.map(|s| s.to_string()),
+                    })
+                    .await;
+
+                if self.harness.cfg.artifact_store.enabled
+                    && (externalize_decision.should_externalize
+                        || routing_decision == ToolResultRouting::Externalize) {
+                    let raw_bytes = raw_output_text.as_bytes().len() as u64;
+                    if raw_bytes <= self.harness.cfg.artifact_store.max_artifact_bytes {
+                        let producer = artifact_producer_from_tool_name(&name);
+                        let artifact_type =
+                            artifact_type_from_tool_name(&self.mcp_profiles, &name);
+                        let storage_policy = artifact_storage_policy(
+                            &self.harness.cfg.artifact_store,
+                            &self.mcp_profiles,
+                            &self.mcp_descriptors,
+                            &name,
+                        );
+                        let artifact_type_label = format!("{:?}", artifact_type);
+                        let retention_class_label = format!("{:?}", storage_policy.class);
+                        let metadata = serde_json::json!({
+                            "tool_name": name,
+                            "tool_call_id": call_id.clone(),
+                            "raw_bytes": raw_bytes,
+                            "output_chars": raw_output_text.chars().count(),
+                            "elapsed_ms": elapsed_ms,
+                            "artifact_type": artifact_type_label,
+                            "retention_class": retention_class_label,
+                            "server_name": storage_policy.server_name,
+                            "server_kind": storage_policy.server_kind,
+                            "transport": storage_policy.transport,
+                            "original_tool_name": storage_policy.original_tool_name,
+                            "ttl_hours_override": storage_policy.ttl_hours_override,
+                            "externalized_reason": externalize_decision.reason,
+                        });
+                        match self.harness.artifact_store.put_text(
+                            self.harness.session_id(),
+                            producer,
+                            artifact_type,
+                            storage_policy.class,
+                            raw_output_text.clone(),
+                            metadata,
+                        ).await {
+                            Ok(put_result) => {
+                                let record = put_result.record;
+                                // Phase 4: record artifact write metrics
+                                self.harness.governance_metrics.record_artifact_write(raw_bytes);
+                                output_text = format!(
+                                    "[OUTPUT EXTERNALIZED: artifact_id={} | raw_bytes={}]\n{}",
+                                    record.artifact_id,
+                                    raw_bytes,
+                                    output_text,
+                                );
+                                let _ = event_tx
+                                    .send(AgentEvent::ArtifactStored {
+                                        artifact_id: record.artifact_id.clone(),
+                                        tool_name: name.clone(),
+                                        call_id: call_id.clone(),
+                                        size_bytes: raw_bytes,
+                                        artifact_type: record
+                                            .metadata
+                                            .get("artifact_type")
+                                            .and_then(|v| v.as_str())
+                                            .unwrap_or("ToolOutput")
+                                            .to_string(),
+                                        retention_class: record
+                                            .metadata
+                                            .get("retention_class")
+                                            .and_then(|v| v.as_str())
+                                            .unwrap_or("Ephemeral")
+                                            .to_string(),
+                                        server_name: storage_policy.server_name.map(str::to_string),
+                                        server_kind: storage_policy.server_kind.map(str::to_string),
+                                        transport: storage_policy.transport.map(str::to_string),
+                                        original_tool_name: storage_policy
+                                            .original_tool_name
+                                            .map(str::to_string),
+                                        externalized_reason: externalize_decision.reason.map(str::to_string),
+                                    })
+                                    .await;
+                                if let Some(gc) = put_result.gc_report
+                                    && (gc.deleted > 0 || gc.bytes_freed > 0)
+                                {
+                                    let _ = event_tx
+                                        .send(AgentEvent::ArtifactGc {
+                                            scope: format!("session:{}", self.harness.session_id()),
+                                            deleted: gc.deleted,
+                                            kept: gc.kept,
+                                            bytes_freed: gc.bytes_freed,
+                                            session_quota_evictions: gc.session_quota_evictions,
+                                            store_quota_evictions: gc.store_quota_evictions,
+                                        })
+                                        .await;
+                                }
+                            }
+                            Err(e) => {
+                                if self.harness.cfg.artifact_store.allow_summary_only_fallback {
+                                    output_text = format!(
+                                        "[OUTPUT NOT STORED: {}]\n{}",
+                                        e,
+                                        output_text,
+                                    );
+                                } else {
+                                    return Err(self.handle_error(event_tx, turn_id, AgentError::Internal {
+                                        message: format!("artifact store failed: {e}"),
+                                    }));
+                                }
+                            }
+                        }
+                    } else if self.harness.cfg.artifact_store.allow_summary_only_fallback {
+                        output_text = format!(
+                            "[OUTPUT TOO LARGE TO STORE: raw_bytes={} > max_artifact_bytes={}]\n{}",
+                            raw_bytes,
+                            self.harness.cfg.artifact_store.max_artifact_bytes,
+                            output_text,
+                        );
+                    }
+                }
+
+                let output = ToolOutput {
+                    text: output_text.clone(),
+                    is_error: output.is_error,
+                    json: output.json.clone(),
+                };
+
+                if name == "artifact_read"
+                    && !output.is_error
+                    && let Some(details) = artifact_read_event_details(&output)
+                {
+                    self.harness.governance_metrics.record_artifact_read();
+                    let _ = event_tx
+                        .send(AgentEvent::ArtifactRead {
+                            artifact_id: details.artifact_id,
+                            tool_name: name.clone(),
+                            returned_chars: details.returned_chars,
+                            offset_chars: details.offset_chars,
+                            limit_chars: details.limit_chars,
+                            source_tool_name: details.source_tool_name,
+                            artifact_type: details.artifact_type,
+                            server_name: details.server_name,
+                            server_kind: details.server_kind,
+                            transport: details.transport,
+                            original_tool_name: details.original_tool_name,
+                        })
+                        .await;
+                }
+
                 let _ = event_tx
                     .send(AgentEvent::ToolCallEnd {
                         call_id: call_id.clone(),
                         output: output.clone(),
                     })
                     .await;
-                // P2: context guard — truncate huge tool outputs before they
-                // enter the message stream (avoids wasting tokens and memory on
-                // 10 MB file reads / grep explosions).  Mirrors jcode's
-                // `CONTEXT_GUARD_THRESHOLD` / `SINGLE_OUTPUT_MAX_FRACTION`.
-                let session_messages = self.harness.session_messages().await;
-                let (output_text, trunc_info) = guard_tool_output(
-                    &self.harness.cfg.compaction,
-                    &session_messages,
-                    &name,
-                    &output.text,
-                );
                 // Context pressure feedback: inject soft interrupt when context is tight
                 if let Some(info) = trunc_info {
                     let pct = info.projected as f64 / info.budget as f64;
@@ -1778,6 +2005,263 @@ fn thinking_contains_tool_plan(thinking: &str) -> bool {
         || lower.contains("<run")
         || lower.contains("<ls")
         || lower.contains("<cat")
+}
+
+fn artifact_producer_from_tool_name(tool_name: &str) -> ArtifactProducer {
+    if let Some((server, tool)) = parse_mcp_tool_name(tool_name) {
+        return ArtifactProducer::Mcp {
+            server_name: server.to_string(),
+            tool_name: tool.to_string(),
+        };
+    }
+    ArtifactProducer::Tool {
+        tool_name: tool_name.to_string(),
+    }
+}
+
+fn artifact_type_from_tool_name(
+    mcp_profiles: &HashMap<String, McpServerProfile>,
+    tool_name: &str,
+) -> ArtifactType {
+    match tool_name {
+        "read" => ArtifactType::FileChunk,
+        "web_fetch" | "webfetch" => ArtifactType::WebPage,
+        "grep" | "glob" => ArtifactType::SearchResults,
+        _ if tool_name.starts_with("mcp__") => {
+            let kind = parse_mcp_tool_name(tool_name)
+                .and_then(|(server_name, _)| mcp_profiles.get(server_name))
+                .map(|profile| profile.kind)
+                .unwrap_or(McpServerKind::Unknown);
+            match kind {
+                McpServerKind::ReadOnly => ArtifactType::McpReadOnlyPayload,
+                McpServerKind::Filesystem => ArtifactType::McpFilesystemSnapshot,
+                McpServerKind::Browser => ArtifactType::McpBrowserSnapshot,
+                McpServerKind::ExternalApi => ArtifactType::McpExternalApiPayload,
+                McpServerKind::Shell => ArtifactType::McpShellTranscript,
+                McpServerKind::Unknown => ArtifactType::McpPayload,
+            }
+        }
+        _ => ArtifactType::ToolOutput,
+    }
+}
+
+fn parse_mcp_tool_name(tool_name: &str) -> Option<(&str, &str)> {
+    let rest = tool_name.strip_prefix("mcp__")?;
+    let mut parts = rest.splitn(2, "__");
+    let server = parts.next()?;
+    let tool = parts.next()?;
+    Some((server, tool))
+}
+
+#[derive(Debug, Clone)]
+struct ArtifactReadEventDetails {
+    artifact_id: String,
+    returned_chars: usize,
+    offset_chars: usize,
+    limit_chars: usize,
+    source_tool_name: Option<String>,
+    artifact_type: Option<String>,
+    server_name: Option<String>,
+    server_kind: Option<String>,
+    transport: Option<String>,
+    original_tool_name: Option<String>,
+}
+
+fn artifact_read_event_details(output: &ToolOutput) -> Option<ArtifactReadEventDetails> {
+    let json = output.json.as_ref()?;
+    Some(ArtifactReadEventDetails {
+        artifact_id: json.get("artifact_id")?.as_str()?.to_string(),
+        returned_chars: json.get("returned_chars")?.as_u64()? as usize,
+        offset_chars: json.get("offset_chars")?.as_u64()? as usize,
+        limit_chars: json.get("limit_chars")?.as_u64()? as usize,
+        source_tool_name: json
+            .get("source_tool_name")
+            .and_then(|v| v.as_str())
+            .map(str::to_string),
+        artifact_type: json
+            .get("artifact_type")
+            .and_then(|v| v.as_str())
+            .map(str::to_string),
+        server_name: json
+            .get("server_name")
+            .and_then(|v| v.as_str())
+            .map(str::to_string),
+        server_kind: json
+            .get("server_kind")
+            .and_then(|v| v.as_str())
+            .map(str::to_string),
+        transport: json
+            .get("transport")
+            .and_then(|v| v.as_str())
+            .map(str::to_string),
+        original_tool_name: json
+            .get("original_tool_name")
+            .and_then(|v| v.as_str())
+            .map(str::to_string),
+    })
+}
+
+struct ArtifactStoragePolicy<'a> {
+    class: ArtifactRetentionClass,
+    ttl_hours_override: Option<u64>,
+    server_name: Option<&'a str>,
+    server_kind: Option<&'static str>,
+    transport: Option<&'a str>,
+    original_tool_name: Option<&'a str>,
+}
+
+fn artifact_storage_policy<'a>(
+    artifact_cfg: &fox_agent_core::ArtifactStoreConfig,
+    mcp_profiles: &'a HashMap<String, McpServerProfile>,
+    mcp_descriptors: &'a HashMap<String, McpToolDescriptorSnapshot>,
+    tool_name: &'a str,
+) -> ArtifactStoragePolicy<'a> {
+    let Some((server_name, _)) = parse_mcp_tool_name(tool_name) else {
+        return ArtifactStoragePolicy {
+            class: ArtifactRetentionClass::Ephemeral,
+            ttl_hours_override: None,
+            server_name: None,
+            server_kind: None,
+            transport: None,
+            original_tool_name: None,
+        };
+    };
+
+    let profile = mcp_profiles.get(server_name);
+    let descriptor = mcp_descriptors.get(tool_name);
+    let transport = profile.map(|p| match p.transport {
+        fox_agent_core::McpTransportKind::Stdio => "stdio",
+        fox_agent_core::McpTransportKind::Sse => "sse",
+        fox_agent_core::McpTransportKind::Unknown => "unknown",
+    });
+    let ttl_hours_override = matches!(
+        profile.map(|p| p.transport),
+        Some(fox_agent_core::McpTransportKind::Sse)
+    )
+    .then_some(artifact_cfg.mcp_remote_ttl_hours);
+    let kind = profile.map(|p| p.kind).unwrap_or(McpServerKind::Unknown);
+    let class = match kind {
+        McpServerKind::Filesystem | McpServerKind::Browser | McpServerKind::ReadOnly => {
+            ArtifactRetentionClass::Referenced
+        }
+        _ => ArtifactRetentionClass::Ephemeral,
+    };
+    ArtifactStoragePolicy {
+        class,
+        ttl_hours_override,
+        server_name: Some(server_name),
+        server_kind: Some(mcp_server_kind_label(kind)),
+        transport,
+        original_tool_name: descriptor.map(|d| d.original_name.as_str()),
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct ExternalizeDecision {
+    pub(crate) should_externalize: bool,
+    pub(crate) reason: Option<&'static str>,
+}
+
+pub(crate) fn should_externalize_tool_result(
+    artifact_cfg: &fox_agent_core::ArtifactStoreConfig,
+    mcp_profiles: &HashMap<String, McpServerProfile>,
+    mcp_descriptors: &HashMap<String, McpToolDescriptorSnapshot>,
+    tool_name: &str,
+    raw_output_text: &str,
+    truncated_by_context_guard: bool,
+) -> ExternalizeDecision {
+    if truncated_by_context_guard {
+        return ExternalizeDecision {
+            should_externalize: true,
+            reason: Some("context-guard-truncated"),
+        };
+    }
+
+    let Some((server_name, mcp_tool_name)) = parse_mcp_tool_name(tool_name) else {
+        return ExternalizeDecision {
+            should_externalize: false,
+            reason: None,
+        };
+    };
+
+    let output_chars = raw_output_text.chars().count();
+    let profile = mcp_profiles.get(server_name);
+    let descriptor = mcp_descriptors.get(tool_name);
+    let descriptor_text = descriptor
+        .map(|d| format!("{} {}", d.description.to_lowercase(), d.original_name.to_lowercase()))
+        .unwrap_or_else(|| mcp_tool_name.to_lowercase());
+    let is_html_payload = raw_output_text.to_lowercase().contains("<html");
+
+    let noisy_descriptor = ["read", "search", "list", "fetch", "html", "resource"]
+        .iter()
+        .any(|kw| descriptor_text.contains(kw));
+
+    if matches!(
+        profile.map(|p| p.transport),
+        Some(fox_agent_core::McpTransportKind::Sse)
+    ) && output_chars > 1_000
+    {
+        return ExternalizeDecision {
+            should_externalize: true,
+            reason: Some("mcp:sse-large"),
+        };
+    }
+
+    if matches!(profile.map(|p| p.kind), Some(McpServerKind::Browser))
+        && !artifact_cfg.mcp_browser_store_full_html
+        && is_html_payload
+    {
+        return ExternalizeDecision {
+            should_externalize: true,
+            reason: Some("mcp:browser-html"),
+        };
+    }
+
+    if descriptor_text.contains("search")
+        && !artifact_cfg.mcp_search_store_full_payload
+        && output_chars > 800
+    {
+        return ExternalizeDecision {
+            should_externalize: true,
+            reason: Some("mcp:search-payload"),
+        };
+    }
+
+    let decision = match profile.map(|p| p.kind).unwrap_or(McpServerKind::Unknown) {
+        McpServerKind::Filesystem => output_chars > 1_500 || noisy_descriptor,
+        McpServerKind::Browser => output_chars > 1_500 || noisy_descriptor,
+        McpServerKind::ExternalApi => output_chars > 2_000 || noisy_descriptor,
+        McpServerKind::ReadOnly => output_chars > 4_000 && noisy_descriptor,
+        McpServerKind::Shell => output_chars > 2_000,
+        McpServerKind::Unknown => output_chars > 5_000 && noisy_descriptor,
+    };
+    let reason = if decision {
+        Some(match profile.map(|p| p.kind).unwrap_or(McpServerKind::Unknown) {
+            McpServerKind::Filesystem => "mcp:filesystem-large",
+            McpServerKind::Browser => "mcp:browser-large",
+            McpServerKind::ExternalApi => "mcp:external-api-large",
+            McpServerKind::ReadOnly => "mcp:readonly-large",
+            McpServerKind::Shell => "mcp:shell-large",
+            McpServerKind::Unknown => "mcp:unknown-large",
+        })
+    } else {
+        None
+    };
+    ExternalizeDecision {
+        should_externalize: decision,
+        reason,
+    }
+}
+
+fn mcp_server_kind_label(kind: McpServerKind) -> &'static str {
+    match kind {
+        McpServerKind::ReadOnly => "readonly",
+        McpServerKind::ExternalApi => "external_api",
+        McpServerKind::Filesystem => "filesystem",
+        McpServerKind::Shell => "shell",
+        McpServerKind::Browser => "browser",
+        McpServerKind::Unknown => "unknown",
+    }
 }
 
 // ── P2 helper: tool result message with duration ──

@@ -1625,6 +1625,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "async-trait",
+ "chrono",
  "fox-agent-core",
  "fox-agent-mcp",
  "fox-agent-providers",
