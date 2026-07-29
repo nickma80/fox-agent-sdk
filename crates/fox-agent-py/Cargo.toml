@@ -1,0 +1,25 @@
+[package]
+name = "fox-agent-py"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+
+[lib]
+name = "_core"
+crate-type = ["cdylib"]
+
+[dependencies]
+pyo3 = { workspace = true, features = ["extension-module"] }
+pyo3-async-runtimes = { workspace = true, features = ["tokio-runtime"] }
+tokio = { workspace = true }
+futures = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tracing = { workspace = true }
+async-trait = { workspace = true }
+
+fox-agent-sdk = { path = "../fox-agent-sdk" }
+fox-agent-core = { path = "../fox-agent-core" }
+fox-agent-providers = { path = "../fox-agent-providers" }

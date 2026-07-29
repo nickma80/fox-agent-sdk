@@ -1,0 +1,32 @@
+[build-system]
+requires = ["maturin>=1.7,<2.0"]
+build-backend = "maturin"
+
+[project]
+name = "fox-agent-sdk"
+version = "0.1.0"
+description = "High-performance AI Agent SDK for Python, powered by Rust"
+readme = "README.md"
+license = { file = "LICENSE" }
+requires-python = ">=3.10"
+keywords = ["ai", "agent", "llm", "rust"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Rust",
+]
+
+[project.urls]
+Homepage = "https://github.com/nickma80/fox-agent-sdk.git"
+Repository = "https://github.com/nickma80/fox-agent-sdk.git"
+
+[tool.maturin]
+features = ["pyo3/extension-module"]
+module-name = "fox_agent_sdk._core"
+bindings = "pyo3"
+manifest-path = "crates/fox-agent-py/Cargo.toml"
+python-source = "python"
