@@ -360,7 +360,7 @@ let config = FoxAgentSdkConfig {
 
 ### 4.4 Memory — 语义长期记忆系统
 
-> 完整设计参见 **[fox_agent_sdk_memory_prd.md](./fox_agent_sdk_memory_prd.md)**。
+> 完整设计参见 **[memory_prd.md](./memory_prd.md)**。
 
 Memory 模块是一个完整的语义长期记忆系统，核心能力：
 
@@ -389,14 +389,14 @@ Memory Pipeline（异步，非阻塞主 turn）：
 // MemoryEntry — 一条长期记忆
 // 20+ 字段：content, embedding (384d), trust, confidence (时间衰减),
 //            category, tags, source, reinforcements, superseded_by...
-// 详见 fox_agent_sdk_memory_prd.md §2.2
+// 详见 memory_prd.md §2.2
 
 // RecallHit — 召回结果
 // score + score_breakdown (semantic/keyword/recency/graph/trust/final)
 // + retrieval_source (Recent/Keyword/Semantic/SemanticAnn/CascadeSeed/CascadeGraph)
 ```
 
-配置入口：`MemoryConfig`（30+ 字段），详见 [fox_agent_sdk_memory_prd.md §9](./fox_agent_sdk_memory_prd.md#9-memoryconfig-完整配置)。
+配置入口：`MemoryConfig`（30+ 字段），详见 [memory_prd.md §9](./memory_prd.md#9-memoryconfig-完整配置)。
 
 ### 4.5 Tools — 工具系统
 
@@ -1425,11 +1425,9 @@ fox-agent-sdk/
 │   └── multi_provider.rs       # 多 Provider 切换
 │
 ├── docs/
-│   ├── fox_agent_sdk_prd.md                    # 本文档（主 PRD）
-│   ├── fox_agent_sdk_memory_prd.md             # Memory 详细设计 PRD
-│   ├── agent_sdk_app_impl_plan.md              # 详细实现计划
-│   ├── application-developer-guide.md          # 应用开发者使用指南
-│   └── agent_sdk_app_optimization_prd.md       # 原始优化 PRD（已合并）
+│   ├── prd.md                                   # 本文档（主 PRD）
+│   ├── memory_prd.md                            # Memory 详细设计 PRD
+│   └── application-developer-guide.md           # 应用开发者使用指南
 │
 └── README.md
 ```
