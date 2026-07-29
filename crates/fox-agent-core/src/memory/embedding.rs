@@ -18,7 +18,10 @@ const DEFAULT_HF_ENDPOINT: &str = "https://hf-mirror.com/";
 
 /// How long to wait for a single `generate_embeddings()` call before assuming
 /// the mistralrs engine is hung and reloading the model.
-const EMBED_GEN_TIMEOUT: Duration = Duration::from_secs(90);
+///
+/// CPU inference can be slow for embedding models; 600 s accommodates typical
+/// CPU-bound runs without false-positive timeouts.
+const EMBED_GEN_TIMEOUT: Duration = Duration::from_secs(600);
 
 pub trait EmbeddingProvider: Send + Sync {
     fn model_name(&self) -> &str;
@@ -36,7 +39,7 @@ pub trait EmbeddingProvider: Send + Sync {
 
 /// Timeout for the caller side — must exceed [`EMBED_GEN_TIMEOUT`] because
 /// the worker may reload the model on the first failure and retry.
-const CALLER_TIMEOUT: Duration = Duration::from_secs(300);
+const CALLER_TIMEOUT: Duration = Duration::from_secs(900);
 
 #[derive(Debug, Clone)]
 pub struct EmbeddingModelDescriptor {
@@ -263,7 +266,11 @@ fn load_embedding_model(
 ) -> Result<mistralrs::Model, String> {
     runtime.block_on(async {
         let model_dir = prepare_model_dir(descriptor).await.map_err(|e| e.to_string())?;
-        info!(path = %model_dir.display(), model = %descriptor.model_id, "Loading embedding model");
+        tracing::info!(
+            path = %model_dir.display(),
+            model = %descriptor.model_id,
+            "Loading embedding model"
+        );
         EmbeddingModelBuilder::new(model_dir.to_string_lossy().to_string())
             .build()
             .await
