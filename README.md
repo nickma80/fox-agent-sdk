@@ -322,6 +322,71 @@ cargo run --example swarm_workflow
 cargo run --example custom_tool
 ```
 
+## 测试
+
+### 单元测试
+
+```bash
+# 全部单元测试
+cargo test
+
+# 按 crate 运行
+cargo test -p fox-agent-core
+cargo test -p fox-agent-sdk
+cargo test -p fox-agent-tools
+```
+
+### 按评估维度运行测试
+
+评估体系按四层金字塔组织，详见 [docs/evaluation_design.md](docs/evaluation_design.md)。
+
+#### 1. 性能基准（Performance）—— 测"框架本身快不快"
+
+```bash
+# Agent 端到端延迟基准（MockProvider，排除 LLM 网络延迟）
+cargo bench --bench agent_bench
+
+# 工具执行耗时基准
+cargo bench --bench tool_bench
+
+# Chrome Trace 火焰图（在 chrome://tracing 中可视化）
+$env:BENCH_TRACE_DIR = "./target/criterion"
+cargo bench --bench agent_bench
+# 打开 target/criterion/bench-trace.json
+```
+
+#### 2. 质量回归（Quality）—— 测"框架跑得对不对"
+
+```bash
+# Golden Transcript 回放：验证框架路由、事件分发
+cargo test --test golden_transcripts
+
+# TaskAssertions 端到端状态验证：检查文件、目录、编译产物
+$env:RUST_TEST_NOCAPTURE = "1"
+cargo test -p fox-agent-core -- task_assertions
+
+# Behavior Rules 行为正确性规则：通用行为底线检查
+cargo test -p fox-agent-sdk -- behavior_rules
+
+# LLM-as-Judge 质量评分：prompt 构建 + 解析 + 完整调用链路（MockProvider，无需 API Key）
+cargo test -p fox-agent-sdk -- judge
+```
+
+#### 3. Token 效率（Efficiency）—— 测"烧了多少钱"
+
+```bash
+# Token 消耗报告：压缩率、缓存命中率、冗余调用比例
+$env:RUST_TEST_NOCAPTURE = "1"
+cargo test -p fox-agent-core -- report
+```
+
+#### 4. 健壮性（Robustness）—— 测"会不会崩溃"
+
+```bash
+# 模糊测试：畸形 JSON、超大输出、随机超时等对抗性输入
+cargo test --test proptest
+```
+
 ## API 概览
 
 | 模块 | 关键类型 | 用途 |

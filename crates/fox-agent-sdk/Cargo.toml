@@ -24,3 +24,4 @@ fox-agent-tools = { path = "../fox-agent-tools" }
 reqwest.workspace = true
 
 [dev-dependencies]
+proptest = "1.5"

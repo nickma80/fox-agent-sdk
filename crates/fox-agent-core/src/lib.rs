@@ -12,6 +12,8 @@ mod session_store;
 mod skill;
 mod status;
 mod utils;
+mod task_assertions;
+mod report;
 
 // event depends on most of the above
 mod event;
@@ -38,4 +40,6 @@ pub use memory::{AnnRebuildStats, ClusterRefreshStats, CompactStats, ExportStats
 pub use prompt::*;
 pub use session_store::*;
 pub use skill::*;
+pub use task_assertions::*;
+pub use report::*;
 pub use event::*;

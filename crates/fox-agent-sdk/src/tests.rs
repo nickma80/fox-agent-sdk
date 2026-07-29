@@ -642,6 +642,15 @@ mod sdk_tests {
         let outcome = agent.run_once_streaming("persist this session", &tx).await.unwrap();
         assert!(matches!(outcome, TurnOutcome::Completed { .. }));
 
+        // Wait for the background tokio::spawn in persist_snapshot to finish.
+        // The snapshot is saved asynchronously to avoid blocking the agent loop.
+        for _ in 0..10 {
+            if agent.harness().session_store.load_session(&session_id).unwrap().is_some() {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        }
+
         let stored = agent
             .harness()
             .session_store

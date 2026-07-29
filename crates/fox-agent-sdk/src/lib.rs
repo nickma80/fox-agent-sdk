@@ -27,6 +27,7 @@ mod routing;
 mod noise;
 mod subagent;
 mod swarm_runtime;
+pub mod eval;
 
 pub use session::*;
 pub use memory::{MemoryInjection, MemoryInjectionEvent, MemoryInjectionState};

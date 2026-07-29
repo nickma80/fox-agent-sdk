@@ -181,7 +181,7 @@ mod tools_tests {
         tokio::fs::write(dir.join("sample.txt"), "abc").await.unwrap();
 
         let command = if cfg!(windows) {
-            "Get-Content sample.txt"
+            "type sample.txt"
         } else {
             "cat sample.txt"
         };
