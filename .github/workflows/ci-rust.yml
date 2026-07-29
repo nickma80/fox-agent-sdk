@@ -1,0 +1,61 @@
+# Rust CI — build, test, lint across all workspace crates (except fox-agent-py).
+#
+# fox-agent-py requires Python headers (cdylib) and is built separately
+# in ci-python.yml via maturin.
+
+name: Rust CI
+
+on:
+  push:
+    branches: [main]
+    paths-ignore:
+      - "docs/**"
+      - "**.md"
+      - "examples/python/**"
+  pull_request:
+    branches: [main]
+    paths-ignore:
+      - "docs/**"
+      - "**.md"
+      - "examples/python/**"
+
+env:
+  CARGO_TERM_COLOR: always
+  RUSTFLAGS: "-D warnings"
+
+jobs:
+  build:
+    name: Build & Test
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+        rust: [stable]
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: ${{ matrix.rust }}
+          components: clippy, rustfmt
+
+      - name: Restore cached dependencies
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            . -> target
+
+      - name: Build (exclude fox-agent-py)
+        run: cargo build --workspace --exclude fox-agent-py
+
+      - name: Run tests (exclude fox-agent-py)
+        run: cargo test --workspace --exclude fox-agent-py
+
+      - name: Clippy (exclude fox-agent-py)
+        run: cargo clippy --workspace --exclude fox-agent-py -- -D warnings
+
+      - name: Check formatting
+        run: cargo fmt --all --check
