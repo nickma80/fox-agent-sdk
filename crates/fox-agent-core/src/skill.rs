@@ -92,8 +92,7 @@ impl Skill {
             return Err(format!("skill `{name}` file is empty"));
         }
 
-        if trimmed.starts_with("---") {
-            let body = &trimmed[3..];
+        if let Some(body) = trimmed.strip_prefix("---") {
             if let Some(end) = body.find("\n---") {
                 let frontmatter = &body[..end];
                 let prompt = body[end + 4..].trim().to_string();
@@ -268,10 +267,10 @@ fn parse_skill_args(fm: &HashMap<String, String>) -> Vec<SkillArg> {
             desc.clear();
             required = false;
             has_name = true;
-        } else if trimmed.starts_with("description:") {
-            desc = trimmed["description:".len()..].trim().to_string();
-        } else if trimmed.starts_with("required:") {
-            required = trimmed["required:".len()..].trim() == "true";
+        } else if let Some(stripped) = trimmed.strip_prefix("description:") {
+            desc = stripped.trim().to_string();
+        } else if let Some(stripped) = trimmed.strip_prefix("required:") {
+            required = stripped.trim() == "true";
         }
     }
 
@@ -301,19 +300,10 @@ fn parse_list(s: &str) -> Vec<String> {
 // ── SkillRegistry ──
 
 /// Registry of loaded skills with multi-source support.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct SkillRegistry {
     skills: HashMap<String, Skill>,
     source_index: HashMap<String, SkillSource>, // name → source
-}
-
-impl Default for SkillRegistry {
-    fn default() -> Self {
-        Self {
-            skills: HashMap::new(),
-            source_index: HashMap::new(),
-        }
-    }
 }
 
 impl SkillRegistry {
@@ -470,17 +460,16 @@ fn scan_dir_for_skills(
         if file_type.is_dir() {
             // Recursively scan subdirectories
             scan_dir_for_skills(&path, source, priority, registry, count, false)?;
-        } else if path.extension().map(|e| e == "md").unwrap_or(false) {
-            if let Some(stem) = path.file_stem().and_then(|s| s.to_str()) {
-                match Skill::from_file(stem, &path) {
-                    Ok(mut skill) => {
-                        skill.source = source.clone();
-                        registry.insert_with_priority(skill, priority);
-                        *count += 1;
-                    }
-                    Err(e) => {
-                        tracing::warn!("{e}");
-                    }
+        } else if path.extension().map(|e| e == "md").unwrap_or(false)
+            && let Some(stem) = path.file_stem().and_then(|s| s.to_str()) {
+            match Skill::from_file(stem, &path) {
+                Ok(mut skill) => {
+                    skill.source = source.clone();
+                    registry.insert_with_priority(skill, priority);
+                    *count += 1;
+                }
+                Err(e) => {
+                    tracing::warn!("{e}");
                 }
             }
         }

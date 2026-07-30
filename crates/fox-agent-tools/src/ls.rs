@@ -35,6 +35,7 @@ struct LsInput {
     #[serde(default)]
     ignore: Option<Vec<String>>,
     #[serde(default)]
+    #[expect(dead_code)]
     intent: Option<String>,
 }
 

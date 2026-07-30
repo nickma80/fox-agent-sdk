@@ -319,11 +319,7 @@ impl MemoryManager {
     }
 
     fn global_memory_path(&self) -> PathBuf {
-        let dir = if self.test_mode {
-            self.storage_dir.clone()
-        } else {
-            self.storage_dir.clone()
-        };
+        let dir = self.storage_dir.clone();
         let _ = std::fs::create_dir_all(&dir);
         dir.join("global.json")
     }
@@ -347,10 +343,8 @@ impl MemoryManager {
 
     fn load_graph(&self, path: &Path) -> Result<MemoryGraph, String> {
         // Try cache first
-        if !self.test_mode {
-            if let Some(cached) = storage::cached_graph(path) {
-                return Ok(cached);
-            }
+        if !self.test_mode && let Some(cached) = storage::cached_graph(path) {
+            return Ok(cached);
         }
 
         if !path.exists() {
@@ -652,23 +646,17 @@ impl MemoryManager {
         let all = self.collect_memories(scope)?;
         let entry_map: HashMap<String, MemoryEntry> = all.into_iter().map(|entry| (entry.id.clone(), entry)).collect();
 
-        if scope.includes_project() {
-            if let Ok(graph) = self.load_project_graph() {
-                let cascaded = graph.cascade_retrieve(&seed_ids, &seed_scores, self.cfg.max_graph_depth.max(1), limit * 3);
-                apply_cascade_results(&mut merged, &entry_map, cascaded);
-            }
+        if scope.includes_project() && let Ok(graph) = self.load_project_graph() {
+            let cascaded = graph.cascade_retrieve(&seed_ids, &seed_scores, self.cfg.max_graph_depth.max(1), limit * 3);
+            apply_cascade_results(&mut merged, &entry_map, cascaded);
         }
-        if scope.includes_session() {
-            if let Ok(graph) = self.load_session_graph() {
-                let cascaded = graph.cascade_retrieve(&seed_ids, &seed_scores, self.cfg.max_graph_depth.max(1), limit * 3);
-                apply_cascade_results(&mut merged, &entry_map, cascaded);
-            }
+        if scope.includes_session() && let Ok(graph) = self.load_session_graph() {
+            let cascaded = graph.cascade_retrieve(&seed_ids, &seed_scores, self.cfg.max_graph_depth.max(1), limit * 3);
+            apply_cascade_results(&mut merged, &entry_map, cascaded);
         }
-        if scope.includes_global() {
-            if let Ok(graph) = self.load_global_graph() {
-                let cascaded = graph.cascade_retrieve(&seed_ids, &seed_scores, self.cfg.max_graph_depth.max(1), limit * 3);
-                apply_cascade_results(&mut merged, &entry_map, cascaded);
-            }
+        if scope.includes_global() && let Ok(graph) = self.load_global_graph() {
+            let cascaded = graph.cascade_retrieve(&seed_ids, &seed_scores, self.cfg.max_graph_depth.max(1), limit * 3);
+            apply_cascade_results(&mut merged, &entry_map, cascaded);
         }
 
         Ok(top_k_hits(merged.into_values().collect(), limit))
@@ -689,7 +677,7 @@ impl MemoryManager {
     /// List all memories, newest first.
     pub fn list(&self, scope: MemoryScope) -> Result<Vec<MemoryEntry>, String> {
         let mut all = self.collect_memories(scope)?;
-        all.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
+        all.sort_by_key(|b| std::cmp::Reverse(b.updated_at));
         Ok(all)
     }
 
@@ -1189,15 +1177,13 @@ impl MemoryManager {
             candidate.source = Some("auto_extract".to_string());
             candidate = self.prepare_entry_for_storage(candidate);
 
-            if self.cfg.verify_relevance {
-                if let Some(checker) = relevance_checker {
-                    let (relevant, _) = checker
-                        .check_relevance(&candidate.content, transcript)
-                        .await?;
-                    if !relevant {
-                        report.skipped_irrelevant += 1;
-                        continue;
-                    }
+            if self.cfg.verify_relevance && let Some(checker) = relevance_checker {
+                let (relevant, _) = checker
+                    .check_relevance(&candidate.content, transcript)
+                    .await?;
+                if !relevant {
+                    report.skipped_irrelevant += 1;
+                    continue;
                 }
             }
 
@@ -1231,20 +1217,14 @@ impl MemoryManager {
 
     fn collect_memories(&self, scope: MemoryScope) -> Result<Vec<MemoryEntry>, String> {
         let mut all = Vec::new();
-        if scope.includes_project() {
-            if let Ok(graph) = self.load_project_graph() {
-                all.extend(graph.all_memories().cloned());
-            }
+        if scope.includes_project() && let Ok(graph) = self.load_project_graph() {
+            all.extend(graph.all_memories().cloned());
         }
-        if scope.includes_session() {
-            if let Ok(graph) = self.load_session_graph() {
-                all.extend(graph.all_memories().cloned());
-            }
+        if scope.includes_session() && let Ok(graph) = self.load_session_graph() {
+            all.extend(graph.all_memories().cloned());
         }
-        if scope.includes_global() {
-            if let Ok(graph) = self.load_global_graph() {
-                all.extend(graph.all_memories().cloned());
-            }
+        if scope.includes_global() && let Ok(graph) = self.load_global_graph() {
+            all.extend(graph.all_memories().cloned());
         }
         Ok(all)
     }
@@ -1421,12 +1401,11 @@ impl MemoryManager {
                 return self.recall_keyword(query, limit, scope);
             }
         };
-        if self.cfg.ann_enabled {
-            if let Ok(ranked) = self.recall_semantic_with_ann(&query_embedding, provider.model_name(), provider.version(), limit, scope) {
-                if !ranked.is_empty() {
-                    return Ok(ranked);
-                }
-            }
+        if self.cfg.ann_enabled
+            && let Ok(ranked) = self.recall_semantic_with_ann(&query_embedding, provider.model_name(), provider.version(), limit, scope)
+            && !ranked.is_empty()
+        {
+            return Ok(ranked);
         }
         let all = self.collect_memories(scope)?;
         let scored = all.into_iter()

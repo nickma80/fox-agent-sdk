@@ -21,6 +21,7 @@ struct GlobInput {
     #[serde(default)]
     path: Option<String>,
     #[serde(default)]
+    #[expect(dead_code)]
     intent: Option<String>,
 }
 

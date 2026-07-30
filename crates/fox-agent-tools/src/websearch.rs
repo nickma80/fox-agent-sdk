@@ -33,6 +33,7 @@ struct WebSearchInput {
     #[serde(default)]
     bing_market: Option<String>,
     #[serde(default)]
+    #[expect(dead_code)]
     intent: Option<String>,
 }
 

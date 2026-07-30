@@ -43,6 +43,7 @@ impl NoiseCleanResult {
         Self { tools_cleaned: 0, lines_removed: 0, chars_saved: 0 }
     }
 
+    #[expect(dead_code)]
     pub fn merge(&mut self, other: &Self) {
         self.tools_cleaned += other.tools_cleaned;
         self.lines_removed += other.lines_removed;

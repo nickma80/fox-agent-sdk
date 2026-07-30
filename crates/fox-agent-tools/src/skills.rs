@@ -132,5 +132,6 @@ struct SkillToolInput {
     #[serde(default)]
     name: Option<String>,
     #[serde(default)]
+    #[expect(dead_code)]
     intent: Option<String>,
 }

@@ -12,10 +12,9 @@ use fox_agent_core::{
     ArtifactStoreConfig, McpServerKind, McpServerProfile, McpToolDescriptorSnapshot,
     RoutingPolicyConfig, ToolResultRouting,
 };
-use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
-use tracing::{debug, info, trace, warn};
+use tracing::{debug, trace};
 
 // ── Routing Policy Engine ──
 
@@ -186,7 +185,7 @@ fn should_externalize(
 
     // Parse MCP tool name
     let mcp_info = parse_mcp_tool_name(tool_name);
-    if let Some((server_name, _mcp_tool_name)) = &mcp_info {
+    if let Some((_server_name, _mcp_tool_name)) = &mcp_info {
         let profile = input.mcp_profile;
         let descriptor = input.mcp_descriptor;
 

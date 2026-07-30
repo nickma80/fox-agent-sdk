@@ -21,6 +21,7 @@ struct WriteInput {
     file_path: String,
     content: String,
     #[serde(default)]
+    #[expect(dead_code)]
     intent: Option<String>,
 }
 

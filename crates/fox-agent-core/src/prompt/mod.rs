@@ -182,6 +182,7 @@ impl PromptBuilder {
     /// Build the full system prompt with all sections.
     ///
     /// Returns (full_prompt, ContextInfo).
+    #[expect(clippy::too_many_arguments)]
     pub fn build_full(
         &self,
         session_context: Option<&str>,
@@ -364,11 +365,11 @@ impl PromptBuilder {
             contents.push(content);
         }
 
-        if let Some(global_path) = global_config_path("prompt-overlay.md") {
-            if let Some((content, size)) = load(&global_path, "Global Prompt Overlay (~/.fox/prompt-overlay.md)") {
-                total += size;
-                contents.push(content);
-            }
+        if let Some(global_path) = global_config_path("prompt-overlay.md")
+            && let Some((content, size)) = load(&global_path, "Global Prompt Overlay (~/.fox/prompt-overlay.md)")
+        {
+            total += size;
+            contents.push(content);
         }
 
         if contents.is_empty() {
@@ -474,12 +475,11 @@ impl PromptBuilder {
                 .args(["branch", "--show-current"])
                 .current_dir(dir)
                 .output()
+                && out.status.success()
             {
-                if out.status.success() {
-                    let branch = String::from_utf8_lossy(&out.stdout).trim().to_string();
-                    if !branch.is_empty() {
-                        info.push(format!("  Branch: {}", branch));
-                    }
+                let branch = String::from_utf8_lossy(&out.stdout).trim().to_string();
+                if !branch.is_empty() {
+                    info.push(format!("  Branch: {}", branch));
                 }
             }
 
@@ -488,17 +488,16 @@ impl PromptBuilder {
                 .args(["status", "--porcelain"])
                 .current_dir(dir)
                 .output()
+                && out.status.success()
             {
-                if out.status.success() {
-                    let status = String::from_utf8_lossy(&out.stdout);
-                    let count = status.lines().count();
-                    if count > 0 {
-                        info.push(format!("  Modified: {} files", count));
-                        for file in status.lines().take(5) {
-                            info.push(format!("    {}", file));
-                        }
-                        if count > 5 { info.push("    ...".to_string()); }
+                let status = String::from_utf8_lossy(&out.stdout);
+                let count = status.lines().count();
+                if count > 0 {
+                    info.push(format!("  Modified: {} files", count));
+                    for file in status.lines().take(5) {
+                        info.push(format!("    {}", file));
                     }
+                    if count > 5 { info.push("    ...".to_string()); }
                 }
             }
 

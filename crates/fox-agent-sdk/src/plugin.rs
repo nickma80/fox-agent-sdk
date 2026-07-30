@@ -38,7 +38,6 @@ fn deserialize_author_compat<'de, D>(deserializer: D) -> Result<Option<String>, 
 where
     D: serde::Deserializer<'de>,
 {
-    use serde::de;
     let val: Option<serde_json::Value> = Option::deserialize(deserializer)?;
     match val {
         None => Ok(None),
@@ -215,7 +214,6 @@ fn deserialize_plugins_with_skip<'de, D>(deserializer: D) -> Result<Vec<Marketpl
 where
     D: serde::Deserializer<'de>,
 {
-    use serde::de;
     let raw: Vec<serde_json::Value> = Vec::deserialize(deserializer)?;
     let mut plugins = Vec::with_capacity(raw.len());
     for (i, val) in raw.iter().enumerate() {
@@ -1173,6 +1171,7 @@ fn git_fetch_update(repo_dir: &Path, proxy: Option<&ProxyConfig>) -> Result<(), 
 }
 
 /// Download and extract a plugin from an HTTP URL.
+#[expect(dead_code)]
 async fn download_and_extract(_url: &str, _dest: &Path) -> Result<(), String> {
     // For now, downloads simple archives (tar.gz / zip).
     // Full implementation would use reqwest + flate2/tar crates.

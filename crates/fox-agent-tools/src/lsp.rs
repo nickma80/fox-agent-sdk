@@ -31,6 +31,7 @@ struct LspInput {
     line: u32,
     character: u32,
     #[serde(default)]
+    #[expect(dead_code)]
     intent: Option<String>,
 }
 

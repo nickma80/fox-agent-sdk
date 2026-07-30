@@ -18,7 +18,7 @@ fn default_user_agent() -> &'static str {
 /// Walk the full `std::error::Error` source chain so the underlying cause
 /// (TLS handshake failure, connection reset, DNS error, ...) is surfaced
 /// instead of reqwest's opaque top-level "error sending request" message.
-fn format_error_chain(err: &(dyn std::error::Error)) -> String {
+fn format_error_chain(err: &dyn std::error::Error) -> String {
     let mut parts = vec![err.to_string()];
     let mut source = err.source();
     while let Some(inner) = source {
@@ -53,6 +53,7 @@ struct WebFetchInput {
     #[serde(default)]
     timeout: Option<u64>,
     #[serde(default)]
+    #[expect(dead_code)]
     intent: Option<String>,
 }
 

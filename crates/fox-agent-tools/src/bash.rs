@@ -14,7 +14,6 @@ const BASH_TOOL_DESCRIPTION: &str =
 fn build_shell_command(cmd_str: &str) -> TokioCommand {
     #[cfg(windows)]
     {
-        use std::os::windows::process::CommandExt;
         const CREATE_NO_WINDOW: u32 = 0x08000000;
         let mut cmd = TokioCommand::new("cmd.exe");
         cmd.arg("/C").arg(cmd_str);

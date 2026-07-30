@@ -45,6 +45,7 @@ struct AgentGrepInput {
     #[serde(default)]
     debug_score: Option<bool>,
     #[serde(default)]
+    #[expect(dead_code)]
     intent: Option<String>,
     #[serde(default)]
     paths_only: Option<bool>,

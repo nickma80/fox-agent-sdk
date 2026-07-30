@@ -340,7 +340,7 @@ impl PlanningStore for FilePlanningStore {
             return Ok(Vec::new());
         }
         let mut ids = Vec::new();
-        for entry in fs::read_dir(&dir)
+        for entry in fs::read_dir(dir)
             .map_err(|e| format!("failed to read planning session dir {}: {e}", dir.display()))?
         {
             let entry = entry.map_err(|e| format!("failed to inspect planning dir entry: {e}"))?;
@@ -638,7 +638,7 @@ where
     Ok(snapshot)
 }
 
-fn snapshot_session_id<'a>(session_id: &'a str, scope: GoalScope) -> &'a str {
+fn snapshot_session_id(session_id: &str, scope: GoalScope) -> &str {
     match scope {
         GoalScope::Session => session_id,
         GoalScope::Global => "global",

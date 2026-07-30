@@ -27,6 +27,7 @@ struct ReadInput {
     #[serde(default)]
     limit: Option<usize>,
     #[serde(default)]
+    #[expect(dead_code)]
     intent: Option<String>,
 }
 

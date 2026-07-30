@@ -24,6 +24,7 @@ struct EditInput {
     #[serde(default)]
     replace_all: bool,
     #[serde(default)]
+    #[expect(dead_code)]
     intent: Option<String>,
 }
 
