@@ -97,6 +97,7 @@ pub fn write_json<T: Serialize>(path: &Path, value: &T) -> Result<(), String> {
 
 struct CacheEntry {
     graph: MemoryGraph,
+    #[expect(dead_code)]
     loaded_at: SystemTime,
 }
 

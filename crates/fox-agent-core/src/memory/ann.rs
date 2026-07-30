@@ -23,13 +23,16 @@ struct AnnSnapshot {
 #[derive(Debug)]
 pub struct AnnSearchHit {
     pub memory_id: String,
+    #[expect(dead_code)]
     pub approx_score: f64,
 }
 
 #[derive(Debug)]
 pub struct AnnStats {
     pub vectors_indexed: usize,
+    #[expect(dead_code)]
     pub dim: usize,
+    #[expect(dead_code)]
     pub built_at: DateTime<Utc>,
 }
 

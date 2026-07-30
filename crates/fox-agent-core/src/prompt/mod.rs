@@ -414,6 +414,7 @@ impl PromptBuilder {
         }
     }
 
+    #[expect(dead_code)]
     fn read_trimmed(file_path: impl Into<PathBuf>) -> Option<String> {
         std::fs::read_to_string(file_path.into()).ok().map(|s| s.trim().to_string()).filter(|s| !s.is_empty())
     }
