@@ -8,13 +8,15 @@ use std::sync::Arc;
 use std::time::Instant;
 use tokio::sync::{RwLock, Semaphore};
 
+type MetricsHook = Arc<dyn Fn(&MetricsSnapshot) + Send + Sync>;
+
 /// Runtime governor that enforces budget limits and collects metrics.
 #[derive(Clone)]
 pub struct GovernanceGuard {
     config: BudgetConfig,
     metrics: Arc<RwLock<MetricsSnapshot>>,
     /// Hooks called after each model response with usage + latency.
-    metrics_hooks: Arc<RwLock<Vec<Arc<dyn Fn(&MetricsSnapshot) + Send + Sync>>>>,
+    metrics_hooks: Arc<RwLock<Vec<MetricsHook>>>,
     /// Number of turns completed this session.
     turns: Arc<RwLock<u64>>,
     /// Latency tracker for a single turn.
@@ -42,10 +44,7 @@ impl GovernanceGuard {
     }
 
     /// Register a callback to be invoked after each usage record.
-    pub async fn add_metrics_hook(
-        &self,
-        hook: impl Fn(&MetricsSnapshot) + Send + Sync + 'static,
-    ) {
+    pub async fn add_metrics_hook(&self, hook: impl Fn(&MetricsSnapshot) + Send + Sync + 'static) {
         self.metrics_hooks.write().await.push(Arc::new(hook));
     }
 
@@ -146,10 +145,10 @@ impl GovernanceGuard {
 /// inject pricing via a custom `metrics_hook`.
 pub fn estimate_cost_cents(model_id: &str, usage: &TokenUsage) -> u64 {
     let output_price_per_1m = match model_id {
-        id if id.contains("deepseek") => 42,     // $0.42/M
-        id if id.contains("claude") => 15000,     // $15.00/M
-        id if id.contains("gpt-4o") => 10000,     // $10.00/M
-        _ => 1500,                                 // $1.50/M default
+        id if id.contains("deepseek") => 42,  // $0.42/M
+        id if id.contains("claude") => 15000, // $15.00/M
+        id if id.contains("gpt-4o") => 10000, // $10.00/M
+        _ => 1500,                            // $1.50/M default
     };
 
     // DeepSeek prefix caching: cache-hit $0.028/M vs cache-miss $0.28/M (10x).
@@ -160,9 +159,9 @@ pub fn estimate_cost_cents(model_id: &str, usage: &TokenUsage) -> u64 {
         (cache_hit * 28 + cache_miss * 280) / 10_000_000
     } else {
         let input_price = match model_id {
-            id if id.contains("claude") => 3000,    // $30.00/M
-            id if id.contains("gpt-4o") => 2500,     // $25.00/M
-            _ => 500,                                 // $5.00/M default
+            id if id.contains("claude") => 3000, // $30.00/M
+            id if id.contains("gpt-4o") => 2500, // $25.00/M
+            _ => 500,                            // $5.00/M default
         };
         usage.input_tokens as u64 * input_price / 1_000_000
     };
@@ -256,8 +255,34 @@ mod tests {
         let config = BudgetConfig::default();
         let guard = GovernanceGuard::new(config);
 
-        guard.record_usage(&TokenUsage { input_tokens:100, output_tokens:50, total_tokens:150, cache_read_input_tokens:Some(0), cache_creation_input_tokens:Some(0) }, 100, 5).await.unwrap();
-        guard.record_usage(&TokenUsage { input_tokens:200, output_tokens:100, total_tokens:300, cache_read_input_tokens:Some(0), cache_creation_input_tokens:Some(0) }, 200, 3).await.unwrap();
+        guard
+            .record_usage(
+                &TokenUsage {
+                    input_tokens: 100,
+                    output_tokens: 50,
+                    total_tokens: 150,
+                    cache_read_input_tokens: Some(0),
+                    cache_creation_input_tokens: Some(0),
+                },
+                100,
+                5,
+            )
+            .await
+            .unwrap();
+        guard
+            .record_usage(
+                &TokenUsage {
+                    input_tokens: 200,
+                    output_tokens: 100,
+                    total_tokens: 300,
+                    cache_read_input_tokens: Some(0),
+                    cache_creation_input_tokens: Some(0),
+                },
+                200,
+                3,
+            )
+            .await
+            .unwrap();
 
         let snap = guard.snapshot().await;
         assert_eq!(snap.total_input_tokens, 300);
@@ -269,7 +294,10 @@ mod tests {
 
     #[tokio::test]
     async fn max_turns_enforcement() {
-        let config = BudgetConfig { max_turns: 2, ..BudgetConfig::default() };
+        let config = BudgetConfig {
+            max_turns: 2,
+            ..BudgetConfig::default()
+        };
         let guard = GovernanceGuard::new(config);
 
         guard.turn_begin().await;
@@ -288,9 +316,26 @@ mod tests {
         let guard = GovernanceGuard::new(config);
         let counter = std::sync::Arc::new(std::sync::atomic::AtomicU32::new(0));
         let c = counter.clone();
-        guard.add_metrics_hook(move |_| { c.fetch_add(1, std::sync::atomic::Ordering::SeqCst); }).await;
+        guard
+            .add_metrics_hook(move |_| {
+                c.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            })
+            .await;
 
-        guard.record_usage(&TokenUsage { input_tokens:10, output_tokens:5, total_tokens:15, cache_read_input_tokens:Some(0), cache_creation_input_tokens:Some(0) }, 10, 0).await.unwrap();
+        guard
+            .record_usage(
+                &TokenUsage {
+                    input_tokens: 10,
+                    output_tokens: 5,
+                    total_tokens: 15,
+                    cache_read_input_tokens: Some(0),
+                    cache_creation_input_tokens: Some(0),
+                },
+                10,
+                0,
+            )
+            .await
+            .unwrap();
         assert_eq!(counter.load(std::sync::atomic::Ordering::SeqCst), 1);
     }
 }

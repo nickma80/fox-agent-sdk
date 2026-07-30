@@ -9,8 +9,8 @@
 //! (malformed JSON, arbitrarily large text, etc.).
 
 use fox_agent_core::{
-    DefaultSafetyPolicy, FoxAgentSdkConfig, Message, SafetyConfig, Tool, ToolContext,
-    ToolError, ToolOutput, ToolExecutionMode,
+    DefaultSafetyPolicy, FoxAgentSdkConfig, Message, SafetyConfig, Tool, ToolContext, ToolError,
+    ToolExecutionMode, ToolOutput,
 };
 use fox_agent_sdk::Harness;
 use proptest::prelude::*;
@@ -23,13 +23,21 @@ struct NullTool;
 
 #[async_trait::async_trait]
 impl Tool for NullTool {
-    fn name(&self) -> &str { "null" }
-    fn description(&self) -> &str { "null tool" }
+    fn name(&self) -> &str {
+        "null"
+    }
+    fn description(&self) -> &str {
+        "null tool"
+    }
     fn parameters_schema(&self) -> Value {
         serde_json::json!({"type":"object","properties":{}})
     }
     async fn execute(&self, _input: Value, _ctx: ToolContext) -> Result<ToolOutput, ToolError> {
-        Ok(ToolOutput { text: "ok".into(), is_error: false, json: None })
+        Ok(ToolOutput {
+            text: "ok".into(),
+            is_error: false,
+            json: None,
+        })
     }
 }
 

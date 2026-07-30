@@ -1,5 +1,8 @@
 use async_trait::async_trait;
-use fox_agent_core::{Tool, ToolContext, ToolError, ToolOutput, ToolProgressEvent, OutputStream, intent_schema_property};
+use fox_agent_core::{
+    OutputStream, Tool, ToolContext, ToolError, ToolOutput, ToolProgressEvent,
+    intent_schema_property,
+};
 use serde::Deserialize;
 use serde_json::{Value, json};
 use std::time::Duration;
@@ -33,6 +36,12 @@ pub struct BashTool;
 impl BashTool {
     pub fn new() -> Self {
         Self
+    }
+}
+
+impl Default for BashTool {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
@@ -130,11 +139,9 @@ impl BashTool {
         }
 
         let result = tokio::time::timeout(timeout_duration, async {
-            let mut child = command
-                .spawn()
-                .map_err(|e| ToolError::Message {
-                    message: format!("failed to execute command: {e}"),
-                })?;
+            let mut child = command.spawn().map_err(|e| ToolError::Message {
+                message: format!("failed to execute command: {e}"),
+            })?;
 
             let stdout = child.stdout.take();
             let stderr = child.stderr.take();
@@ -149,10 +156,12 @@ impl BashTool {
                         let mut buf = String::new();
                         while let Ok(Some(line)) = reader.next_line().await {
                             if let Some(ref tx) = progress_tx {
-                                let _ = tx.send(ToolProgressEvent::StdoutLine {
-                                    line: line.clone(),
-                                    stream: OutputStream::Stdout,
-                                }).await;
+                                let _ = tx
+                                    .send(ToolProgressEvent::StdoutLine {
+                                        line: line.clone(),
+                                        stream: OutputStream::Stdout,
+                                    })
+                                    .await;
                             }
                             buf.push_str(&line);
                             buf.push('\n');
@@ -168,10 +177,12 @@ impl BashTool {
                         let mut buf = String::new();
                         while let Ok(Some(line)) = reader.next_line().await {
                             if let Some(ref tx) = progress_tx {
-                                let _ = tx.send(ToolProgressEvent::StdoutLine {
-                                    line: line.clone(),
-                                    stream: OutputStream::Stderr,
-                                }).await;
+                                let _ = tx
+                                    .send(ToolProgressEvent::StdoutLine {
+                                        line: line.clone(),
+                                        stream: OutputStream::Stderr,
+                                    })
+                                    .await;
                             }
                             buf.push_str(&line);
                             buf.push('\n');
@@ -203,12 +214,17 @@ impl BashTool {
 
             // Truncate if too large
             let text = if text.len() > MAX_OUTPUT_LEN {
-                let boundary = text.char_indices()
+                let boundary = text
+                    .char_indices()
                     .take_while(|(i, _)| *i < MAX_OUTPUT_LEN)
                     .last()
                     .map(|(i, _)| i)
                     .unwrap_or(MAX_OUTPUT_LEN.min(text.len()));
-                format!("{}...\n[OUTPUT TRUNCATED at {} chars]", &text[..boundary], MAX_OUTPUT_LEN)
+                format!(
+                    "{}...\n[OUTPUT TRUNCATED at {} chars]",
+                    &text[..boundary],
+                    MAX_OUTPUT_LEN
+                )
             } else {
                 text
             };
@@ -410,7 +426,10 @@ mod tests {
 
     #[test]
     fn test_summarize_background_command() {
-        assert_eq!(summarize_background_command(Some("run tests"), "cargo test --all"), "run tests");
+        assert_eq!(
+            summarize_background_command(Some("run tests"), "cargo test --all"),
+            "run tests"
+        );
         assert!(summarize_background_command(None, "cargo test --all").contains("cargo test"));
         assert!(summarize_background_command(None, "python scripts/build.py").contains("build.py"));
     }

@@ -4,8 +4,8 @@
 ///
 /// Run: cargo run --example non_coding_agent
 use fox_agent_sdk::{
-    AgentBuilder, AgentEvent, FoxAgentSdkConfig, MockProvider, Provider, StreamEvent,
-    Tool, ToolContext, ToolError, ToolOutput, TurnOutcome,
+    AgentBuilder, AgentEvent, FoxAgentSdkConfig, MockProvider, Provider, StreamEvent, Tool,
+    ToolContext, ToolError, ToolOutput, TurnOutcome,
 };
 use serde_json::{Value, json};
 use std::path::PathBuf;
@@ -166,7 +166,7 @@ async fn main() {
     let cfg = FoxAgentSdkConfig::load_from_file(project_root.join("agent.toml"))
         .unwrap_or_else(|_| FoxAgentSdkConfig::default());
 
-    let mut agent = AgentBuilder::new()
+    let agent = AgentBuilder::new()
         .working_dir(&project_root)
         .sdk_config(cfg)
         .with_global_agents_md_path(project_root.join("AGENTS.md"))
@@ -185,10 +185,15 @@ async fn main() {
         .build_system_prompt_split(None, None, None)
         .await;
     assert!(
-        split.static_part.contains("customer support agent for Acme Corp"),
+        split
+            .static_part
+            .contains("customer support agent for Acme Corp"),
         "custom system prompt should be in effect"
     );
-    println!("> Custom system prompt active ({} chars)\n", info.total_chars);
+    println!(
+        "> Custom system prompt active ({} chars)\n",
+        info.total_chars
+    );
 
     // ── Run a turn with streaming events ──
     let (tx, mut rx) = tokio::sync::mpsc::channel::<AgentEvent>(64);
@@ -206,8 +211,7 @@ async fn main() {
                 AgentEvent::ModelUsage { ref usage } => {
                     eprintln!(
                         "\n[tokens: {}/{}; cache: {:?}]",
-                        usage.input_tokens, usage.output_tokens,
-                        usage.cache_read_input_tokens,
+                        usage.input_tokens, usage.output_tokens, usage.cache_read_input_tokens,
                     );
                 }
                 _ => {}
@@ -234,9 +238,7 @@ async fn main() {
         TurnOutcome::RequiresUserDecision { ref request } => {
             println!(
                 "\n> Permission needed: {} ({}) — {}",
-                request.tool_name,
-                request.risk_level,
-                request.policy_source,
+                request.tool_name, request.risk_level, request.policy_source,
             );
         }
         _ => {}

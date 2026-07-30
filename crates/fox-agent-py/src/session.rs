@@ -40,7 +40,10 @@ impl PySessionSnapshot {
             title: s.title.clone(),
             model: s.model.clone(),
             status: format!("{:?}", s.status).to_lowercase(),
-            working_dir: s.working_dir.as_ref().map(|p| p.to_string_lossy().to_string()),
+            working_dir: s
+                .working_dir
+                .as_ref()
+                .map(|p| p.to_string_lossy().to_string()),
             message_count: s.messages.len(),
             next_turn_id: s.next_turn_id,
             updated_at: s.updated_at,
@@ -92,9 +95,12 @@ impl PyFileSessionStore {
 
     /// Load a session snapshot by ID.
     fn load_session(&self, session_id: String) -> PyResult<Option<PySessionSnapshot>> {
-        self.inner.load_session(&session_id).map_err(|e| {
-            pyo3::exceptions::PyRuntimeError::new_err(format!("failed to load session: {}", e))
-        }).map(|opt| opt.as_ref().map(PySessionSnapshot::from_snapshot))
+        self.inner
+            .load_session(&session_id)
+            .map_err(|e| {
+                pyo3::exceptions::PyRuntimeError::new_err(format!("failed to load session: {}", e))
+            })
+            .map(|opt| opt.as_ref().map(PySessionSnapshot::from_snapshot))
     }
 
     /// Delete a session by ID.

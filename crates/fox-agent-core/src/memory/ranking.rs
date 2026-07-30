@@ -20,7 +20,9 @@ impl<T> PartialOrd for ScoredItem<T> {
 }
 impl<T> Ord for ScoredItem<T> {
     fn cmp(&self, other: &Self) -> std::cmp::Ordering {
-        self.score.total_cmp(&other.score).then_with(|| self.ordinal.cmp(&other.ordinal))
+        self.score
+            .total_cmp(&other.score)
+            .then_with(|| self.ordinal.cmp(&other.ordinal))
     }
 }
 
@@ -35,7 +37,11 @@ where
     }
     let mut heap: BinaryHeap<Reverse<ScoredItem<T>>> = BinaryHeap::new();
     for (ordinal, (value, score)) in items.into_iter().enumerate() {
-        let cand = Reverse(ScoredItem { score, ordinal, value });
+        let cand = Reverse(ScoredItem {
+            score,
+            ordinal,
+            value,
+        });
         if heap.len() < limit {
             heap.push(cand);
         } else if heap.peek().map(|s| score > s.0.score).unwrap_or(false) {
@@ -43,7 +49,16 @@ where
             heap.push(cand);
         }
     }
-    let mut results: Vec<_> = heap.into_iter().map(|Reverse(ScoredItem { value, score, ordinal })| (value, score, ordinal)).collect();
+    let mut results: Vec<_> = heap
+        .into_iter()
+        .map(
+            |Reverse(ScoredItem {
+                 value,
+                 score,
+                 ordinal,
+             })| (value, score, ordinal),
+        )
+        .collect();
     results.sort_by(|a, b| b.1.total_cmp(&a.1).then_with(|| a.2.cmp(&b.2)));
     results.into_iter().map(|(v, s, _)| (v, s)).collect()
 }
@@ -54,15 +69,21 @@ struct OrdItem<T, K: Ord> {
     value: T,
 }
 impl<T, K: Ord> PartialEq for OrdItem<T, K> {
-    fn eq(&self, other: &Self) -> bool { self.key == other.key && self.ordinal == other.ordinal }
+    fn eq(&self, other: &Self) -> bool {
+        self.key == other.key && self.ordinal == other.ordinal
+    }
 }
 impl<T, K: Ord> Eq for OrdItem<T, K> {}
 impl<T, K: Ord> PartialOrd for OrdItem<T, K> {
-    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> { Some(self.cmp(other)) }
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
 }
 impl<T, K: Ord> Ord for OrdItem<T, K> {
     fn cmp(&self, other: &Self) -> std::cmp::Ordering {
-        self.key.cmp(&other.key).then_with(|| self.ordinal.cmp(&other.ordinal))
+        self.key
+            .cmp(&other.key)
+            .then_with(|| self.ordinal.cmp(&other.ordinal))
     }
 }
 
@@ -76,7 +97,11 @@ where
     }
     let mut heap: BinaryHeap<Reverse<OrdItem<T, K>>> = BinaryHeap::new();
     for (ordinal, (value, key)) in items.into_iter().enumerate() {
-        let cand = Reverse(OrdItem { key, ordinal, value });
+        let cand = Reverse(OrdItem {
+            key,
+            ordinal,
+            value,
+        });
         if heap.len() < limit {
             heap.push(cand);
         } else if heap.peek().map(|s| cand.0.key > s.0.key).unwrap_or(false) {
@@ -84,7 +109,16 @@ where
             heap.push(cand);
         }
     }
-    let mut results: Vec<_> = heap.into_iter().map(|Reverse(OrdItem { value, key, ordinal })| (value, key, ordinal)).collect();
+    let mut results: Vec<_> = heap
+        .into_iter()
+        .map(
+            |Reverse(OrdItem {
+                 value,
+                 key,
+                 ordinal,
+             })| (value, key, ordinal),
+        )
+        .collect();
     results.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.2.cmp(&b.2)));
     results.into_iter().map(|(v, k, _)| (v, k)).collect()
 }

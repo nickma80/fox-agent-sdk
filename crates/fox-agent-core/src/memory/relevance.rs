@@ -29,7 +29,11 @@ pub trait MemoryRelevanceChecker: Send + Sync {
 #[async_trait]
 pub trait MemoryExtractor: Send + Sync {
     /// Extract new memories from a transcript, avoiding duplicates vs `existing`.
-    async fn extract(&self, transcript: &str, existing: &[String]) -> Result<Vec<ExtractedMemory>, String>;
+    async fn extract(
+        &self,
+        transcript: &str,
+        existing: &[String],
+    ) -> Result<Vec<ExtractedMemory>, String>;
 }
 
 // ── Default provider-based implementation ──
@@ -47,13 +51,20 @@ pub struct ProviderRelevanceChecker {
 
 impl ProviderRelevanceChecker {
     pub fn new(provider: Arc<dyn Provider>, model_id: impl Into<String>) -> Self {
-        Self { provider, model_id: model_id.into() }
+        Self {
+            provider,
+            model_id: model_id.into(),
+        }
     }
 }
 
 #[async_trait]
 impl MemoryRelevanceChecker for ProviderRelevanceChecker {
-    async fn check_relevance(&self, memory_content: &str, context: &str) -> Result<(bool, String), String> {
+    async fn check_relevance(
+        &self,
+        memory_content: &str,
+        context: &str,
+    ) -> Result<(bool, String), String> {
         let system = r#"You are a memory relevance checker. Your job is to determine if a stored memory is relevant to the current context.
 
 Respond in this exact format:
@@ -77,15 +88,24 @@ Be conservative — only say "yes" if the memory would actually be useful for th
                 break;
             }
         }
-        let reason = response.lines()
+        let reason = response
+            .lines()
             .find(|l| l.to_lowercase().starts_with("reason:"))
-            .map(|l| l.trim_start_matches(|c: char| !c.is_alphabetic()).trim().to_string())
+            .map(|l| {
+                l.trim_start_matches(|c: char| !c.is_alphabetic())
+                    .trim()
+                    .to_string()
+            })
             .unwrap_or_else(|| response.trim().to_string());
 
         Ok((is_relevant, reason))
     }
 
-    async fn check_contradiction(&self, new_content: &str, existing_content: &str) -> Result<bool, String> {
+    async fn check_contradiction(
+        &self,
+        new_content: &str,
+        existing_content: &str,
+    ) -> Result<bool, String> {
         let system = "You are a contradiction detector. Given two statements, determine if the new information directly contradicts the existing information. Reply with exactly YES or NO.";
         let prompt = format!(
             "## Existing Information\n{existing_content}\n\n## New Information\n{new_content}\n\nDoes the new information contradict the existing information?"
@@ -103,13 +123,20 @@ pub struct ProviderExtractor {
 
 impl ProviderExtractor {
     pub fn new(provider: Arc<dyn Provider>, model_id: impl Into<String>) -> Self {
-        Self { provider, model_id: model_id.into() }
+        Self {
+            provider,
+            model_id: model_id.into(),
+        }
     }
 }
 
 #[async_trait]
 impl MemoryExtractor for ProviderExtractor {
-    async fn extract(&self, transcript: &str, existing: &[String]) -> Result<Vec<ExtractedMemory>, String> {
+    async fn extract(
+        &self,
+        transcript: &str,
+        existing: &[String],
+    ) -> Result<Vec<ExtractedMemory>, String> {
         let mut system = String::from(
             r#"You are a memory extraction assistant. Extract important NEW learnings from the conversation that should be remembered for future sessions.
 
@@ -145,7 +172,8 @@ Output ONLY the formatted lines, no other text. If no NEW memories worth extract
 
         let response = call_provider(&*self.provider, &self.model_id, &system, transcript).await?;
 
-        let memories = response.lines()
+        let memories = response
+            .lines()
             .filter(|l| l.contains('|'))
             .filter_map(|line| {
                 let parts: Vec<&str> = line.split('|').collect();
@@ -165,7 +193,12 @@ Output ONLY the formatted lines, no other text. If no NEW memories worth extract
     }
 }
 
-async fn call_provider(provider: &dyn Provider, model_id: &str, system: &str, user_message: &str) -> Result<String, String> {
+async fn call_provider(
+    provider: &dyn Provider,
+    model_id: &str,
+    system: &str,
+    user_message: &str,
+) -> Result<String, String> {
     let msg = Message::user(user_message);
     let mut stream = provider
         .complete(model_id, &[msg], &[], system, "", None)
@@ -174,9 +207,10 @@ async fn call_provider(provider: &dyn Provider, model_id: &str, system: &str, us
 
     let mut out = String::new();
     while let Some(event) = stream.next().await {
-        match event.map_err(|e| format!("stream error: {e}"))? {
-            crate::provider::StreamEvent::TextDelta { text } => out.push_str(&text),
-            _ => {}
+        if let crate::provider::StreamEvent::TextDelta { text } =
+            event.map_err(|e| format!("stream error: {e}"))?
+        {
+            out.push_str(&text);
         }
     }
     Ok(out)

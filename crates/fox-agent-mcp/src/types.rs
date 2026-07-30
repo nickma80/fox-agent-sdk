@@ -242,13 +242,23 @@ pub struct McpPromptContent {
 
 impl McpRequest {
     pub fn new(id: Value, method: impl Into<String>, params: Option<Value>) -> Self {
-        Self { jsonrpc: "2.0".into(), id, method: method.into(), params }
+        Self {
+            jsonrpc: "2.0".into(),
+            id,
+            method: method.into(),
+            params,
+        }
     }
 }
 
 impl McpResponse {
     pub fn ok(id: Value, result: Value) -> Self {
-        Self { jsonrpc: "2.0".into(), id, result: Some(result), error: None }
+        Self {
+            jsonrpc: "2.0".into(),
+            id,
+            result: Some(result),
+            error: None,
+        }
     }
 
     pub fn err(id: Value, code: i32, message: impl Into<String>) -> Self {
@@ -256,7 +266,11 @@ impl McpResponse {
             jsonrpc: "2.0".into(),
             id,
             result: None,
-            error: Some(McpRpcError { code, message: message.into(), data: None }),
+            error: Some(McpRpcError {
+                code,
+                message: message.into(),
+                data: None,
+            }),
         }
     }
 }

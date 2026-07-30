@@ -76,7 +76,11 @@ pub enum StreamEvent {
     /// Anthropic extended thinking). Displayed separately from the final text.
     ThinkingDelta { text: String },
     /// A tool-use request from the model
-    ToolUse { id: String, name: String, input: Value },
+    ToolUse {
+        id: String,
+        name: String,
+        input: Value,
+    },
     /// A partial chunk of a tool-use request's input JSON, emitted while the
     /// arguments are still being streamed by the provider. `index` correlates
     /// deltas belonging to the same tool call within one response; `id` and
@@ -97,7 +101,10 @@ pub enum StreamEvent {
     /// Provider-side compaction notification.
     /// Emitted when the provider automatically compacts the context
     /// (e.g. Anthropic's context compaction).
-    Compaction { trigger: String, pre_tokens: Option<u64> },
+    Compaction {
+        trigger: String,
+        pre_tokens: Option<u64>,
+    },
     /// Connection type information (e.g. "proxy", "direct").
     ConnectionType { connection: String },
     /// Upstream provider routed by the gateway.

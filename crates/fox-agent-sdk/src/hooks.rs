@@ -36,7 +36,7 @@ pub enum HookEvent {
 }
 
 impl HookEvent {
-    pub fn from_str(s: &str) -> Option<Self> {
+    pub fn from_str_name(s: &str) -> Option<Self> {
         match s {
             "SessionStart" | "session-start" => Some(Self::SessionStart),
             "UserPromptSubmit" | "user-prompt-submit" => Some(Self::UserPromptSubmit),
@@ -119,7 +119,9 @@ fn default_continue() -> bool {
 #[derive(Debug, Clone)]
 pub enum HookDecision {
     /// All hooks allowed; optionally modified input/output.
-    Allow { modified_input: Option<serde_json::Value> },
+    Allow {
+        modified_input: Option<serde_json::Value>,
+    },
     /// One or more hooks blocked the action.
     Block { reason: String },
     /// Additional context to inject (e.g. from PreCompact).
@@ -197,25 +199,20 @@ impl HookManager {
                     .extension()
                     .map(|e| e == "json" || e == "jsonc")
                     .unwrap_or(false);
-                if is_json {
-                    if let Ok(content) = std::fs::read_to_string(&path) {
-                        match serde_json::from_str::<HookSettings>(&content) {
-                            Ok(settings) => {
-                                for hook in settings.hooks {
-                                    self.hooks
-                                        .entry(hook.event.clone())
-                                        .or_default()
-                                        .push(hook);
-                                    count += 1;
-                                }
+                if is_json && let Ok(content) = std::fs::read_to_string(&path) {
+                    match serde_json::from_str::<HookSettings>(&content) {
+                        Ok(settings) => {
+                            for hook in settings.hooks {
+                                self.hooks.entry(hook.event.clone()).or_default().push(hook);
+                                count += 1;
                             }
-                            Err(e) => {
-                                tracing::warn!(
-                                    path = %path.display(),
-                                    error = %e,
-                                    "failed to parse hook settings file — skipping"
-                                );
-                            }
+                        }
+                        Err(e) => {
+                            tracing::warn!(
+                                path = %path.display(),
+                                error = %e,
+                                "failed to parse hook settings file — skipping"
+                            );
                         }
                     }
                 }
@@ -249,7 +246,9 @@ impl HookManager {
         ctx: HookContext<'_>,
     ) -> Result<HookDecision, String> {
         let Some(hooks) = self.hooks.get(&event) else {
-            return Ok(HookDecision::Allow { modified_input: None });
+            return Ok(HookDecision::Allow {
+                modified_input: None,
+            });
         };
 
         // Run hooks concurrently up to max_concurrent
@@ -260,12 +259,11 @@ impl HookManager {
         let mut tasks = Vec::new();
         for hook in hooks {
             // Apply matcher filter
-            if let Some(ref matcher) = hook.matcher {
-                if let Some(tool_name) = ctx.tool_name {
-                    if tool_name != matcher.as_str() {
-                        continue;
-                    }
-                }
+            if let Some(ref matcher) = hook.matcher
+                && let Some(tool_name) = ctx.tool_name
+                && tool_name != matcher.as_str()
+            {
+                continue;
             }
 
             let hook = hook.clone();
@@ -390,15 +388,14 @@ impl HookManager {
         }
 
         let mut section = String::from("# Active Hooks\n\n");
-        section.push_str(&format!("{total} hooks registered for the following events:\n"));
+        section.push_str(&format!(
+            "{total} hooks registered for the following events:\n"
+        ));
         let mut events: Vec<&HookEvent> = self.hooks.keys().collect();
         events.sort_by_key(|e| format!("{e:?}"));
         for event in &events {
             if let Some(list) = self.hooks.get(event) {
-                section.push_str(&format!(
-                    "- **{event:?}**: {} hook(s)\n",
-                    list.len()
-                ));
+                section.push_str(&format!("- **{event:?}**: {} hook(s)\n", list.len()));
             }
         }
         section.push('\n');
@@ -413,18 +410,18 @@ mod tests {
     #[test]
     fn test_hook_event_parsing() {
         assert_eq!(
-            HookEvent::from_str("pre-tool-use"),
+            HookEvent::from_str_name("pre-tool-use"),
             Some(HookEvent::PreToolUse)
         );
         assert_eq!(
-            HookEvent::from_str("PreToolUse"),
+            HookEvent::from_str_name("PreToolUse"),
             Some(HookEvent::PreToolUse)
         );
         assert_eq!(
-            HookEvent::from_str("session-start"),
+            HookEvent::from_str_name("session-start"),
             Some(HookEvent::SessionStart)
         );
-        assert_eq!(HookEvent::from_str("unknown"), None);
+        assert_eq!(HookEvent::from_str_name("unknown"), None);
     }
 
     #[test]

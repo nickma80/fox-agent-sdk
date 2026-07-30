@@ -9,19 +9,16 @@
 /// 实时网络测试需要翻墙环境（DuckDuckGo / httpbin.org），默认启用 Mock 模式。
 /// 设置环境变量 `WEB_TOOLS_LIVE=1` 启用真实网络调用。
 use fox_agent_sdk::{
-    AgentBuilder, FoxAgentSdkConfig, MockProvider, Tool,
-    ToolContext, ToolError, ToolOutput, WebFetchTool, WebSearchTool,
+    AgentBuilder, MockProvider, Tool, ToolContext, ToolError, WebFetchTool, WebSearchTool,
 };
 use serde_json::json;
-use std::path::PathBuf;
 use std::sync::Arc;
 
 #[tokio::main]
 async fn main() {
     println!("=== Web Tools 验证示例 ===\n");
 
-    let mut live = std::env::var("WEB_TOOLS_LIVE").unwrap_or_default() == "1";
-    live = true;    
+    let live = true;
     // ───── Part 1: Schema 和参数校验（不依赖网络）─────
     test_schema_and_validation().await;
 
@@ -51,7 +48,12 @@ async fn test_schema_and_validation() {
     // WebSearch schema
     let search = WebSearchTool::new();
     let schema = search.parameters_schema();
-    assert!(schema["required"].as_array().unwrap().contains(&json!("query")));
+    assert!(
+        schema["required"]
+            .as_array()
+            .unwrap()
+            .contains(&json!("query"))
+    );
     assert_eq!(search.name(), "websearch");
     println!("   WebSearchTool.name() = {}", search.name());
     println!("   WebSearchTool.parameters_schema 包含 'query' (required)");
@@ -59,7 +61,12 @@ async fn test_schema_and_validation() {
     // WebFetch schema
     let fetch = WebFetchTool::new();
     let schema2 = fetch.parameters_schema();
-    assert!(schema2["required"].as_array().unwrap().contains(&json!("url")));
+    assert!(
+        schema2["required"]
+            .as_array()
+            .unwrap()
+            .contains(&json!("url"))
+    );
     assert_eq!(fetch.name(), "webfetch");
     println!("   WebFetchTool.name() = {}", fetch.name());
     println!("   WebFetchTool.parameters_schema 包含 'url' (required)");
@@ -75,7 +82,9 @@ async fn test_error_cases() {
     let ctx = dummy_ctx();
 
     // 非法 URL
-    let r = fetch.execute(json!({"url": "not-a-url"}), ctx.clone()).await;
+    let r = fetch
+        .execute(json!({"url": "not-a-url"}), ctx.clone())
+        .await;
     match r {
         Err(ToolError::Message { message }) => {
             assert!(message.contains("http://"), "应提示 URL 格式: {message}");
@@ -86,10 +95,15 @@ async fn test_error_cases() {
 
     // 空 query
     let search = WebSearchTool::new();
-    let r2 = search.execute(json!({"extra": "no-query"}), ctx.clone()).await;
+    let r2 = search
+        .execute(json!({"extra": "no-query"}), ctx.clone())
+        .await;
     match r2 {
         Err(ToolError::Message { message }) => {
-            assert!(message.contains("invalid websearch input"), "应提示参数错误: {message}");
+            assert!(
+                message.contains("invalid websearch input"),
+                "应提示参数错误: {message}"
+            );
             println!("   缺少必填参数 'query' 正确拒绝: {message}");
         }
         other => panic!("预期 ToolError::Message，实际: {:?}", other),
@@ -97,10 +111,7 @@ async fn test_error_cases() {
 
     // 非法 engine 参数
     let r3 = search
-        .execute(
-            json!({"query": "test", "engine": "google"}),
-            ctx.clone(),
-        )
+        .execute(json!({"query": "test", "engine": "google"}), ctx.clone())
         .await;
     match r3 {
         Err(ToolError::Message { message }) => {
@@ -146,10 +157,13 @@ async fn test_live_search() {
     let tool = WebSearchTool::new();
     let ctx = dummy_ctx();
 
-    match tool.execute(
-        json!({"query": "Rust programming language site:rust-lang.org", "num_results": 5}),
-        ctx.clone(),
-    ).await {
+    match tool
+        .execute(
+            json!({"query": "Rust programming language site:rust-lang.org", "num_results": 5}),
+            ctx.clone(),
+        )
+        .await
+    {
         Ok(output) => {
             assert!(!output.is_error, "搜索不应返回错误: {}", output.text);
 
@@ -182,16 +196,16 @@ async fn test_live_fetch() {
     let ctx = dummy_ctx();
 
     // Fetch rust-lang.org as text
-    match tool.execute(
-        json!({"url": "https://www.rust-lang.org", "format": "text", "timeout": 15}),
-        ctx.clone(),
-    ).await {
+    match tool
+        .execute(
+            json!({"url": "https://www.rust-lang.org", "format": "text", "timeout": 15}),
+            ctx.clone(),
+        )
+        .await
+    {
         Ok(output) => {
             assert!(!output.is_error, "webfetch 不应返回错误: {}", output.text);
-            assert!(
-                !output.text.is_empty(),
-                "webfetch 返回内容不应为空"
-            );
+            assert!(!output.text.is_empty(), "webfetch 返回内容不应为空");
             println!("   内容长度: {} bytes", output.text.len());
 
             // 验证页面内容包含 Rust 关键词
@@ -200,7 +214,10 @@ async fn test_live_fetch() {
                 "抓取的 rust-lang.org 页面应包含 'rust':\n{}",
                 &output.text[..200.min(output.text.len())]
             );
-            println!("   首 200 字符: {}", &output.text[..200.min(output.text.len())]);
+            println!(
+                "   首 200 字符: {}",
+                &output.text[..200.min(output.text.len())]
+            );
             println!("   ✓ 已验证 rust-lang.org 成功抓取");
         }
         Err(e) => {
@@ -210,13 +227,23 @@ async fn test_live_fetch() {
     }
 
     // Fetch rust-lang.org as markdown
-    match tool.execute(
-        json!({"url": "https://www.rust-lang.org", "format": "markdown", "timeout": 15}),
-        ctx.clone(),
-    ).await {
+    match tool
+        .execute(
+            json!({"url": "https://www.rust-lang.org", "format": "markdown", "timeout": 15}),
+            ctx.clone(),
+        )
+        .await
+    {
         Ok(output) => {
-            assert!(!output.is_error, "webfetch markdown 不应返回错误: {}", output.text);
-            assert!(!output.text.is_empty(), "webfetch markdown 返回内容不应为空");
+            assert!(
+                !output.is_error,
+                "webfetch markdown 不应返回错误: {}",
+                output.text
+            );
+            assert!(
+                !output.text.is_empty(),
+                "webfetch markdown 返回内容不应为空"
+            );
             println!("   markdown 长度: {} bytes", output.text.len());
             assert!(
                 output.text.to_lowercase().contains("rust"),

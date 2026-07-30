@@ -7,8 +7,8 @@
 //! explicitly allows or denies it.
 
 use fox_agent_core::{
-    ApprovalCacheEntry, ApprovalScope, PermissionAuditEntry,
-    PermissionRequest, PermissionResult, SafetyConfig,
+    ApprovalCacheEntry, ApprovalScope, PermissionAuditEntry, PermissionRequest, PermissionResult,
+    SafetyConfig,
 };
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -78,28 +78,28 @@ impl ApprovalManager {
         // Check turn cache
         {
             let cache = self.turn_cache.lock().await;
-            if let Some(entry) = cache.get(tool_name) {
-                if !self.is_expired(entry, now) {
-                    return Some(entry.decision.clone());
-                }
+            if let Some(entry) = cache.get(tool_name)
+                && !self.is_expired(entry, now)
+            {
+                return Some(entry.decision.clone());
             }
         }
         // Check session cache
         {
             let cache = self.session_cache.lock().await;
-            if let Some(entry) = cache.get(tool_name) {
-                if !self.is_expired(entry, now) {
-                    return Some(entry.decision.clone());
-                }
+            if let Some(entry) = cache.get(tool_name)
+                && !self.is_expired(entry, now)
+            {
+                return Some(entry.decision.clone());
             }
         }
         // Check workspace cache
         {
             let cache = self.workspace_cache.lock().await;
-            if let Some(entry) = cache.get(tool_name) {
-                if !self.is_expired(entry, now) {
-                    return Some(entry.decision.clone());
-                }
+            if let Some(entry) = cache.get(tool_name)
+                && !self.is_expired(entry, now)
+            {
+                return Some(entry.decision.clone());
             }
         }
         None
@@ -127,13 +127,16 @@ impl ApprovalManager {
 
         match scope {
             ApprovalScope::ThisTurn => {
-                self.insert_or_update(&self.turn_cache, tool_name, entry).await;
+                self.insert_or_update(&self.turn_cache, tool_name, entry)
+                    .await;
             }
             ApprovalScope::ThisSession => {
-                self.insert_or_update(&self.session_cache, tool_name, entry).await;
+                self.insert_or_update(&self.session_cache, tool_name, entry)
+                    .await;
             }
             ApprovalScope::ThisWorkspace => {
-                self.insert_or_update(&self.workspace_cache, tool_name, entry).await;
+                self.insert_or_update(&self.workspace_cache, tool_name, entry)
+                    .await;
             }
         }
     }
@@ -171,9 +174,8 @@ impl ApprovalManager {
         }
         let mut f = std::fs::File::create(path)?;
         for entry in log.iter() {
-            let line = serde_json::to_string(entry).map_err(|e| {
-                std::io::Error::new(std::io::ErrorKind::InvalidData, e.to_string())
-            })?;
+            let line = serde_json::to_string(entry)
+                .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e.to_string()))?;
             let _ = std::io::Write::write_fmt(&mut f, format_args!("{line}\n"));
         }
         Ok(())

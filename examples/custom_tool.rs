@@ -5,8 +5,8 @@
 /// - Registering a custom tool with `AgentBuilder::with_tool()`
 /// - Using `MockProvider` for deterministic testing
 use fox_agent_sdk::{
-    AgentBuilder, AgentEvent, FoxAgentSdkConfig, MockProvider, StreamEvent,
-    Tool, ToolContext, ToolError, ToolOutput, TurnOutcome,
+    AgentBuilder, AgentEvent, FoxAgentSdkConfig, MockProvider, StreamEvent, Tool, ToolContext,
+    ToolError, ToolOutput, TurnOutcome,
 };
 use serde_json::{Value, json};
 use std::path::PathBuf;
@@ -75,7 +75,7 @@ async fn main() {
     let cfg = FoxAgentSdkConfig::load_from_file(project_root.join("agent.toml"))
         .unwrap_or_else(|_| FoxAgentSdkConfig::default());
 
-    let mut agent = AgentBuilder::new()
+    let agent = AgentBuilder::new()
         .working_dir(&project_root)
         .sdk_config(cfg)
         .with_global_agents_md_path(project_root.join("AGENTS.md"))
@@ -88,10 +88,7 @@ async fn main() {
 
     // ── Run agent ──
     let (tx, mut rx) = tokio::sync::mpsc::channel::<AgentEvent>(32);
-    let outcome = agent
-        .run_once_streaming("reverse hi", &tx)
-        .await
-        .unwrap();
+    let outcome = agent.run_once_streaming("reverse hi", &tx).await.unwrap();
 
     let mut saw_tool = false;
     for _ in 0..16 {

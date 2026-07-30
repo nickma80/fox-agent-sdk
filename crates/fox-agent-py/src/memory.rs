@@ -4,8 +4,8 @@
 //! to Python developers.
 
 use fox_agent_core::{
-    MemoryCategory, MemoryConfig, MemoryEntry, MemoryManager as CoreMemoryManager,
-    MemoryScope, RecallMode,
+    MemoryCategory, MemoryConfig, MemoryEntry, MemoryManager as CoreMemoryManager, MemoryScope,
+    RecallMode,
 };
 use pyo3::prelude::*;
 use pyo3::types::PyDict;
@@ -65,7 +65,7 @@ impl PyMemoryConfig {
                 return Err(pyo3::exceptions::PyValueError::new_err(format!(
                     "unknown auto_extract_scope '{}', expected 'Session', 'Project', or 'Global'",
                     other
-                )))
+                )));
             }
         };
 
@@ -81,8 +81,16 @@ impl PyMemoryConfig {
                 injection_max_chars,
                 injection_max_per_category,
                 verify_relevance,
-                retention_days: if retention_days > 0 { Some(retention_days as u64) } else { None },
-                memory_size_limit: if memory_size_limit > 0 { Some(memory_size_limit) } else { None },
+                retention_days: if retention_days > 0 {
+                    Some(retention_days as u64)
+                } else {
+                    None
+                },
+                memory_size_limit: if memory_size_limit > 0 {
+                    Some(memory_size_limit)
+                } else {
+                    None
+                },
                 ..Default::default()
             },
         })
@@ -333,15 +341,12 @@ impl PyMemoryManager {
 
     /// Forget (deactivate) a memory by ID.
     fn forget(&self, id: String) -> PyResult<bool> {
-        self.inner.forget(&id).map_err(|e| {
-            pyo3::exceptions::PyRuntimeError::new_err(format!("forget failed: {}", e))
-        })
+        self.inner
+            .forget(&id)
+            .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(format!("forget failed: {}", e)))
     }
 
     fn __repr__(&self) -> String {
-        format!(
-            "MemoryManager(semantic={})",
-            self.inner.semantic_enabled()
-        )
+        format!("MemoryManager(semantic={})", self.inner.semantic_enabled())
     }
 }

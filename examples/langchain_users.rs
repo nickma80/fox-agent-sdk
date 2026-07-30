@@ -20,11 +20,10 @@
 /// 使用 MockProvider，无需真实 LLM 凭证即可运行。
 use fox_agent_sdk::{
     AgentBuilder, AgentEvent, AgentReport, FoxAgentSdkConfig, MockProvider, PermissionResult,
-    PlanItem, PlanPriority, PlanStatus, StreamEvent,
-    SwarmCoordinator, SwarmSupervisor, Tool, ToolContext, ToolError,
-    ToolOutput, TurnOutcome, WorkerStatus,
+    PlanItem, PlanPriority, PlanStatus, StreamEvent, SwarmCoordinator, SwarmSupervisor, Tool,
+    ToolContext, ToolError, ToolOutput, TurnOutcome, WorkerStatus,
 };
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -170,7 +169,7 @@ async fn demo_agent_builder() {
     let cfg = FoxAgentSdkConfig::load_from_file(project_root.join("agent.toml"))
         .unwrap_or_else(|_| FoxAgentSdkConfig::default());
 
-    let mut agent = AgentBuilder::new()
+    let agent = AgentBuilder::new()
         .working_dir(&project_root)
         .sdk_config(cfg)
         .with_global_agents_md_path(project_root.join("AGENTS.md"))
@@ -198,7 +197,8 @@ async fn demo_agent_builder() {
         }
     });
 
-    let outcome = agent.run_once_streaming("东京今天天气怎么样?", &tx)
+    let outcome = agent
+        .run_once_streaming("东京今天天气怎么样?", &tx)
         .await
         .expect("agent run");
     drop(tx);
@@ -237,8 +237,12 @@ async fn demo_streaming_events() {
         StreamEvent::MessageStop { stop_reason: None },
     ]);
     provider.push_script(vec![
-        StreamEvent::TextDelta { text: "The result ".into() },
-        StreamEvent::TextDelta { text: "is 16.".into() },
+        StreamEvent::TextDelta {
+            text: "The result ".into(),
+        },
+        StreamEvent::TextDelta {
+            text: "is 16.".into(),
+        },
         StreamEvent::MessageStop { stop_reason: None },
     ]);
 
@@ -246,7 +250,7 @@ async fn demo_streaming_events() {
     let cfg = FoxAgentSdkConfig::load_from_file(project_root.join("agent.toml"))
         .unwrap_or_else(|_| FoxAgentSdkConfig::default());
 
-    let mut agent = AgentBuilder::new()
+    let agent = AgentBuilder::new()
         .working_dir(&project_root)
         .sdk_config(cfg)
         .with_global_agents_md_path(project_root.join("AGENTS.md"))
@@ -261,9 +265,7 @@ async fn demo_streaming_events() {
     let (tx, mut rx) = tokio::sync::mpsc::channel::<AgentEvent>(64);
 
     let handle = tokio::spawn(async move {
-        let _ = agent
-            .run_once_streaming("Calculate (3 + 5) * 2", &tx)
-            .await;
+        let _ = agent.run_once_streaming("Calculate (3 + 5) * 2", &tx).await;
     });
 
     // ── 消费事件流 (对应 async for event in ...) ──
@@ -281,13 +283,18 @@ async fn demo_streaming_events() {
             }
             // 对应 on_tool_end
             AgentEvent::ToolCallEnd { output, .. } => {
-                println!("  [tool-end]   result: {} (error: {})",
-                    &output.text[..output.text.len().min(80)], output.is_error);
+                println!(
+                    "  [tool-end]   result: {} (error: {})",
+                    &output.text[..output.text.len().min(80)],
+                    output.is_error
+                );
             }
             // 对应 usage_metadata
             AgentEvent::ModelUsage { usage } => {
-                println!("\n  [usage] input={} output={} total={}",
-                    usage.input_tokens, usage.output_tokens, usage.total_tokens);
+                println!(
+                    "\n  [usage] input={} output={} total={}",
+                    usage.input_tokens, usage.output_tokens, usage.total_tokens
+                );
             }
             AgentEvent::Error { error } => {
                 eprintln!("\n  [error] {error}");
@@ -354,15 +361,25 @@ async fn demo_swarm() {
         ])
         .await;
 
-    println!("[plan] {} tasks with dependency chain", coordinator.shared_plan.read().await.items.len());
+    println!(
+        "[plan] {} tasks with dependency chain",
+        coordinator.shared_plan.read().await.items.len()
+    );
 
     // ── 注册 Worker (对应 add_node("worker", ...)) ──
-    coordinator.spawn("researcher", "weather & research expert").await;
-    coordinator.spawn("analyst", "calculation & reporting expert").await;
+    coordinator
+        .spawn("researcher", "weather & research expert")
+        .await;
+    coordinator
+        .spawn("analyst", "calculation & reporting expert")
+        .await;
     println!("[workers] researcher + analyst registered\n");
 
     // ── Worker 1 领取并完成 research ──
-    let task = coordinator.assign_next_runnable_task("researcher").await.unwrap();
+    let task = coordinator
+        .assign_next_runnable_task("researcher")
+        .await
+        .unwrap();
     println!("[researcher] assigned: {}", task.id);
     coordinator
         .report_completion("researcher", &task.id, "Tokyo: 22°C/24°C/21°C, all sunny")
@@ -372,7 +389,10 @@ async fn demo_swarm() {
 
     // ── Worker 1 尝试领取 calculate (被 blocked_by 阻塞时跳过) ──
     // 对应 LangGraph conditional edge 的判断逻辑
-    let task = coordinator.assign_next_runnable_task("researcher").await.unwrap();
+    let task = coordinator
+        .assign_next_runnable_task("researcher")
+        .await
+        .unwrap();
     println!("[researcher] assigned: {}", task.id);
 
     // 模拟失败 → 由 Supervisor 处理
@@ -386,7 +406,10 @@ async fn demo_swarm() {
     println!("[supervisor] failure handled: {handled} (task reset & retried)\n");
 
     // ── Worker 2 接管失败任务 ──
-    let task = coordinator.assign_next_runnable_task("analyst").await.unwrap();
+    let task = coordinator
+        .assign_next_runnable_task("analyst")
+        .await
+        .unwrap();
     println!("[analyst] assigned: {}", task.id);
     coordinator
         .report_completion("analyst", &task.id, "Budget: ¥36,000 total")
@@ -395,10 +418,17 @@ async fn demo_swarm() {
     println!("[analyst] completed: {}", task.id);
 
     // ── Worker 2 继续完成 summary ──
-    let task = coordinator.assign_next_runnable_task("analyst").await.unwrap();
+    let task = coordinator
+        .assign_next_runnable_task("analyst")
+        .await
+        .unwrap();
     println!("[analyst] assigned: {}", task.id);
     coordinator
-        .report_completion("analyst", &task.id, "Trip summary: 3 sunny days, ¥36,000 budget")
+        .report_completion(
+            "analyst",
+            &task.id,
+            "Trip summary: 3 sunny days, ¥36,000 budget",
+        )
         .await
         .unwrap();
     println!("[analyst] completed: {}\n", task.id);
@@ -438,7 +468,9 @@ async fn demo_permission_hook() {
         StreamEvent::MessageStop { stop_reason: None },
     ]);
     provider.push_script(vec![
-        StreamEvent::TextDelta { text: "100 / 7 ≈ 14.29".into() },
+        StreamEvent::TextDelta {
+            text: "100 / 7 ≈ 14.29".into(),
+        },
         StreamEvent::MessageStop { stop_reason: None },
     ]);
 
@@ -448,7 +480,7 @@ async fn demo_permission_hook() {
     let cfg = FoxAgentSdkConfig::load_from_file(project_root.join("agent.toml"))
         .unwrap_or_else(|_| FoxAgentSdkConfig::default());
 
-    let mut agent = AgentBuilder::new()
+    let agent = AgentBuilder::new()
         .working_dir(&project_root)
         .sdk_config(cfg)
         .with_global_agents_md_path(project_root.join("AGENTS.md"))
@@ -477,11 +509,12 @@ async fn demo_permission_hook() {
 
     // 使用 streaming 模式避免 channel 死锁
     let (tx, mut rx) = tokio::sync::mpsc::channel::<AgentEvent>(64);
-    let handle = tokio::spawn(async move {
-        while let Some(_ev) = rx.recv().await {}
-    });
+    let handle = tokio::spawn(async move { while let Some(_ev) = rx.recv().await {} });
 
-    let outcome = agent.run_once_streaming("Calculate 100 / 7", &tx).await.expect("run");
+    let outcome = agent
+        .run_once_streaming("Calculate 100 / 7", &tx)
+        .await
+        .expect("run");
     drop(tx);
     handle.await.ok();
 
@@ -582,5 +615,7 @@ async fn main() {
     demo_mcp_explanation().await;
 
     println!("\n══════ 所有演示完成 ══════");
-    println!("更多示例: examples/simple_agent.rs, examples/custom_tool.rs, examples/swarm_workflow.rs");
+    println!(
+        "更多示例: examples/simple_agent.rs, examples/custom_tool.rs, examples/swarm_workflow.rs"
+    );
 }

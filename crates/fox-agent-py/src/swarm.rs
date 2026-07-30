@@ -5,10 +5,9 @@
 
 use fox_agent_sdk::{
     AgentReport as RustAgentReport, RetryPolicy as RustRetryPolicy,
-    SwarmCoordinator as RustSwarmCoordinator,
-    SwarmSupervisor as RustSwarmSupervisor,
-    SwarmSummaryReport as RustSwarmSummaryReport,
-    WorkerHandle as RustWorkerHandle, WorkerStatus as RustWorkerStatus,
+    SwarmCoordinator as RustSwarmCoordinator, SwarmSummaryReport as RustSwarmSummaryReport,
+    SwarmSupervisor as RustSwarmSupervisor, WorkerHandle as RustWorkerHandle,
+    WorkerStatus as RustWorkerStatus,
 };
 use pyo3::prelude::*;
 use std::sync::Arc;
@@ -200,10 +199,7 @@ impl PySwarmSummaryReport {
     fn __repr__(&self) -> String {
         format!(
             "SwarmSummaryReport(total={}, completed={}, failed={}, timed_out={})",
-            self.inner.total_workers,
-            self.inner.completed,
-            self.inner.failed,
-            self.inner.timed_out
+            self.inner.total_workers, self.inner.completed, self.inner.failed, self.inner.timed_out
         )
     }
 }
@@ -389,9 +385,12 @@ impl PySwarmCoordinator {
         pyo3_async_runtimes::tokio::future_into_py::<_, Py<PyAny>>(py, async move {
             let item = coordinator.assign_next_runnable_task(&worker_id).await;
             Python::with_gil(|py| match item {
-                Some(plan_item) => {
-                    Ok(plan_item.content.into_pyobject(py).unwrap().into_any().unbind())
-                }
+                Some(plan_item) => Ok(plan_item
+                    .content
+                    .into_pyobject(py)
+                    .unwrap()
+                    .into_any()
+                    .unbind()),
                 None => Ok(pynone(py)),
             })
         })
@@ -407,7 +406,9 @@ impl PySwarmCoordinator {
     ) -> PyResult<Bound<'py, PyAny>> {
         let coordinator = self.inner.clone();
         pyo3_async_runtimes::tokio::future_into_py::<_, Py<PyAny>>(py, async move {
-            let report = coordinator.report_completion(&worker_id, &task_id, summary).await;
+            let report = coordinator
+                .report_completion(&worker_id, &task_id, summary)
+                .await;
             Python::with_gil(|py| match report {
                 Some(r) => {
                     let obj = PyAgentReport::from(r).into_pyobject(py).unwrap();
@@ -501,7 +502,9 @@ impl PySwarmSupervisor {
         pyo3_async_runtimes::tokio::future_into_py::<_, Py<PyAny>>(py, async move {
             let report = supervisor.generate_summary().await;
             Python::with_gil(|py| {
-                let obj = PySwarmSummaryReport::from(report).into_pyobject(py).unwrap();
+                let obj = PySwarmSummaryReport::from(report)
+                    .into_pyobject(py)
+                    .unwrap();
                 Ok(obj.into_any().unbind())
             })
         })
@@ -513,7 +516,9 @@ impl PySwarmSupervisor {
         pyo3_async_runtimes::tokio::future_into_py::<_, Py<PyAny>>(py, async move {
             let report = supervisor.await_completion().await;
             Python::with_gil(|py| {
-                let obj = PySwarmSummaryReport::from(report).into_pyobject(py).unwrap();
+                let obj = PySwarmSummaryReport::from(report)
+                    .into_pyobject(py)
+                    .unwrap();
                 Ok(obj.into_any().unbind())
             })
         })

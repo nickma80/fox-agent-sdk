@@ -328,8 +328,9 @@ impl PlanningStore for FilePlanningStore {
     fn delete_snapshot(&self, session_id: &str, scope: PlanningScope) -> Result<(), String> {
         let path = self.snapshot_path(session_id, scope);
         if path.exists() {
-            fs::remove_file(&path)
-                .map_err(|e| format!("failed to delete planning snapshot {}: {e}", path.display()))?;
+            fs::remove_file(&path).map_err(|e| {
+                format!("failed to delete planning snapshot {}: {e}", path.display())
+            })?;
         }
         Ok(())
     }
@@ -401,7 +402,11 @@ pub fn save_todos_with_store(
     update_session_snapshot(store, session_id, Some("todo"), |snapshot| {
         if merge {
             for incoming in todos {
-                if let Some(existing) = snapshot.todos.iter_mut().find(|item| item.id == incoming.id) {
+                if let Some(existing) = snapshot
+                    .todos
+                    .iter_mut()
+                    .find(|item| item.id == incoming.id)
+                {
                     *existing = incoming;
                 } else {
                     snapshot.todos.push(incoming);
@@ -442,7 +447,12 @@ pub fn save_plan_with_store(
         snapshot.plan.version += 1;
         if merge {
             for incoming in items {
-                if let Some(existing) = snapshot.plan.items.iter_mut().find(|item| item.id == incoming.id) {
+                if let Some(existing) = snapshot
+                    .plan
+                    .items
+                    .iter_mut()
+                    .find(|item| item.id == incoming.id)
+                {
                     *existing = incoming;
                 } else {
                     snapshot.plan.items.push(incoming);
@@ -492,19 +502,26 @@ pub fn save_goals_with_store(
     merge: bool,
     source: Option<&str>,
 ) -> Vec<Goal> {
-    update_snapshot(store, snapshot_session_id(session_id, scope.clone()), scope.into(), source, |snapshot| {
-        if merge {
-            for incoming in goals {
-                if let Some(existing) = snapshot.goals.iter_mut().find(|g| g.id == incoming.id) {
-                    *existing = incoming;
-                } else {
-                    snapshot.goals.push(incoming);
+    update_snapshot(
+        store,
+        snapshot_session_id(session_id, scope.clone()),
+        scope.into(),
+        source,
+        |snapshot| {
+            if merge {
+                for incoming in goals {
+                    if let Some(existing) = snapshot.goals.iter_mut().find(|g| g.id == incoming.id)
+                    {
+                        *existing = incoming;
+                    } else {
+                        snapshot.goals.push(incoming);
+                    }
                 }
+            } else {
+                snapshot.goals = goals;
             }
-        } else {
-            snapshot.goals = goals;
-        }
-    })
+        },
+    )
     .map(|snapshot| snapshot.goals)
     .unwrap_or_default()
 }
@@ -580,10 +597,16 @@ pub fn render_planning_context_with_store(store: &dyn PlanningStore, session_id:
     }
 
     if !session_goals.is_empty() {
-        sections.push(format!("Session goals:\n{}", render_goal_lines(&session_goals)));
+        sections.push(format!(
+            "Session goals:\n{}",
+            render_goal_lines(&session_goals)
+        ));
     }
     if !global_goals.is_empty() {
-        sections.push(format!("Global goals:\n{}", render_goal_lines(&global_goals)));
+        sections.push(format!(
+            "Global goals:\n{}",
+            render_goal_lines(&global_goals)
+        ));
     }
 
     sections.join("\n\n")
@@ -663,7 +686,8 @@ mod tests {
 
     #[test]
     fn file_planning_store_roundtrip_persists_session_snapshot() {
-        let root = std::env::temp_dir().join(format!("fox-planning-store-{}", uuid::Uuid::new_v4()));
+        let root =
+            std::env::temp_dir().join(format!("fox-planning-store-{}", uuid::Uuid::new_v4()));
         let store = FilePlanningStore::new(root.clone());
         let snapshot = PlanningStateSnapshot {
             session_id: "s1".to_string(),

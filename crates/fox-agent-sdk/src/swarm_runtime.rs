@@ -1,6 +1,10 @@
-use fox_agent_core::{FoxAgentSdkConfig, Model, SkillRegistry, TurnOutcome, AgentError, AgentEventTx, PlanStatus};
-use fox_agent_swarm::{SwarmCoordinator, SwarmMessage, SwarmMessageKind, WorkerHandle, WorkerStatus, AgentReport};
-use fox_agent_tools::{ToolExecutor, VersionedPlan, PlanItem, save_plan};
+use fox_agent_core::{
+    AgentError, AgentEventTx, FoxAgentSdkConfig, Model, PlanStatus, SkillRegistry, TurnOutcome,
+};
+use fox_agent_swarm::{
+    AgentReport, SwarmCoordinator, SwarmMessage, SwarmMessageKind, WorkerHandle, WorkerStatus,
+};
+use fox_agent_tools::{PlanItem, ToolExecutor, VersionedPlan, save_plan};
 use std::sync::Arc;
 use tokio::sync::RwLock;
 
@@ -33,7 +37,11 @@ impl SwarmRuntime {
         let session_id = base_harness.session_id().to_string();
         let store = base_harness.planning_store.clone();
         coordinator.set_planning_store(store, session_id).await;
-        Self { coordinator, model, base_harness }
+        Self {
+            coordinator,
+            model,
+            base_harness,
+        }
     }
 
     pub fn harness(&self) -> &Harness {
@@ -59,10 +67,18 @@ impl SwarmRuntime {
     pub async fn fork_agent(&self) -> Agent {
         let forked_model = self.model.fork();
         let forked_harness = self.base_harness.fork_session_state().await;
-        Agent::new(forked_model, forked_harness, Arc::new(tokio::sync::RwLock::new(None)))
+        Agent::new(
+            forked_model,
+            forked_harness,
+            Arc::new(tokio::sync::RwLock::new(None)),
+        )
     }
 
-    pub async fn spawn_worker(&self, worker_id: impl Into<String>, prompt: impl Into<String>) -> WorkerHandle {
+    pub async fn spawn_worker(
+        &self,
+        worker_id: impl Into<String>,
+        prompt: impl Into<String>,
+    ) -> WorkerHandle {
         self.coordinator.spawn(worker_id, prompt).await
     }
 
@@ -91,7 +107,11 @@ pub struct WorkerAgent {
 
 impl WorkerAgent {
     pub fn new(agent: Agent, coordinator: Arc<SwarmCoordinator>, worker_id: String) -> Self {
-        Self { agent, coordinator, worker_id }
+        Self {
+            agent,
+            coordinator,
+            worker_id,
+        }
     }
 
     pub async fn drain_swarm_messages(&self) -> Vec<SwarmMessage> {
@@ -107,7 +127,12 @@ impl WorkerAgent {
                 SwarmMessageKind::Direct => format!("[swarm dm from {from}]"),
             };
             let interrupt = format!("{prefix}\n\n{}", msg.content);
-            self.agent.harness().interrupt_manager.write().await.queue_soft_interrupt(interrupt, false);
+            self.agent
+                .harness()
+                .interrupt_manager
+                .write()
+                .await
+                .queue_soft_interrupt(interrupt, false);
         }
     }
 
@@ -115,11 +140,21 @@ impl WorkerAgent {
         self.coordinator.broadcast(&self.worker_id, content).await
     }
 
-    pub async fn dm(&self, to_worker_id: impl Into<String>, content: impl Into<String>) -> Option<SwarmMessage> {
-        self.coordinator.dm(&self.worker_id, &to_worker_id.into(), content).await
+    pub async fn dm(
+        &self,
+        to_worker_id: impl Into<String>,
+        content: impl Into<String>,
+    ) -> Option<SwarmMessage> {
+        self.coordinator
+            .dm(&self.worker_id, &to_worker_id.into(), content)
+            .await
     }
 
-    pub async fn run_once_streaming(&mut self, user_message: &str, event_tx: &SwarmAgentTx) -> Result<TurnOutcome, AgentError> {
+    pub async fn run_once_streaming(
+        &mut self,
+        user_message: &str,
+        event_tx: &SwarmAgentTx,
+    ) -> Result<TurnOutcome, AgentError> {
         self.inject_inbox_into_session().await;
         self.agent.run_once_streaming(user_message, event_tx).await
     }
@@ -127,27 +162,57 @@ impl WorkerAgent {
     fn sync_plan_to_session(&self) {
         let session_id = self.agent.harness().session_id();
         let items: Vec<PlanItem> = {
-            let Ok(guard) = self.coordinator.shared_plan.try_read() else { return };
-            guard.items.iter().map(|i| PlanItem {
-                id: i.id.clone(), content: i.content.clone(), status: PlanStatus::Pending,
-                priority: i.priority, assigned_to: None, blocked_by: i.blocked_by.clone(),
-            }).collect()
+            let Ok(guard) = self.coordinator.shared_plan.try_read() else {
+                return;
+            };
+            guard
+                .items
+                .iter()
+                .map(|i| PlanItem {
+                    id: i.id.clone(),
+                    content: i.content.clone(),
+                    status: PlanStatus::Pending,
+                    priority: i.priority,
+                    assigned_to: None,
+                    blocked_by: i.blocked_by.clone(),
+                })
+                .collect()
         };
-        if !items.is_empty() { save_plan(session_id, items, false); }
+        if !items.is_empty() {
+            save_plan(session_id, items, false);
+        }
     }
 
-    pub async fn try_assign_and_run(&mut self, event_tx: &SwarmAgentTx) -> Result<TurnOutcome, AgentError> {
+    pub async fn try_assign_and_run(
+        &mut self,
+        event_tx: &SwarmAgentTx,
+    ) -> Result<TurnOutcome, AgentError> {
         self.sync_plan_to_session();
-        let plan_item = self.coordinator.assign_next_runnable_task(&self.worker_id).await;
+        let plan_item = self
+            .coordinator
+            .assign_next_runnable_task(&self.worker_id)
+            .await;
         let prompt = match plan_item {
-            Some(item) => format!("You are a swarm worker (id: {}).\n\n{}\n\nComplete this task autonomously.", self.worker_id, item.content),
-            None => format!("You are a swarm worker (id: {}).\n\nNo runnable tasks available. Wait or broadcast status.", self.worker_id),
+            Some(item) => format!(
+                "You are a swarm worker (id: {}).\n\n{}\n\nComplete this task autonomously.",
+                self.worker_id, item.content
+            ),
+            None => format!(
+                "You are a swarm worker (id: {}).\n\nNo runnable tasks available. Wait or broadcast status.",
+                self.worker_id
+            ),
         };
         self.run_once_streaming(&prompt, event_tx).await
     }
 
-    pub async fn report_completion(&self, task_id: &str, summary: impl Into<String>) -> Option<AgentReport> {
-        self.coordinator.report_completion(&self.worker_id, task_id, summary).await
+    pub async fn report_completion(
+        &self,
+        task_id: &str,
+        summary: impl Into<String>,
+    ) -> Option<AgentReport> {
+        self.coordinator
+            .report_completion(&self.worker_id, task_id, summary)
+            .await
     }
 
     pub async fn worker_status(&self) -> Option<WorkerStatus> {
@@ -155,6 +220,10 @@ impl WorkerAgent {
         workers.get(&self.worker_id).map(|h| h.status.clone())
     }
 
-    pub fn harness(&self) -> &Harness { self.agent.harness() }
-    pub fn model(&self) -> &Arc<dyn Model> { self.agent.model() }
+    pub fn harness(&self) -> &Harness {
+        self.agent.harness()
+    }
+    pub fn model(&self) -> &Arc<dyn Model> {
+        self.agent.model()
+    }
 }

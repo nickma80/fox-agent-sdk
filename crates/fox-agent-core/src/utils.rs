@@ -88,7 +88,10 @@ pub fn format_truncated(s: &str, max_chars: usize) -> (String, String) {
     }
     let truncated = truncate_to_chars(s, max_chars);
     let remaining = s.chars().count() - truncated.chars().count();
-    (truncated.to_string(), format!("...[truncated {} chars]", remaining))
+    (
+        truncated.to_string(),
+        format!("...[truncated {} chars]", remaining),
+    )
 }
 
 #[cfg(test)]
@@ -120,7 +123,7 @@ mod tests {
     #[test]
     fn truncate_to_bytes_boundary() {
         // '状' = bytes [0..3)
-        assert_eq!(truncate_to_bytes("状态", 1), "");  // inside '状'
+        assert_eq!(truncate_to_bytes("状态", 1), ""); // inside '状'
         assert_eq!(truncate_to_bytes("状态", 3), "状");
         assert_eq!(truncate_to_bytes("状态", 6), "状态");
     }

@@ -145,8 +145,11 @@ impl Tool for ArtifactReadTool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use fox_agent_core::{ArtifactProducer, ArtifactRetentionClass, ArtifactStoreConfig, ArtifactType, ToolExecutionMode};
     use crate::artifact_store::FileArtifactStore;
+    use fox_agent_core::{
+        ArtifactProducer, ArtifactRetentionClass, ArtifactStoreConfig, ArtifactType,
+        ToolExecutionMode,
+    };
 
     #[tokio::test]
     async fn artifact_read_tool_reads_paginated_content() {
@@ -157,32 +160,41 @@ mod tests {
         cfg.gc_after_write = false;
         let store = Arc::new(FileArtifactStore::new(cfg, root.join("artifacts")));
 
-        let record = store.put_text(
-            "s1",
-            ArtifactProducer::Tool { tool_name: "read".to_string() },
-            ArtifactType::FileChunk,
-            ArtifactRetentionClass::Ephemeral,
-            "abcdefghij".to_string(),
-            json!({}),
-        ).await.unwrap().record;
+        let record = store
+            .put_text(
+                "s1",
+                ArtifactProducer::Tool {
+                    tool_name: "read".to_string(),
+                },
+                ArtifactType::FileChunk,
+                ArtifactRetentionClass::Ephemeral,
+                "abcdefghij".to_string(),
+                json!({}),
+            )
+            .await
+            .unwrap()
+            .record;
 
         let tool = ArtifactReadTool::new(store);
-        let output = tool.execute(
-            json!({
-                "artifact_id": record.artifact_id,
-                "offset_chars": 2,
-                "limit_chars": 4
-            }),
-            ToolContext {
-                session_id: "s1".to_string(),
-                message_id: "m1".to_string(),
-                tool_call_id: "tc1".to_string(),
-                working_dir: None,
-                execution_mode: ToolExecutionMode::Foreground,
-                graceful_shutdown_requested: false,
-                progress_tx: None,
-            },
-        ).await.unwrap();
+        let output = tool
+            .execute(
+                json!({
+                    "artifact_id": record.artifact_id,
+                    "offset_chars": 2,
+                    "limit_chars": 4
+                }),
+                ToolContext {
+                    session_id: "s1".to_string(),
+                    message_id: "m1".to_string(),
+                    tool_call_id: "tc1".to_string(),
+                    working_dir: None,
+                    execution_mode: ToolExecutionMode::Foreground,
+                    graceful_shutdown_requested: false,
+                    progress_tx: None,
+                },
+            )
+            .await
+            .unwrap();
 
         assert!(output.text.contains("Range: chars 2..6 of 10"));
         assert!(output.text.ends_with("cdef"));

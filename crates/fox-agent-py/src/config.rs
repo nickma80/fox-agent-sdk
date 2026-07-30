@@ -4,8 +4,8 @@
 //! TOML serialization support.
 
 use fox_agent_core::{
-    AuthConfig as RustAuthConfig, FoxAgentSdkConfig, ProviderConfig as RustProviderConfig,
-    DefaultSafetyPolicy, SafetyConfig,
+    AuthConfig as RustAuthConfig, DefaultSafetyPolicy, FoxAgentSdkConfig,
+    ProviderConfig as RustProviderConfig, SafetyConfig,
 };
 use pyo3::prelude::*;
 
@@ -51,12 +51,7 @@ impl PyProviderConfig {
     /// Create a custom provider configuration.
     #[staticmethod]
     #[pyo3(signature = (provider_name, base_url, api_key, *, timeout_secs = 120))]
-    fn custom(
-        provider_name: String,
-        base_url: String,
-        api_key: String,
-        timeout_secs: u64,
-    ) -> Self {
+    fn custom(provider_name: String, base_url: String, api_key: String, timeout_secs: u64) -> Self {
         Self {
             inner: RustProviderConfig {
                 provider_name,
@@ -104,7 +99,7 @@ impl PySafetyConfig {
                 return Err(pyo3::exceptions::PyValueError::new_err(format!(
                     "unknown default_policy '{}', expected 'allow', 'confirm', or 'deny'",
                     other
-                )))
+                )));
             }
         };
 

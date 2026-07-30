@@ -11,6 +11,12 @@ impl InvalidTool {
     }
 }
 
+impl Default for InvalidTool {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 #[derive(Deserialize)]
 struct InvalidInput {
     #[serde(default)]
@@ -46,12 +52,15 @@ impl Tool for InvalidTool {
     }
 
     async fn execute(&self, input: Value, _ctx: ToolContext) -> Result<ToolOutput, ToolError> {
-        let params: InvalidInput = serde_json::from_value(input).map_err(|e| ToolError::Message {
-            message: format!("invalid input: {e}"),
-        })?;
+        let params: InvalidInput =
+            serde_json::from_value(input).map_err(|e| ToolError::Message {
+                message: format!("invalid input: {e}"),
+            })?;
 
         let tool_name = params.tool_name.unwrap_or_else(|| "unknown".to_string());
-        let reason = params.reason.unwrap_or_else(|| "tool not found".to_string());
+        let reason = params
+            .reason
+            .unwrap_or_else(|| "tool not found".to_string());
 
         let text = format!(
             "Invalid tool call: '{}'\n\nReason: {}\n\nCheck available tools and try again.",

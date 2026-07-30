@@ -14,8 +14,7 @@
 ///
 /// Uses MockProvider - no real LLM credentials needed.
 use fox_agent_sdk::{
-    AgentBuilder, AgentReport, FoxAgentSdkConfig, MockProvider,
-    PlanItem, PlanPriority, PlanStatus,
+    AgentBuilder, AgentReport, FoxAgentSdkConfig, MockProvider, PlanItem, PlanPriority, PlanStatus,
     SwarmCoordinator, SwarmSupervisor, WorkerStatus,
 };
 use std::path::PathBuf;

@@ -1,4 +1,4 @@
- /// MCP Integration — demonstrates connecting to MCP servers and using their tools.
+/// MCP Integration — demonstrates connecting to MCP servers and using their tools.
 ///
 /// This example uses a mock MCP transport so it runs without external
 /// dependencies (npx/uvx). For production use, see the AgentBuilder
@@ -22,15 +22,15 @@
 ///     .build()
 ///     .await?;
 /// ```
-
-use fox_agent_mcp::{McpClient, McpToolDefinition, McpTransport, McpRequest, McpResponse, TransportError};
+use fox_agent_mcp::{
+    McpClient, McpRequest, McpResponse, McpToolDefinition, McpTransport, TransportError,
+};
 use fox_agent_sdk::{
-    AgentBuilder, AgentEvent, FoxAgentSdkConfig, MockProvider, StreamEvent,
-    Tool, ToolContext, ToolError, ToolOutput, TurnOutcome,
+    AgentBuilder, AgentEvent, MockProvider, StreamEvent, Tool, ToolContext, ToolError, ToolOutput,
+    TurnOutcome,
 };
 use serde_json::{Value, json};
 use std::collections::HashMap;
-use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -45,7 +45,9 @@ struct MockTransport {
 
 impl MockTransport {
     fn new() -> Self {
-        Self { responses: Arc::new(Mutex::new(HashMap::new())) }
+        Self {
+            responses: Arc::new(Mutex::new(HashMap::new())),
+        }
     }
 
     fn set(&self, method: &str, result: Value) {
@@ -68,8 +70,12 @@ impl McpTransport for MockTransport {
         }
     }
 
-    async fn start(&self) -> Result<(), TransportError> { Ok(()) }
-    async fn shutdown(&self) -> Result<(), TransportError> { Ok(()) }
+    async fn start(&self) -> Result<(), TransportError> {
+        Ok(())
+    }
+    async fn shutdown(&self) -> Result<(), TransportError> {
+        Ok(())
+    }
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -135,9 +141,13 @@ struct McpToolAdapter {
 
 #[async_trait::async_trait]
 impl Tool for McpToolAdapter {
-    fn name(&self) -> &str { &self.full_name }
+    fn name(&self) -> &str {
+        &self.full_name
+    }
 
-    fn description(&self) -> &str { "MCP tool (mock calculator)" }
+    fn description(&self) -> &str {
+        "MCP tool (mock calculator)"
+    }
 
     fn parameters_schema(&self) -> Value {
         json!({"type": "object"})
@@ -145,7 +155,11 @@ impl Tool for McpToolAdapter {
 
     async fn execute(&self, input: Value, _ctx: ToolContext) -> Result<ToolOutput, ToolError> {
         match self.client.call_tool(&self.full_name, input).await {
-            Ok(text) => Ok(ToolOutput { text, is_error: false, json: None }),
+            Ok(text) => Ok(ToolOutput {
+                text,
+                is_error: false,
+                json: None,
+            }),
             Err(e) => Ok(ToolOutput {
                 text: format!("MCP error: {e}"),
                 is_error: true,
@@ -175,7 +189,7 @@ async fn main() {
     let handle = McpClient::connect(
         Box::new(transport),
         "calc",
-        true,       // auto_approve
+        true,                // auto_approve
         None::<Vec<String>>, // no tools filter
     )
     .await

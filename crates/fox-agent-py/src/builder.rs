@@ -16,8 +16,7 @@ use crate::config::{PyProviderConfig, PySafetyConfig, PySdkConfig};
 use crate::mcp::PyMcpServerConfig;
 use crate::session::PyFileSessionStore;
 use fox_agent_core::{
-    DefaultSafetyPolicy, FoxAgentSdkConfig, SafetyConfig,
-    SessionStore as CoreSessionStore,
+    DefaultSafetyPolicy, FoxAgentSdkConfig, SafetyConfig, SessionStore as CoreSessionStore,
 };
 use fox_agent_sdk::AgentBuilder;
 use pyo3::prelude::*;
@@ -115,15 +114,10 @@ impl PyAgentBuilder {
 
         pyo3_async_runtimes::tokio::future_into_py(py, async move {
             let agent = builder.build().await.map_err(|e| {
-                pyo3::exceptions::PyRuntimeError::new_err(format!(
-                    "failed to build agent: {}",
-                    e
-                ))
+                pyo3::exceptions::PyRuntimeError::new_err(format!("failed to build agent: {}", e))
             })?;
 
-            Python::with_gil(|py| {
-                PyAgent::new(py, Arc::new(agent)).map(|bound| bound.unbind())
-            })
+            Python::with_gil(|py| PyAgent::new(py, Arc::new(agent)).map(|bound| bound.unbind()))
         })
     }
 }

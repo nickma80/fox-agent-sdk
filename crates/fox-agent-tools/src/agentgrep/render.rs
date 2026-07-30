@@ -1,9 +1,9 @@
-use agentgrep::cli::{GrepArgs, FindArgs, SmartArgs};
+use agentgrep::cli::{FindArgs, GrepArgs, SmartArgs};
 use agentgrep::find::{FindFile, FindResult};
 use agentgrep::outline::OutlineResult;
 use agentgrep::search::{FileMatches, GrepResult};
-use agentgrep::smart_engine::{SmartFile, SmartRegion, SmartResult};
 use agentgrep::smart_dsl::Relation;
+use agentgrep::smart_engine::{SmartFile, SmartRegion, SmartResult};
 
 const MAX_RENDERED_MATCH_LINE_CHARS: usize = 240;
 const RENDERED_MATCH_PREFIX_CONTEXT_CHARS: usize = 80;
@@ -60,11 +60,15 @@ struct GrepRenderState {
 
 impl GrepRenderState {
     fn new(max_matches: Option<usize>) -> Self {
-        Self { displayed_matches: 0, max_matches }
+        Self {
+            displayed_matches: 0,
+            max_matches,
+        }
     }
 
     fn limit_reached(&self) -> bool {
-        self.max_matches.is_some_and(|max| self.displayed_matches >= max)
+        self.max_matches
+            .is_some_and(|max| self.displayed_matches >= max)
     }
 
     fn remaining_matches(&self) -> usize {
@@ -259,7 +263,10 @@ fn render_find_file(idx: usize, file: &FindFile, args: &FindArgs, lines: &mut Ve
         ));
     }
     if file.structure.omitted_count > 0 {
-        lines.push(format!("     ... {} more symbols", file.structure.omitted_count));
+        lines.push(format!(
+            "     ... {} more symbols",
+            file.structure.omitted_count
+        ));
     }
 }
 
@@ -287,7 +294,10 @@ pub(super) fn render_outline_output(result: &OutlineResult) -> String {
             ));
         }
         if result.structure.omitted_count > 0 {
-            lines.push(format!("  ... {} more symbols", result.structure.omitted_count));
+            lines.push(format!(
+                "  ... {} more symbols",
+                result.structure.omitted_count
+            ));
         }
     }
 
@@ -392,7 +402,10 @@ fn render_smart_file(idx: usize, file: &SmartFile, args: &SmartArgs, lines: &mut
         ));
     }
     if file.structure.omitted_count > 0 {
-        lines.push(format!("     ... {} more symbols", file.structure.omitted_count));
+        lines.push(format!(
+            "     ... {} more symbols",
+            file.structure.omitted_count
+        ));
     }
     lines.push("   regions:".to_string());
     for region in &file.regions {

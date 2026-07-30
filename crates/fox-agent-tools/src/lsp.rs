@@ -24,6 +24,12 @@ impl LspTool {
     }
 }
 
+impl Default for LspTool {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 #[derive(Deserialize)]
 struct LspInput {
     operation: String,

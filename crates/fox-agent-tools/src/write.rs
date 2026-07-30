@@ -16,6 +16,12 @@ impl WriteTool {
     }
 }
 
+impl Default for WriteTool {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 #[derive(Deserialize)]
 struct WriteInput {
     file_path: String,
@@ -61,14 +67,14 @@ impl Tool for WriteTool {
         let path = ctx.resolve_path(Path::new(&params.file_path));
 
         // Create parent directories if needed
-        if let Some(parent) = path.parent() {
-            if !parent.exists() {
-                tokio::fs::create_dir_all(parent)
-                    .await
-                    .map_err(|e| ToolError::Message {
-                        message: format!("failed to create parent dir `{}`: {e}", parent.display()),
-                    })?;
-            }
+        if let Some(parent) = path.parent()
+            && !parent.exists()
+        {
+            tokio::fs::create_dir_all(parent)
+                .await
+                .map_err(|e| ToolError::Message {
+                    message: format!("failed to create parent dir `{}`: {e}", parent.display()),
+                })?;
         }
 
         // Check if file existed before and read old content for diff
@@ -120,7 +126,10 @@ impl Tool for WriteTool {
         } else {
             let diff = generate_diff_summary("", &params.content);
             Ok(ToolOutput {
-                text: format!("Created {} ({} lines):\n{}", params.file_path, line_count, diff),
+                text: format!(
+                    "Created {} ({} lines):\n{}",
+                    params.file_path, line_count, diff
+                ),
                 is_error: false,
                 json: Some(json!({
                     "file_path": params.file_path,
@@ -249,8 +258,14 @@ mod tests {
 
     #[test]
     fn test_generate_diff_summary_truncation() {
-        let old = (1..=25).map(|i| format!("old line {}", i)).collect::<Vec<_>>().join("\n");
-        let new = (1..=25).map(|i| format!("new line {}", i)).collect::<Vec<_>>().join("\n");
+        let old = (1..=25)
+            .map(|i| format!("old line {}", i))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let new = (1..=25)
+            .map(|i| format!("new line {}", i))
+            .collect::<Vec<_>>()
+            .join("\n");
         let diff = generate_diff_summary(&old, &new);
         assert!(diff.contains("..."));
     }

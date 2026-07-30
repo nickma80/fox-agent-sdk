@@ -12,7 +12,7 @@ use fox_agent_tools::PlanStatus;
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::RwLock;
-use tokio::time::{sleep, Duration, Instant};
+use tokio::time::{Duration, Instant, sleep};
 
 /// Tracks retry state per worker+task combination.
 #[derive(Debug, Clone)]
@@ -119,16 +119,15 @@ impl SwarmSupervisor {
                     .get(worker_id)
                     .map(|s| s.task_id.clone())
                     .unwrap_or_else(|| "unknown".to_string());
-                self.coordinator
-                    .reports
-                    .write()
-                    .await
-                    .push(AgentReport {
-                        worker_id: worker_id.clone(),
-                        task_id: Some(task_id),
-                        status: WorkerStatus::TimedOut,
-                        summary: format!("Task timed out after {} seconds (limit: {})", elapsed, timeout),
-                    });
+                self.coordinator.reports.write().await.push(AgentReport {
+                    worker_id: worker_id.clone(),
+                    task_id: Some(task_id),
+                    status: WorkerStatus::TimedOut,
+                    summary: format!(
+                        "Task timed out after {} seconds (limit: {})",
+                        elapsed, timeout
+                    ),
+                });
             }
         }
     }
@@ -226,21 +225,15 @@ impl SwarmSupervisor {
         *self.reassignments.write().await += 1;
 
         // Record a report for the failed worker
-        self.coordinator
-            .reports
-            .write()
-            .await
-            .push(AgentReport {
-                worker_id: failed_worker_id.to_string(),
-                task_id: Some(task_id.to_string()),
-                status: WorkerStatus::Failed,
-                summary: format!("Task reassigned to worker {target_id}"),
-            });
+        self.coordinator.reports.write().await.push(AgentReport {
+            worker_id: failed_worker_id.to_string(),
+            task_id: Some(task_id.to_string()),
+            status: WorkerStatus::Failed,
+            summary: format!("Task reassigned to worker {target_id}"),
+        });
 
         // Assign the task to the new worker
-        self.coordinator
-            .assign_next_runnable_task(&target_id)
-            .await;
+        self.coordinator.assign_next_runnable_task(&target_id).await;
         true
     }
 
@@ -272,8 +265,8 @@ impl SwarmSupervisor {
 #[cfg(test)]
 mod supervisor_tests {
     use super::*;
-    use fox_agent_tools::{PlanItem, PlanPriority, PlanStatus};
     use crate::coordinator::SwarmCoordinator;
+    use fox_agent_tools::{PlanItem, PlanPriority, PlanStatus};
 
     #[tokio::test]
     async fn supervisor_retries_failed_task() {
@@ -358,8 +351,11 @@ mod supervisor_tests {
         assert_eq!(w1.status, WorkerStatus::Failed);
 
         let summary = supervisor.generate_summary().await;
-        assert!(summary.tasks_reassigned > 0,
-            "should have reassignments, got {}", summary.tasks_reassigned);
+        assert!(
+            summary.tasks_reassigned > 0,
+            "should have reassignments, got {}",
+            summary.tasks_reassigned
+        );
     }
 
     #[tokio::test]
@@ -429,7 +425,10 @@ mod supervisor_tests {
             .await;
 
         coordinator.assign_next_runnable_task("w1").await.unwrap();
-        coordinator.report_completion("w1", "p1", "done").await.unwrap();
+        coordinator
+            .report_completion("w1", "p1", "done")
+            .await
+            .unwrap();
 
         let summary = supervisor.await_completion().await;
         assert_eq!(summary.completed, 1);
@@ -452,18 +451,30 @@ mod supervisor_tests {
         coordinator.spawn("w1", "worker").await;
         coordinator
             .upsert_plan(vec![PlanItem {
-                id: "p1".into(), content: "task".into(), status: PlanStatus::Pending,
-                priority: PlanPriority::High, assigned_to: None, blocked_by: vec![],
+                id: "p1".into(),
+                content: "task".into(),
+                status: PlanStatus::Pending,
+                priority: PlanPriority::High,
+                assigned_to: None,
+                blocked_by: vec![],
             }])
             .await;
 
         // Assign task — worker goes Running, started_at_secs is set
         coordinator.assign_next_runnable_task("w1").await.unwrap();
-        assert!(supervisor.retry_states.read().await.is_empty(),
-            "no retry state for first-run worker");
+        assert!(
+            supervisor.retry_states.read().await.is_empty(),
+            "no retry state for first-run worker"
+        );
 
         // Artificially age the start time to epoch → always exceeds timeout
-        coordinator.workers.write().await.get_mut("w1").unwrap().started_at_secs = Some(0);
+        coordinator
+            .workers
+            .write()
+            .await
+            .get_mut("w1")
+            .unwrap()
+            .started_at_secs = Some(0);
 
         // Spawn health loop
         let sv = supervisor.clone();
@@ -473,9 +484,16 @@ mod supervisor_tests {
         tokio::time::sleep(std::time::Duration::from_millis(200)).await;
         handle.abort();
 
-        let w1 = coordinator.list_workers().await
-            .into_iter().find(|w| w.worker_id == "w1").unwrap();
-        assert_eq!(w1.status, WorkerStatus::TimedOut,
-            "first-run worker with no retry state should be timed out");
+        let w1 = coordinator
+            .list_workers()
+            .await
+            .into_iter()
+            .find(|w| w.worker_id == "w1")
+            .unwrap();
+        assert_eq!(
+            w1.status,
+            WorkerStatus::TimedOut,
+            "first-run worker with no retry state should be timed out"
+        );
     }
 }

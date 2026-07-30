@@ -1,8 +1,8 @@
 //! MCP client — connects to one MCP server, discovers tools, executes calls.
 
+use crate::tool_adapter::{McpToolDefinition, mcp_tool_to_definition};
 use crate::transport::McpTransport;
 use crate::types::*;
-use crate::tool_adapter::{McpToolDefinition, mcp_tool_to_definition};
 use serde_json::Value;
 use std::sync::Arc;
 use tokio::sync::RwLock;
@@ -58,7 +58,9 @@ impl Default for McpClient {
 impl McpClient {
     /// Create an empty client — call [`connect_server`] to add servers.
     pub fn new() -> Self {
-        Self { servers: Arc::new(RwLock::new(Vec::new())) }
+        Self {
+            servers: Arc::new(RwLock::new(Vec::new())),
+        }
     }
 
     /// Connect to an MCP server via the given transport.
@@ -72,10 +74,13 @@ impl McpClient {
     ) -> Result<McpServerHandle, McpClientError> {
         let name: String = server_name.into();
 
-        transport.start().await.map_err(|e| McpClientError::ConnectionFailed {
-            server: name.clone(),
-            message: e.to_string(),
-        })?;
+        transport
+            .start()
+            .await
+            .map_err(|e| McpClientError::ConnectionFailed {
+                server: name.clone(),
+                message: e.to_string(),
+            })?;
 
         // ── 1. Initialize ──
         let init_req = McpRequest::new(
@@ -91,9 +96,14 @@ impl McpClient {
             })?),
         );
 
-        let init_resp = transport.send(&init_req).await.map_err(|e| {
-            McpClientError::ConnectionFailed { server: name.clone(), message: e.to_string() }
-        })?;
+        let init_resp =
+            transport
+                .send(&init_req)
+                .await
+                .map_err(|e| McpClientError::ConnectionFailed {
+                    server: name.clone(),
+                    message: e.to_string(),
+                })?;
 
         if let Some(err) = &init_resp.error {
             return Err(McpClientError::InitializeFailed(format!(
@@ -102,30 +112,27 @@ impl McpClient {
             )));
         }
 
-        let init_result: InitializeResult = serde_json::from_value(
-            init_resp.result.ok_or_else(|| {
+        let init_result: InitializeResult =
+            serde_json::from_value(init_resp.result.ok_or_else(|| {
                 McpClientError::InitializeFailed("no result in initialize response".into())
-            })?,
-        )
-        .map_err(|e| McpClientError::InitializeFailed(e.to_string()))?;
+            })?)
+            .map_err(|e| McpClientError::InitializeFailed(e.to_string()))?;
 
         // Send initialized notification
-        let initialized_notif = McpRequest::new(
-            Value::Number(2.into()),
-            "notifications/initialized",
-            None,
-        );
+        let initialized_notif =
+            McpRequest::new(Value::Number(2.into()), "notifications/initialized", None);
         let _ = transport.send(&initialized_notif).await;
 
         // ── 2. tools/list ──
-        let tools_req = McpRequest::new(
-            Value::Number(3.into()),
-            "tools/list",
-            None,
-        );
-        let tools_resp = transport.send(&tools_req).await.map_err(|e| {
-            McpClientError::ConnectionFailed { server: name.clone(), message: e.to_string() }
-        })?;
+        let tools_req = McpRequest::new(Value::Number(3.into()), "tools/list", None);
+        let tools_resp =
+            transport
+                .send(&tools_req)
+                .await
+                .map_err(|e| McpClientError::ConnectionFailed {
+                    server: name.clone(),
+                    message: e.to_string(),
+                })?;
 
         // tools/list is optional — gracefully degrade
         let _ = tools_resp;
@@ -192,14 +199,20 @@ impl McpClient {
     ) -> Result<String, McpClientError> {
         // Parse "mcp://server/tool" → (server, tool)
         let stripped = tool_name.strip_prefix("mcp://").unwrap_or(tool_name);
-        let (server_name, bare_tool) = stripped
-            .split_once('/')
-            .ok_or_else(|| McpClientError::ToolNotFound { tool: tool_name.into() })?;
+        let (server_name, bare_tool) =
+            stripped
+                .split_once('/')
+                .ok_or_else(|| McpClientError::ToolNotFound {
+                    tool: tool_name.into(),
+                })?;
 
         let servers = self.servers.read().await;
-        let server = servers.iter().find(|s| s.name == server_name).ok_or_else(|| {
-            McpClientError::ToolNotFound { tool: tool_name.into() }
-        })?;
+        let server = servers
+            .iter()
+            .find(|s| s.name == server_name)
+            .ok_or_else(|| McpClientError::ToolNotFound {
+                tool: tool_name.into(),
+            })?;
 
         let params = ToolCallParams {
             name: bare_tool.into(),
@@ -221,11 +234,9 @@ impl McpClient {
             )));
         }
 
-        let result: ToolCallResult = serde_json::from_value(
-            resp.result.ok_or_else(|| {
-                McpClientError::ToolCallFailed("no result in tools/call response".into())
-            })?,
-        )?;
+        let result: ToolCallResult = serde_json::from_value(resp.result.ok_or_else(|| {
+            McpClientError::ToolCallFailed("no result in tools/call response".into())
+        })?)?;
 
         // Concatenate all text content blocks.
         let text = result
@@ -249,7 +260,12 @@ impl McpClient {
 
     /// Return server names.
     pub async fn server_names(&self) -> Vec<String> {
-        self.servers.read().await.iter().map(|s| s.name.clone()).collect()
+        self.servers
+            .read()
+            .await
+            .iter()
+            .map(|s| s.name.clone())
+            .collect()
     }
 
     /// Check if a server is set to auto-approve.
@@ -327,9 +343,12 @@ impl McpClient {
         uri: &str,
     ) -> Result<String, McpClientError> {
         let servers = self.servers.read().await;
-        let server = servers.iter().find(|s| s.name == server_name).ok_or_else(|| {
-            McpClientError::ServerNotFound { server: server_name.to_string() }
-        })?;
+        let server = servers
+            .iter()
+            .find(|s| s.name == server_name)
+            .ok_or_else(|| McpClientError::ServerNotFound {
+                server: server_name.to_string(),
+            })?;
 
         let params = serde_json::json!({ "uri": uri });
         let req = McpRequest::new(
@@ -341,15 +360,14 @@ impl McpClient {
         let resp = server.transport.send(&req).await?;
         if let Some(err) = &resp.error {
             return Err(McpClientError::ToolCallFailed(format!(
-                "resources/read: {} (code {})", err.message, err.code
+                "resources/read: {} (code {})",
+                err.message, err.code
             )));
         }
 
-        let result: ResourceReadResult = serde_json::from_value(
-            resp.result.ok_or_else(|| {
-                McpClientError::ToolCallFailed("no result in resources/read response".into())
-            })?,
-        )?;
+        let result: ResourceReadResult = serde_json::from_value(resp.result.ok_or_else(|| {
+            McpClientError::ToolCallFailed("no result in resources/read response".into())
+        })?)?;
 
         let text = result
             .contents
@@ -425,9 +443,12 @@ impl McpClient {
         prompt_name: &str,
     ) -> Result<String, McpClientError> {
         let servers = self.servers.read().await;
-        let server = servers.iter().find(|s| s.name == server_name).ok_or_else(|| {
-            McpClientError::ServerNotFound { server: server_name.to_string() }
-        })?;
+        let server = servers
+            .iter()
+            .find(|s| s.name == server_name)
+            .ok_or_else(|| McpClientError::ServerNotFound {
+                server: server_name.to_string(),
+            })?;
 
         let params = serde_json::json!({ "name": prompt_name });
         let req = McpRequest::new(
@@ -439,15 +460,14 @@ impl McpClient {
         let resp = server.transport.send(&req).await?;
         if let Some(err) = &resp.error {
             return Err(McpClientError::ToolCallFailed(format!(
-                "prompts/get: {} (code {})", err.message, err.code
+                "prompts/get: {} (code {})",
+                err.message, err.code
             )));
         }
 
-        let result: GetPromptResult = serde_json::from_value(
-            resp.result.ok_or_else(|| {
-                McpClientError::ToolCallFailed("no result in prompts/get response".into())
-            })?,
-        )?;
+        let result: GetPromptResult = serde_json::from_value(resp.result.ok_or_else(|| {
+            McpClientError::ToolCallFailed("no result in prompts/get response".into())
+        })?)?;
 
         let text = result
             .messages

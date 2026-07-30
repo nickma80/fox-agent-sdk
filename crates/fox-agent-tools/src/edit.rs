@@ -16,6 +16,12 @@ impl EditTool {
     }
 }
 
+impl Default for EditTool {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 #[derive(Deserialize)]
 struct EditInput {
     file_path: String,
@@ -136,12 +142,7 @@ impl Tool for EditTool {
         Ok(ToolOutput {
             text: format!(
                 "Edited {}: replaced {} occurrence(s)\n{}\n\nContext after edit (lines {}-{}):\n{}",
-                params.file_path,
-                occurrences,
-                diff,
-                context.0,
-                context.1,
-                context.2
+                params.file_path, occurrences, diff, context.0, context.1, context.2
             ),
             is_error: false,
             json: Some(json!({
@@ -265,15 +266,18 @@ fn extract_context(
     (start + 1, end, context_lines.join("\n"))
 }
 
-fn try_flexible_match(content: &str, old_string: &str, file_path: &str) -> Result<ToolOutput, ToolError> {
+fn try_flexible_match(
+    content: &str,
+    old_string: &str,
+    file_path: &str,
+) -> Result<ToolOutput, ToolError> {
     // Try trimmed matching
     let trimmed = old_string.trim();
     if content.contains(trimmed) && trimmed != old_string {
         return Err(ToolError::Message {
-            message: format!(
-                "old_string not found exactly, but found after trimming whitespace.\n\
+            message: "old_string not found exactly, but found after trimming whitespace.\n\
                  Try using the exact string from the file, including leading/trailing whitespace."
-            ),
+                .to_string(),
         });
     }
 
@@ -282,7 +286,10 @@ fn try_flexible_match(content: &str, old_string: &str, file_path: &str) -> Resul
     let content_lines: Vec<&str> = content.lines().collect();
 
     for (i, window) in content_lines.windows(old_lines.len()).enumerate() {
-        let matches = window.iter().zip(old_lines.iter()).all(|(a, b)| a.trim() == b.trim());
+        let matches = window
+            .iter()
+            .zip(old_lines.iter())
+            .all(|(a, b)| a.trim() == b.trim());
 
         if matches {
             return Err(ToolError::Message {
@@ -347,7 +354,8 @@ mod tests {
 
     #[test]
     fn test_extract_context() {
-        let content = "line 1\nline 2\nline 3\nline 4\nline 5\nline 6\nline 7\nline 8\nline 9\nline 10";
+        let content =
+            "line 1\nline 2\nline 3\nline 4\nline 5\nline 6\nline 7\nline 8\nline 9\nline 10";
         let (start, end, ctx) = extract_context(content, 5, 5, 2);
         assert_eq!(start, 3);
         assert_eq!(end, 7);

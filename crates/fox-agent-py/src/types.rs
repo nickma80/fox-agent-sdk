@@ -95,7 +95,10 @@ pub fn agent_event_to_py(py: Python<'_>, event: &AgentEvent) -> Option<Py<PyDict
         }
 
         AgentEvent::ToolCallStart {
-            call_id, name, input, ..
+            call_id,
+            name,
+            input,
+            ..
         } => {
             d.set_item("type", "tool_start").ok();
             d.set_item("call_id", call_id).ok();

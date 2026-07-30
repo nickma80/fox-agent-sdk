@@ -12,7 +12,11 @@ pub enum ToolProgressEvent {
     /// A line of stdout/stderr output from a command (e.g. bash).
     StdoutLine { line: String, stream: OutputStream },
     /// Tool-defined progress update.
-    Progress { message: String, current: u64, total: Option<u64> },
+    Progress {
+        message: String,
+        current: u64,
+        total: Option<u64>,
+    },
 }
 
 /// Which output stream a line came from.
@@ -48,12 +52,20 @@ pub struct ToolOutput {
 impl ToolOutput {
     /// Convenience constructor for simple text-only output.
     pub fn new(text: impl Into<String>) -> Self {
-        Self { text: text.into(), is_error: false, json: None }
+        Self {
+            text: text.into(),
+            is_error: false,
+            json: None,
+        }
     }
 
     /// Constructor for error output.
     pub fn error(text: impl Into<String>) -> Self {
-        Self { text: text.into(), is_error: true, json: None }
+        Self {
+            text: text.into(),
+            is_error: true,
+            json: None,
+        }
     }
 }
 
@@ -99,9 +111,16 @@ pub enum ArtifactWriteDecision {
 /// Origin of a persisted artifact.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub enum ArtifactProducer {
-    Tool { tool_name: String },
-    Mcp { server_name: String, tool_name: String },
-    Subagent { task_id: String },
+    Tool {
+        tool_name: String,
+    },
+    Mcp {
+        server_name: String,
+        tool_name: String,
+    },
+    Subagent {
+        task_id: String,
+    },
 }
 
 /// High-level artifact content category.
@@ -219,12 +238,16 @@ impl SubagentSummary {
     /// main agent's context (typically 100-500 tokens).
     pub fn format_for_main_context(&self) -> String {
         let mut lines: Vec<String> = Vec::new();
-        lines.push(format!("[sub-agent {}] {}", self.task_id, match &self.outcome {
-            SubagentOutcome::Completed => "completed".to_string(),
-            SubagentOutcome::TurnLimitReached => "reached turn limit".to_string(),
-            SubagentOutcome::TimeoutReached => "timed out".to_string(),
-            SubagentOutcome::Error(e) => format!("error: {e}"),
-        }));
+        lines.push(format!(
+            "[sub-agent {}] {}",
+            self.task_id,
+            match &self.outcome {
+                SubagentOutcome::Completed => "completed".to_string(),
+                SubagentOutcome::TurnLimitReached => "reached turn limit".to_string(),
+                SubagentOutcome::TimeoutReached => "timed out".to_string(),
+                SubagentOutcome::Error(e) => format!("error: {e}"),
+            }
+        ));
         if !self.findings.is_empty() {
             lines.push("Findings:".to_string());
             for f in &self.findings {

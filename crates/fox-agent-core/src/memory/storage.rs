@@ -1,8 +1,8 @@
 //! File persistence layer for MemoryGraph with backup recovery and LRU caching.
 
 use crate::memory::graph::MemoryGraph;
-use serde::de::DeserializeOwned;
 use serde::Serialize;
+use serde::de::DeserializeOwned;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
@@ -74,7 +74,8 @@ pub fn read_json<T: DeserializeOwned>(path: &Path) -> Result<T, String> {
 pub fn write_json<T: Serialize>(path: &Path, value: &T) -> Result<(), String> {
     // Create parent directory
     if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent).map_err(|e| format!("failed to create dir `{}`: {e}", parent.display()))?;
+        std::fs::create_dir_all(parent)
+            .map_err(|e| format!("failed to create dir `{}`: {e}", parent.display()))?;
     }
 
     // Create backup of existing file
@@ -83,12 +84,15 @@ pub fn write_json<T: Serialize>(path: &Path, value: &T) -> Result<(), String> {
         let _ = std::fs::copy(path, &backup);
     }
 
-    let json_str = serde_json::to_string_pretty(value).map_err(|e| format!("serialization failed: {e}"))?;
+    let json_str =
+        serde_json::to_string_pretty(value).map_err(|e| format!("serialization failed: {e}"))?;
 
     // Write to temp file, then rename (atomic on most filesystems)
     let tmp = path.with_extension("json.tmp");
-    std::fs::write(&tmp, &json_str).map_err(|e| format!("failed to write `{}`: {e}", tmp.display()))?;
-    std::fs::rename(&tmp, path).map_err(|e| format!("failed to rename `{}`: {e}", path.display()))?;
+    std::fs::write(&tmp, &json_str)
+        .map_err(|e| format!("failed to write `{}`: {e}", tmp.display()))?;
+    std::fs::rename(&tmp, path)
+        .map_err(|e| format!("failed to rename `{}`: {e}", path.display()))?;
 
     Ok(())
 }
@@ -132,16 +136,19 @@ impl MemoryGraphCache {
             self.touch(&path);
             return;
         }
-        if self.entries.len() >= self.max_entries {
-            if let Some(lru) = self.access_order.first().cloned() {
-                self.entries.remove(&lru);
-                self.access_order.retain(|p| *p != lru);
-            }
+        if self.entries.len() >= self.max_entries
+            && let Some(lru) = self.access_order.first().cloned()
+        {
+            self.entries.remove(&lru);
+            self.access_order.retain(|p| *p != lru);
         }
-        self.entries.insert(path.clone(), CacheEntry {
-            graph,
-            loaded_at: SystemTime::now(),
-        });
+        self.entries.insert(
+            path.clone(),
+            CacheEntry {
+                graph,
+                loaded_at: SystemTime::now(),
+            },
+        );
         self.access_order.push(path);
     }
 
@@ -172,9 +179,10 @@ fn graph_cache() -> &'static Mutex<MemoryGraphCache> {
 
 /// Try to get cached graph.
 pub fn cached_graph(path: &Path) -> Option<MemoryGraph> {
-    graph_cache().lock().ok().and_then(|mut cache| {
-        cache.get(path).cloned()
-    })
+    graph_cache()
+        .lock()
+        .ok()
+        .and_then(|mut cache| cache.get(path).cloned())
 }
 
 /// Update cached graph.
@@ -212,29 +220,45 @@ pub fn gc_memory_files(storage_dir: &Path, max_age_hours: u64) -> Result<GCResul
     let global = storage_dir.join("global.json");
     if global.exists() {
         scanned += 1;
-        if let Ok(meta) = std::fs::metadata(&global) {
-            if let Ok(modified) = meta.modified() {
-                if now.duration_since(modified).unwrap_or(Duration::ZERO) > max_age {
-                    let backup = global.with_extension("json.bak");
-                    let _ = std::fs::remove_file(&global);
-                    let _ = std::fs::remove_file(&backup);
-                    removed += 1;
-                }
-            }
+        if let Ok(meta) = std::fs::metadata(&global)
+            && let Ok(modified) = meta.modified()
+            && now.duration_since(modified).unwrap_or(Duration::ZERO) > max_age
+        {
+            let backup = global.with_extension("json.bak");
+            let _ = std::fs::remove_file(&global);
+            let _ = std::fs::remove_file(&backup);
+            removed += 1;
         }
     }
 
     // GC project files
     let projects_dir = storage_dir.join("projects");
-    remove_expired_files(&projects_dir, "json", max_age, &now, &mut scanned, &mut removed);
+    remove_expired_files(
+        &projects_dir,
+        "json",
+        max_age,
+        &now,
+        &mut scanned,
+        &mut removed,
+    );
 
     // GC session-scoped memory files (session-scoped memories are ephemeral;
     // once the owning session is gone these files serve no purpose, so we
     // apply the same max-age policy here).
     let sessions_dir = storage_dir.join("session_scoped");
-    remove_expired_files(&sessions_dir, "json", max_age, &now, &mut scanned, &mut removed);
+    remove_expired_files(
+        &sessions_dir,
+        "json",
+        max_age,
+        &now,
+        &mut scanned,
+        &mut removed,
+    );
 
-    Ok(GCResult { removed_files: removed, total_scanned: scanned })
+    Ok(GCResult {
+        removed_files: removed,
+        total_scanned: scanned,
+    })
 }
 
 fn remove_expired_files(
@@ -255,16 +279,15 @@ fn remove_expired_files(
         let path = entry.path();
         if path.extension().map(|e| e == extension).unwrap_or(false) {
             *scanned += 1;
-            if let Ok(meta) = std::fs::metadata(&path) {
-                if let Ok(modified) = meta.modified() {
-                    if now.duration_since(modified).unwrap_or(Duration::ZERO) > max_age {
-                        let backup = path.with_extension(format!("{extension}.bak"));
-                        let _ = std::fs::remove_file(&path);
-                        let _ = std::fs::remove_file(&backup);
-                        invalidate_cache(&path);
-                        *removed += 1;
-                    }
-                }
+            if let Ok(meta) = std::fs::metadata(&path)
+                && let Ok(modified) = meta.modified()
+                && now.duration_since(modified).unwrap_or(Duration::ZERO) > max_age
+            {
+                let backup = path.with_extension(format!("{extension}.bak"));
+                let _ = std::fs::remove_file(&path);
+                let _ = std::fs::remove_file(&backup);
+                invalidate_cache(&path);
+                *removed += 1;
             }
         }
     }

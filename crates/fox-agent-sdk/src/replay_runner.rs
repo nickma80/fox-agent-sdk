@@ -50,35 +50,29 @@ impl ReplayRunner {
         let mut failures = Vec::new();
 
         for check in &self.transcript.verification_checks {
-            if let Some(ref text) = check.must_contain_text {
-                if !self.events.iter().any(|e| envelope_contains_text(e, text)) {
-                    failures.push(format!(
-                        "Check '{}': no event contains text '{}'",
-                        check.description, text
-                    ));
-                }
+            if let Some(ref text) = check.must_contain_text
+                && !self.events.iter().any(|e| envelope_contains_text(e, text))
+            {
+                failures.push(format!(
+                    "Check '{}': no event contains text '{}'",
+                    check.description, text
+                ));
             }
 
-            if let Some(ref tool_name) = check.must_have_tool_call {
-                if !self
-                    .events
-                    .iter()
-                    .any(|e| has_tool_call(e, tool_name))
-                {
-                    failures.push(format!(
-                        "Check '{}': no tool call '{}' found",
-                        check.description, tool_name
-                    ));
-                }
+            if let Some(ref tool_name) = check.must_have_tool_call
+                && !self.events.iter().any(|e| has_tool_call(e, tool_name))
+            {
+                failures.push(format!(
+                    "Check '{}': no tool call '{}' found",
+                    check.description, tool_name
+                ));
             }
 
-            if check.must_have_usage {
-                if !self.events.iter().any(has_usage_event) {
-                    failures.push(format!(
-                        "Check '{}': no usage event found",
-                        check.description
-                    ));
-                }
+            if check.must_have_usage && !self.events.iter().any(has_usage_event) {
+                failures.push(format!(
+                    "Check '{}': no usage event found",
+                    check.description
+                ));
             }
         }
 
@@ -91,7 +85,11 @@ impl ReplayRunner {
         for f in &failures {
             eprintln!("[REPLAY FAIL] {f}");
         }
-        assert!(failures.is_empty(), "replay verification failed:\n{}", failures.join("\n"));
+        assert!(
+            failures.is_empty(),
+            "replay verification failed:\n{}",
+            failures.join("\n")
+        );
     }
 
     /// Return all events in order.

@@ -27,10 +27,12 @@ pub struct RuleViolation {
     pub severity: RuleSeverity,
 }
 
+type RuleFn = Box<dyn Fn(&[AgentEvent]) -> Vec<RuleViolation> + Send + Sync>;
+
 /// Registry of behavior rules that check agent event streams.
 #[derive(Default)]
 pub struct BehaviorRuleEngine {
-    rules: Vec<Box<dyn Fn(&[AgentEvent]) -> Vec<RuleViolation> + Send + Sync>>,
+    rules: Vec<RuleFn>,
 }
 
 impl BehaviorRuleEngine {
@@ -66,7 +68,10 @@ impl BehaviorRuleEngine {
 
     /// Run all rules, return only Error-severity violations.
     pub fn check_errors(&self, events: &[AgentEvent]) -> Vec<RuleViolation> {
-        self.check(events).into_iter().filter(|v| v.severity == RuleSeverity::Error).collect()
+        self.check(events)
+            .into_iter()
+            .filter(|v| v.severity == RuleSeverity::Error)
+            .collect()
     }
 }
 
@@ -87,7 +92,10 @@ fn check_repeat_tool_storm(events: &[AgentEvent]) -> Vec<RuleViolation> {
         .filter(|(_, c)| *c > MAX_REPEAT_TOOL_CALLS)
         .map(|(name, count)| RuleViolation {
             rule_name: "no_repeat_tool_storm".into(),
-            message: format!("Tool '{}' called {} times (limit: {})", name, count, MAX_REPEAT_TOOL_CALLS),
+            message: format!(
+                "Tool '{}' called {} times (limit: {})",
+                name, count, MAX_REPEAT_TOOL_CALLS
+            ),
             severity: RuleSeverity::Error,
         })
         .collect()
@@ -101,14 +109,14 @@ fn check_retry_after_deny(events: &[AgentEvent]) -> Vec<RuleViolation> {
     for ev in events {
         match ev {
             AgentEvent::ToolCallStart { name, .. } => {
-                if let Some(ref denied) = last_denied_tool {
-                    if denied == name {
-                        violations.push(RuleViolation {
-                            rule_name: "no_retry_after_deny".into(),
-                            message: format!("Tool '{}' retried immediately after being denied", name),
-                            severity: RuleSeverity::Warning,
-                        });
-                    }
+                if let Some(ref denied) = last_denied_tool
+                    && denied == name
+                {
+                    violations.push(RuleViolation {
+                        rule_name: "no_retry_after_deny".into(),
+                        message: format!("Tool '{}' retried immediately after being denied", name),
+                        severity: RuleSeverity::Warning,
+                    });
                 }
                 last_denied_tool = None;
             }
@@ -133,11 +141,16 @@ const MESSAGES_THRESHOLD_FOR_COMPACTION: usize = 50;
 fn check_compaction_triggered(events: &[AgentEvent]) -> Vec<RuleViolation> {
     // This is a best-effort check: we look for compaction events.
     // A full implementation would track message count from the harness.
-    let has_compaction = events.iter().any(|ev| matches!(ev, AgentEvent::Compaction { .. }));
+    let has_compaction = events
+        .iter()
+        .any(|ev| matches!(ev, AgentEvent::Compaction { .. }));
     // Without message count context, we can't determine if compaction *should* have happened.
     // This rule is marked as Warning and only fires when the agent produces many events
     // but no compaction is observed.
-    let tool_count = events.iter().filter(|ev| matches!(ev, AgentEvent::ToolCallStart { .. })).count();
+    let tool_count = events
+        .iter()
+        .filter(|ev| matches!(ev, AgentEvent::ToolCallStart { .. }))
+        .count();
     if tool_count > MESSAGES_THRESHOLD_FOR_COMPACTION && !has_compaction {
         return vec![RuleViolation {
             rule_name: "compaction_triggered".into(),
@@ -153,8 +166,12 @@ fn check_compaction_triggered(events: &[AgentEvent]) -> Vec<RuleViolation> {
 
 /// Check for empty turns (no tool calls, no text output).
 fn check_no_empty_turn(events: &[AgentEvent]) -> Vec<RuleViolation> {
-    let has_tool = events.iter().any(|ev| matches!(ev, AgentEvent::ToolCallStart { .. }));
-    let has_text = events.iter().any(|ev| matches!(ev, AgentEvent::ModelTextDelta { .. }));
+    let has_tool = events
+        .iter()
+        .any(|ev| matches!(ev, AgentEvent::ToolCallStart { .. }));
+    let has_text = events
+        .iter()
+        .any(|ev| matches!(ev, AgentEvent::ModelTextDelta { .. }));
 
     if !has_tool && !has_text && !events.is_empty() {
         return vec![RuleViolation {
@@ -173,7 +190,9 @@ fn check_subagent_readback(events: &[AgentEvent]) -> Vec<RuleViolation> {
 
     for ev in events {
         match ev {
-            AgentEvent::ToolCallStart { name, .. } if name == "subagent" || name.starts_with("subagent") => {
+            AgentEvent::ToolCallStart { name, .. }
+                if name == "subagent" || name.starts_with("subagent") =>
+            {
                 saw_subagent = true;
             }
             AgentEvent::ToolCallStart { name, .. } if name == "artifact_read" && saw_subagent => {
@@ -222,8 +241,14 @@ fn check_error_storm(events: &[AgentEvent]) -> Vec<RuleViolation> {
 
 /// Check that tool calls always produce corresponding ends.
 fn check_tool_output_not_orphaned(events: &[AgentEvent]) -> Vec<RuleViolation> {
-    let starts = events.iter().filter(|ev| matches!(ev, AgentEvent::ToolCallStart { .. })).count();
-    let ends = events.iter().filter(|ev| matches!(ev, AgentEvent::ToolCallEnd { .. })).count();
+    let starts = events
+        .iter()
+        .filter(|ev| matches!(ev, AgentEvent::ToolCallStart { .. }))
+        .count();
+    let ends = events
+        .iter()
+        .filter(|ev| matches!(ev, AgentEvent::ToolCallEnd { .. }))
+        .count();
 
     if starts != ends {
         return vec![RuleViolation {
@@ -254,7 +279,11 @@ mod tests {
             });
             events.push(AgentEvent::ToolCallEnd {
                 call_id: "c1".into(),
-                output: ToolOutput { text: "ok".into(), is_error: false, json: None },
+                output: ToolOutput {
+                    text: "ok".into(),
+                    is_error: false,
+                    json: None,
+                },
             });
         }
         let engine = BehaviorRuleEngine::with_default_rules();
@@ -273,7 +302,11 @@ mod tests {
             });
             events.push(AgentEvent::ToolCallEnd {
                 call_id: format!("c{}", i),
-                output: ToolOutput { text: "error".into(), is_error: true, json: None },
+                output: ToolOutput {
+                    text: "error".into(),
+                    is_error: true,
+                    json: None,
+                },
             });
         }
         let engine = BehaviorRuleEngine::with_default_rules();
@@ -283,13 +316,11 @@ mod tests {
 
     #[test]
     fn test_orphaned_tool_calls() {
-        let events = vec![
-            AgentEvent::ToolCallStart {
-                call_id: "c1".into(),
-                name: "echo".into(),
-                input: serde_json::json!({}),
-            },
-        ];
+        let events = vec![AgentEvent::ToolCallStart {
+            call_id: "c1".into(),
+            name: "echo".into(),
+            input: serde_json::json!({}),
+        }];
         let engine = BehaviorRuleEngine::with_default_rules();
         let violations = engine.check_errors(&events);
         assert!(!violations.is_empty());
@@ -305,12 +336,19 @@ mod tests {
             },
             AgentEvent::ToolCallEnd {
                 call_id: "c1".into(),
-                output: ToolOutput { text: "done".into(), is_error: false, json: None },
+                output: ToolOutput {
+                    text: "done".into(),
+                    is_error: false,
+                    json: None,
+                },
             },
         ];
         let engine = BehaviorRuleEngine::with_default_rules();
         let violations = engine.check(&events);
-        let sub_violations: Vec<_> = violations.iter().filter(|v| v.rule_name == "subagent_has_readback").collect();
+        let sub_violations: Vec<_> = violations
+            .iter()
+            .filter(|v| v.rule_name == "subagent_has_readback")
+            .collect();
         assert!(!sub_violations.is_empty());
     }
 }

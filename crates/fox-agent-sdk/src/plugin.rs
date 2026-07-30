@@ -1,4 +1,4 @@
-use fox_agent_core::{MarketplaceConfig, ProxyConfig, SkillSource, Skill};
+use fox_agent_core::{MarketplaceConfig, ProxyConfig, Skill, SkillSource};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -42,9 +42,12 @@ where
     match val {
         None => Ok(None),
         Some(serde_json::Value::String(s)) => Ok(Some(s)),
-        Some(serde_json::Value::Object(map)) => {
-            Ok(Some(map.get("name").and_then(|v| v.as_str()).unwrap_or("").to_string()))
-        }
+        Some(serde_json::Value::Object(map)) => Ok(Some(
+            map.get("name")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string(),
+        )),
         _ => Ok(None),
     }
 }
@@ -65,10 +68,21 @@ pub struct InstalledPlugin {
 
 #[derive(Debug, Clone)]
 pub enum PluginSource {
-    GitHub { owner: String, repo: String, branch: Option<String> },
-    Git { url: String, branch: Option<String> },
-    Http { url: String },
-    Local { path: PathBuf },
+    GitHub {
+        owner: String,
+        repo: String,
+        branch: Option<String>,
+    },
+    Git {
+        url: String,
+        branch: Option<String>,
+    },
+    Http {
+        url: String,
+    },
+    Local {
+        path: PathBuf,
+    },
 }
 
 // ── PluginManager ──
@@ -122,7 +136,9 @@ pub struct MarketplacePluginEntry {
 }
 
 /// Deserialize `source` field that can be either a nested object or a flat string.
-fn deserialize_source_compat<'de, D>(deserializer: D) -> Result<Option<MarketplacePluginSource>, D::Error>
+fn deserialize_source_compat<'de, D>(
+    deserializer: D,
+) -> Result<Option<MarketplacePluginSource>, D::Error>
 where
     D: serde::Deserializer<'de>,
 {
@@ -150,8 +166,8 @@ where
             }))
         }
         Some(obj) => {
-            let nested: MarketplacePluginSource = serde_json::from_value(obj)
-                .map_err(de::Error::custom)?;
+            let nested: MarketplacePluginSource =
+                serde_json::from_value(obj).map_err(de::Error::custom)?;
             Ok(Some(nested))
         }
     }
@@ -160,9 +176,10 @@ where
 /// Check if a marketplace entry refers to a bundled plugin
 /// (relative path like `./plugins/frontend-design` inside the marketplace repo).
 fn is_bundled_source(entry: &MarketplacePluginEntry) -> bool {
-    entry.source.as_ref().map_or(false, |s| {
-        s.url.starts_with("./") || s.url.starts_with("../")
-    })
+    entry
+        .source
+        .as_ref()
+        .is_some_and(|s| s.url.starts_with("./") || s.url.starts_with("../"))
 }
 
 /// Find the plugin manifest file for a cloned plugin directory.
@@ -210,7 +227,9 @@ pub struct MarketplacePluginSource {
 /// Deserialize the plugins array with per-entry error tolerance — individual
 /// entries that fail to parse are logged and skipped rather than failing the
 /// entire index.
-fn deserialize_plugins_with_skip<'de, D>(deserializer: D) -> Result<Vec<MarketplacePluginEntry>, D::Error>
+fn deserialize_plugins_with_skip<'de, D>(
+    deserializer: D,
+) -> Result<Vec<MarketplacePluginEntry>, D::Error>
 where
     D: serde::Deserializer<'de>,
 {
@@ -220,13 +239,19 @@ where
         match serde_json::from_value::<MarketplacePluginEntry>(val.clone()) {
             Ok(entry) => {
                 if entry.name.is_empty() {
-                    tracing::warn!(index = i, "marketplace plugin entry missing 'name' — skipping");
+                    tracing::warn!(
+                        index = i,
+                        "marketplace plugin entry missing 'name' — skipping"
+                    );
                     continue;
                 }
                 plugins.push(entry);
             }
             Err(e) => {
-                let name = val.get("name").and_then(|n| n.as_str()).unwrap_or("<unknown>");
+                let name = val
+                    .get("name")
+                    .and_then(|n| n.as_str())
+                    .unwrap_or("<unknown>");
                 tracing::warn!(index = i, %name, error = %e, "failed to parse marketplace plugin entry — skipping");
             }
         }
@@ -276,9 +301,8 @@ impl PluginManager {
     pub fn discover_installed(&mut self) -> Result<usize, String> {
         let dir = &self.plugin_dir;
         if !dir.exists() {
-            std::fs::create_dir_all(dir).map_err(|e| {
-                format!("failed to create plugin dir `{}`: {e}", dir.display())
-            })?;
+            std::fs::create_dir_all(dir)
+                .map_err(|e| format!("failed to create plugin dir `{}`: {e}", dir.display()))?;
             return Ok(0);
         }
         let mut count = 0;
@@ -391,15 +415,13 @@ impl PluginManager {
 
         // Cache the index to disk
         let cache_dir = self.plugin_dir.join("marketplaces");
-        std::fs::create_dir_all(&cache_dir).map_err(|e| {
-            format!("failed to create marketplace cache dir: {e}")
-        })?;
+        std::fs::create_dir_all(&cache_dir)
+            .map_err(|e| format!("failed to create marketplace cache dir: {e}"))?;
         let cache_path = cache_dir.join(format!("{name}.json"));
         let cache_json = serde_json::to_string_pretty(&index)
             .map_err(|e| format!("failed to serialize marketplace index: {e}"))?;
-        std::fs::write(&cache_path, &cache_json).map_err(|e| {
-            format!("failed to cache marketplace index: {e}")
-        })?;
+        std::fs::write(&cache_path, &cache_json)
+            .map_err(|e| format!("failed to cache marketplace index: {e}"))?;
 
         info!(
             name = %index.name,
@@ -414,7 +436,10 @@ impl PluginManager {
     /// Precedence:
     /// 1. `.claude-plugin/marketplace.json` — Claude Code standard index
     /// 2. `plugins/*/plugin.json` — directory-based fallback
-    async fn refresh_git_marketplace(&self, mc: &MarketplaceConfig) -> Result<MarketplaceIndex, String> {
+    async fn refresh_git_marketplace(
+        &self,
+        mc: &MarketplaceConfig,
+    ) -> Result<MarketplaceIndex, String> {
         let (git_url, branch) = match mc.source.as_str() {
             "GitHub" => {
                 let owner = mc.owner.as_deref().unwrap_or("");
@@ -463,58 +488,56 @@ impl PluginManager {
         // ── Fallback: scan plugins/ directory ──
         let plugins_dir = repo_dir.join("plugins");
         let mut plugins = Vec::new();
-        if plugins_dir.is_dir() {
-            if let Ok(entries) = std::fs::read_dir(&plugins_dir) {
-                for entry in entries.flatten() {
-                    let path = entry.path();
-                    if !path.is_dir() {
-                        continue;
-                    }
-                    let manifest_path = path.join("plugin.json");
-                    if !manifest_path.exists() {
-                        continue;
-                    }
-                    match std::fs::read_to_string(&manifest_path) {
-                        Ok(content) => {
-                            match serde_json::from_str::<PluginManifest>(&content) {
-                                Ok(manifest) => {
-                                    let entry = MarketplacePluginEntry {
-                                        name: manifest.name.clone(),
-                                        version: manifest.version.clone().unwrap_or_default(),
-                                        description: manifest.description.clone().unwrap_or_default(),
-                                        homepage: manifest.repository.clone(),
-                                        source: Some(MarketplacePluginSource {
-                                            source: "github".into(),
-                                            url: manifest.repository.clone().unwrap_or_default(),
-                                            path: None,
-                                            r#ref: None,
-                                            sha: None,
-                                        }),
-                                        repository: manifest.repository.clone(),
-                                        tags: Vec::new(),
-                                        owner: mc.owner.clone(),
-                                        repo: mc.repo.clone(),
-                                        branch: mc.branch.clone(),
-                                        url: None,
-                                    };
-                                    plugins.push(entry);
-                                }
-                                Err(e) => {
-                                    tracing::warn!(
-                                        path = %manifest_path.display(),
-                                        error = %e,
-                                        "failed to parse plugin manifest — skipping"
-                                    );
-                                }
-                            }
+        if plugins_dir.is_dir()
+            && let Ok(entries) = std::fs::read_dir(&plugins_dir)
+        {
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if !path.is_dir() {
+                    continue;
+                }
+                let manifest_path = path.join("plugin.json");
+                if !manifest_path.exists() {
+                    continue;
+                }
+                match std::fs::read_to_string(&manifest_path) {
+                    Ok(content) => match serde_json::from_str::<PluginManifest>(&content) {
+                        Ok(manifest) => {
+                            let entry = MarketplacePluginEntry {
+                                name: manifest.name.clone(),
+                                version: manifest.version.clone().unwrap_or_default(),
+                                description: manifest.description.clone().unwrap_or_default(),
+                                homepage: manifest.repository.clone(),
+                                source: Some(MarketplacePluginSource {
+                                    source: "github".into(),
+                                    url: manifest.repository.clone().unwrap_or_default(),
+                                    path: None,
+                                    r#ref: None,
+                                    sha: None,
+                                }),
+                                repository: manifest.repository.clone(),
+                                tags: Vec::new(),
+                                owner: mc.owner.clone(),
+                                repo: mc.repo.clone(),
+                                branch: mc.branch.clone(),
+                                url: None,
+                            };
+                            plugins.push(entry);
                         }
                         Err(e) => {
                             tracing::warn!(
                                 path = %manifest_path.display(),
                                 error = %e,
-                                "failed to read plugin manifest — skipping"
+                                "failed to parse plugin manifest — skipping"
                             );
                         }
+                    },
+                    Err(e) => {
+                        tracing::warn!(
+                            path = %manifest_path.display(),
+                            error = %e,
+                            "failed to read plugin manifest — skipping"
+                        );
                     }
                 }
             }
@@ -529,7 +552,10 @@ impl PluginManager {
     }
 
     /// Fetch an HTTP marketplace index with status-code validation.
-    async fn refresh_http_marketplace(&self, mc: &MarketplaceConfig) -> Result<MarketplaceIndex, String> {
+    async fn refresh_http_marketplace(
+        &self,
+        mc: &MarketplaceConfig,
+    ) -> Result<MarketplaceIndex, String> {
         info!("Refreshing marketplace '{}' from {}", mc.name, mc.url);
 
         let mut builder = reqwest::Client::builder();
@@ -540,7 +566,8 @@ impl PluginManager {
             .build()
             .map_err(|e| format!("failed to build HTTP client: {e}"))?;
 
-        let response = client.get(&mc.url)
+        let response = client
+            .get(&mc.url)
             .send()
             .await
             .map_err(|e| format!("failed to fetch marketplace '{}': {e}", mc.name))?;
@@ -564,8 +591,13 @@ impl PluginManager {
     }
 
     /// Scan a local directory for plugins (same structure as git marketplace).
-    fn refresh_local_marketplace(&self, mc: &MarketplaceConfig) -> Result<MarketplaceIndex, String> {
-        let path = mc.path.as_deref()
+    fn refresh_local_marketplace(
+        &self,
+        mc: &MarketplaceConfig,
+    ) -> Result<MarketplaceIndex, String> {
+        let path = mc
+            .path
+            .as_deref()
             .ok_or_else(|| "Local source requires 'path'".to_string())?;
 
         if !path.exists() || !path.is_dir() {
@@ -577,40 +609,40 @@ impl PluginManager {
 
         let plugins_dir = path.join("plugins");
         let mut plugins = Vec::new();
-        if plugins_dir.is_dir() {
-            if let Ok(entries) = std::fs::read_dir(&plugins_dir) {
-                for entry in entries.flatten() {
-                    let entry_path = entry.path();
-                    if !entry_path.is_dir() {
-                        continue;
-                    }
-                    let manifest_path = entry_path.join("plugin.json");
-                    if !manifest_path.exists() {
-                        continue;
-                    }
-                    if let Ok(content) = std::fs::read_to_string(&manifest_path) {
-                        if let Ok(manifest) = serde_json::from_str::<PluginManifest>(&content) {
-                            plugins.push(MarketplacePluginEntry {
-                                name: manifest.name.clone(),
-                                version: manifest.version.clone().unwrap_or_default(),
-                                description: manifest.description.clone().unwrap_or_default(),
-                                homepage: manifest.repository.clone(),
-                                source: Some(MarketplacePluginSource {
-                                    source: "local".into(),
-                                    url: manifest.repository.clone().unwrap_or_default(),
-                                    path: None,
-                                    r#ref: None,
-                                    sha: None,
-                                }),
-                                repository: manifest.repository.clone(),
-                                tags: Vec::new(),
-                                owner: None,
-                                repo: None,
-                                branch: None,
-                                url: None,
-                            });
-                        }
-                    }
+        if plugins_dir.is_dir()
+            && let Ok(entries) = std::fs::read_dir(&plugins_dir)
+        {
+            for entry in entries.flatten() {
+                let entry_path = entry.path();
+                if !entry_path.is_dir() {
+                    continue;
+                }
+                let manifest_path = entry_path.join("plugin.json");
+                if !manifest_path.exists() {
+                    continue;
+                }
+                if let Ok(content) = std::fs::read_to_string(&manifest_path)
+                    && let Ok(manifest) = serde_json::from_str::<PluginManifest>(&content)
+                {
+                    plugins.push(MarketplacePluginEntry {
+                        name: manifest.name.clone(),
+                        version: manifest.version.clone().unwrap_or_default(),
+                        description: manifest.description.clone().unwrap_or_default(),
+                        homepage: manifest.repository.clone(),
+                        source: Some(MarketplacePluginSource {
+                            source: "local".into(),
+                            url: manifest.repository.clone().unwrap_or_default(),
+                            path: None,
+                            r#ref: None,
+                            sha: None,
+                        }),
+                        repository: manifest.repository.clone(),
+                        tags: Vec::new(),
+                        owner: None,
+                        repo: None,
+                        branch: None,
+                        url: None,
+                    });
                 }
             }
         }
@@ -653,9 +685,10 @@ impl PluginManager {
         };
 
         if mp_names.is_empty() {
-            return Err(format!(
+            return Err(
                 "no marketplaces configured. Add [[plugins.marketplaces]] to agent.toml."
-            ));
+                    .to_string(),
+            );
         }
 
         // ── Phase 1: search cached indexes (fast) ──
@@ -704,7 +737,11 @@ impl PluginManager {
     /// 2. Name starts with query
     /// 3. Name contains query
     /// 4. Description or tags contain query
-    pub fn search(&self, cached_indexes: &[MarketplaceIndex], query: &str) -> Vec<MarketplacePluginEntry> {
+    pub fn search(
+        &self,
+        cached_indexes: &[MarketplaceIndex],
+        query: &str,
+    ) -> Vec<MarketplacePluginEntry> {
         let query_lower = query.to_lowercase();
         let mut results: Vec<(u8, MarketplacePluginEntry)> = Vec::new();
 
@@ -712,7 +749,10 @@ impl PluginManager {
             for plugin in &index.plugins {
                 let name_lower = plugin.name.to_lowercase();
                 let desc_lower = plugin.description.to_lowercase();
-                let tag_match = plugin.tags.iter().any(|t| t.to_lowercase().contains(&query_lower));
+                let tag_match = plugin
+                    .tags
+                    .iter()
+                    .any(|t| t.to_lowercase().contains(&query_lower));
 
                 let priority = if name_lower == query_lower {
                     0 // exact match
@@ -741,12 +781,19 @@ impl PluginManager {
 
     /// Load a cached marketplace index from disk.
     pub fn load_cached_index(&self, name: &str) -> Result<Option<MarketplaceIndex>, String> {
-        let cache_path = self.plugin_dir.join("marketplaces").join(format!("{name}.json"));
+        let cache_path = self
+            .plugin_dir
+            .join("marketplaces")
+            .join(format!("{name}.json"));
         if !cache_path.exists() {
             return Ok(None);
         }
-        let content = std::fs::read_to_string(&cache_path)
-            .map_err(|e| format!("failed to read cached index '{}': {e}", cache_path.display()))?;
+        let content = std::fs::read_to_string(&cache_path).map_err(|e| {
+            format!(
+                "failed to read cached index '{}': {e}",
+                cache_path.display()
+            )
+        })?;
         let index: MarketplaceIndex = serde_json::from_str(&content)
             .map_err(|e| format!("invalid cached index '{}': {e}", cache_path.display()))?;
         Ok(Some(index))
@@ -791,20 +838,24 @@ impl PluginManager {
         dest: &Path,
         entry: &MarketplacePluginEntry,
     ) -> Result<InstalledPlugin, String> {
-        let manifest_path = find_plugin_manifest(dest)
-            .ok_or_else(|| {
-                let _ = std::fs::remove_dir_all(dest);
-                format!("installed plugin '{}' has no plugin.json or .claude-plugin/plugin.json", entry.name)
-            })?;
+        let manifest_path = find_plugin_manifest(dest).ok_or_else(|| {
+            let _ = std::fs::remove_dir_all(dest);
+            format!(
+                "installed plugin '{}' has no plugin.json or .claude-plugin/plugin.json",
+                entry.name
+            )
+        })?;
         let content = std::fs::read_to_string(&manifest_path)
             .map_err(|e| format!("failed to read plugin manifest: {e}"))?;
-        let manifest: PluginManifest = serde_json::from_str(&content)
-            .map_err(|e| format!("invalid plugin.json: {e}"))?;
+        let manifest: PluginManifest =
+            serde_json::from_str(&content).map_err(|e| format!("invalid plugin.json: {e}"))?;
 
         let installed = InstalledPlugin {
             path: dest.to_path_buf(),
             manifest: manifest.clone(),
-            source: PluginSource::Local { path: dest.to_path_buf() },
+            source: PluginSource::Local {
+                path: dest.to_path_buf(),
+            },
         };
 
         self.installed
@@ -822,20 +873,24 @@ impl PluginManager {
         entry: &MarketplacePluginEntry,
         dest: &Path,
     ) -> Result<InstalledPlugin, String> {
-        let rel_path = entry.source.as_ref()
+        let rel_path = entry
+            .source
+            .as_ref()
             .map(|s| s.url.as_str())
             .filter(|u| u.starts_with("./") || u.starts_with("../"))
-            .ok_or_else(|| format!(
-                "plugin '{}': bundled source path not found in entry",
-                entry.name
-            ))?;
+            .ok_or_else(|| {
+                format!(
+                    "plugin '{}': bundled source path not found in entry",
+                    entry.name
+                )
+            })?;
 
         let mp_name = self.resolve_marketplace_for_entry(entry)?;
-        let source_path = self.plugin_dir
+        let source_path = self
+            .plugin_dir
             .join("marketplaces")
             .join(&mp_name)
             .join(rel_path.trim_start_matches("./"));
-
 
         if !source_path.exists() {
             return Err(format!(
@@ -857,13 +912,16 @@ impl PluginManager {
     }
 
     /// Find which marketplace contains this entry (by searching cached indexes).
-    fn resolve_marketplace_for_entry(&self, entry: &MarketplacePluginEntry) -> Result<String, String> {
+    fn resolve_marketplace_for_entry(
+        &self,
+        entry: &MarketplacePluginEntry,
+    ) -> Result<String, String> {
         // Try cached indexes first
         for mc in &self.marketplaces {
-            if let Ok(Some(index)) = self.load_cached_index(&mc.name) {
-                if index.plugins.iter().any(|p| p.name == entry.name) {
-                    return Ok(mc.name.clone());
-                }
+            if let Ok(Some(index)) = self.load_cached_index(&mc.name)
+                && index.plugins.iter().any(|p| p.name == entry.name)
+            {
+                return Ok(mc.name.clone());
             }
         }
         Err(format!(
@@ -874,8 +932,12 @@ impl PluginManager {
 
     /// Install a plugin from a local filesystem path.
     pub async fn install_from_path(&mut self, path: &Path) -> Result<InstalledPlugin, String> {
-        let manifest_path = find_plugin_manifest(path)
-            .ok_or_else(|| format!("no plugin.json or .claude-plugin/plugin.json found at `{}`", path.display()))?;
+        let manifest_path = find_plugin_manifest(path).ok_or_else(|| {
+            format!(
+                "no plugin.json or .claude-plugin/plugin.json found at `{}`",
+                path.display()
+            )
+        })?;
         let content = std::fs::read_to_string(&manifest_path)
             .map_err(|e| format!("failed to read `{}`: {e}", manifest_path.display()))?;
         let manifest: PluginManifest = serde_json::from_str(&content)
@@ -937,7 +999,10 @@ impl PluginManager {
         }
 
         let candidates: Vec<&MarketplaceConfig> = if let Some(filter) = marketplace_filter {
-            let found = self.marketplaces.iter().find(|m| m.name == filter)
+            let found = self
+                .marketplaces
+                .iter()
+                .find(|m| m.name == filter)
                 .ok_or_else(|| format!("marketplace '{filter}' not found in configuration"))?;
             vec![found]
         } else {
@@ -980,7 +1045,9 @@ impl PluginManager {
 
         // ── Search for exact match ──
         let results = self.search(&indexes, name);
-        let entry = results.into_iter().find(|e| e.name.to_lowercase() == name.to_lowercase())
+        let entry = results
+            .into_iter()
+            .find(|e| e.name.to_lowercase() == name.to_lowercase())
             .ok_or_else(|| {
                 format!(
                     "plugin '{}' not found in any configured marketplace ({}). \
@@ -1018,24 +1085,24 @@ fn collect_skills_from_dir(dir: &Path, plugin_name: &str, out: &mut Vec<Skill>) 
             let path = entry.path();
             if path.is_dir() {
                 collect_skills_from_dir(&path, plugin_name, out);
-            } else if path.extension().map(|e| e == "md").unwrap_or(false) {
-                if let Some(stem) = path.file_stem().and_then(|s| s.to_str()) {
-                    match Skill::from_file(stem, &path) {
-                        Ok(mut skill) => {
-                            skill.source = SkillSource::Plugin(plugin_name.to_string());
-                            out.push(skill);
-                        }
-                        Err(e) => {
-                            // Many .md files in plugin repos are regular docs,
-                            // not skills (README, AGENTS, CLAUDE, CODE_OF_CONDUCT,
-                            // design specs, etc.). Silently skip them to avoid
-                            // log-spam — use RUST_LOG=trace if you need to see them.
-                            tracing::trace!(
-                                path = %path.display(),
-                                error = %e,
-                                "skipped non-skill .md file in plugin"
-                            );
-                        }
+            } else if path.extension().map(|e| e == "md").unwrap_or(false)
+                && let Some(stem) = path.file_stem().and_then(|s| s.to_str())
+            {
+                match Skill::from_file(stem, &path) {
+                    Ok(mut skill) => {
+                        skill.source = SkillSource::Plugin(plugin_name.to_string());
+                        out.push(skill);
+                    }
+                    Err(e) => {
+                        // Many .md files in plugin repos are regular docs,
+                        // not skills (README, AGENTS, CLAUDE, CODE_OF_CONDUCT,
+                        // design specs, etc.). Silently skip them to avoid
+                        // log-spam — use RUST_LOG=trace if you need to see them.
+                        tracing::trace!(
+                            path = %path.display(),
+                            error = %e,
+                            "skipped non-skill .md file in plugin"
+                        );
                     }
                 }
             }
@@ -1067,22 +1134,22 @@ fn copy_dir_all(src: &Path, dst: &Path) -> Result<(), std::io::Error> {
 /// 3. `owner`/`repo` (legacy flat fields → `https://github.com/{owner}/{repo}.git`)
 fn resolve_plugin_source(entry: &MarketplacePluginEntry) -> Result<(String, String), String> {
     // ── Claude Code nested source ──
-    if let Some(ref src) = entry.source {
-        if !src.url.is_empty() {
-            let git_url = if src.url.starts_with("https://") || src.url.starts_with("git@") {
-                src.url.clone()
-            } else if src.url.contains('/') {
-                // Shorthand like "owner/repo" → expand to full GitHub URL
-                format!("https://github.com/{}.git", src.url)
-            } else {
-                return Err(format!(
-                    "plugin '{}': unrecognized source URL '{}'",
-                    entry.name, src.url
-                ));
-            };
-            let branch = src.r#ref.as_deref().unwrap_or("main").to_string();
-            return Ok((git_url, branch));
-        }
+    if let Some(ref src) = entry.source
+        && !src.url.is_empty()
+    {
+        let git_url = if src.url.starts_with("https://") || src.url.starts_with("git@") {
+            src.url.clone()
+        } else if src.url.contains('/') {
+            // Shorthand like "owner/repo" → expand to full GitHub URL
+            format!("https://github.com/{}.git", src.url)
+        } else {
+            return Err(format!(
+                "plugin '{}': unrecognized source URL '{}'",
+                entry.name, src.url
+            ));
+        };
+        let branch = src.r#ref.as_deref().unwrap_or("main").to_string();
+        return Ok((git_url, branch));
     }
 
     // ── Flat repository field ──
@@ -1107,12 +1174,19 @@ fn resolve_plugin_source(entry: &MarketplacePluginEntry) -> Result<(String, Stri
 ///
 /// When `proxy` is set, passes `-c http.proxy=<url>` and `-c https.proxy=<url>`
 /// so that `git clone` respects the configured proxy.
-fn clone_git_repo(url: &str, branch: &str, dest: &Path, proxy: Option<&ProxyConfig>) -> Result<(), String> {
+fn clone_git_repo(
+    url: &str,
+    branch: &str,
+    dest: &Path,
+    proxy: Option<&ProxyConfig>,
+) -> Result<(), String> {
     use std::process::Command;
     let mut cmd = Command::new("git");
     cmd.arg("clone")
-        .arg("--depth").arg("1")
-        .arg("--branch").arg(branch)
+        .arg("--depth")
+        .arg("1")
+        .arg("--branch")
+        .arg(branch)
         .arg("--single-branch");
 
     // Inject proxy via git -c flags (works without modifying global .gitconfig)
@@ -1123,7 +1197,8 @@ fn clone_git_repo(url: &str, branch: &str, dest: &Path, proxy: Option<&ProxyConf
 
     cmd.arg(url).arg(dest);
 
-    let output = cmd.output()
+    let output = cmd
+        .output()
         .map_err(|e| format!("failed to spawn git: {e}"))?;
 
     if !output.status.success() {
@@ -1149,7 +1224,8 @@ fn git_fetch_update(repo_dir: &Path, proxy: Option<&ProxyConfig>) -> Result<(), 
     fetch.arg("-C").arg(repo_dir);
     git_with_proxy(&mut fetch);
     fetch.args(["fetch", "--depth", "1", "origin"]);
-    let fetch_out = fetch.output()
+    let fetch_out = fetch
+        .output()
         .map_err(|e| format!("git fetch failed: {e}"))?;
     if !fetch_out.status.success() {
         let stderr = String::from_utf8_lossy(&fetch_out.stderr);
@@ -1161,7 +1237,8 @@ fn git_fetch_update(repo_dir: &Path, proxy: Option<&ProxyConfig>) -> Result<(), 
     reset.arg("-C").arg(repo_dir);
     git_with_proxy(&mut reset);
     reset.args(["reset", "--hard", "origin/HEAD"]);
-    let reset_out = reset.output()
+    let reset_out = reset
+        .output()
         .map_err(|e| format!("git reset failed: {e}"))?;
     if !reset_out.status.success() {
         let stderr = String::from_utf8_lossy(&reset_out.stderr);

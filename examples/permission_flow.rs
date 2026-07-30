@@ -10,9 +10,8 @@
 ///
 /// Runs without any LLM dependencies.
 use fox_agent_sdk::{
-    AgentBuilder, ApprovalManager, ApprovalScope, DefaultSafetyPolicy,
-    FoxAgentSdkConfig, MockProvider, PermissionRequest, PermissionResult,
-    SafetyConfig,
+    AgentBuilder, ApprovalManager, ApprovalScope, DefaultSafetyPolicy, FoxAgentSdkConfig,
+    MockProvider, PermissionRequest, PermissionResult, SafetyConfig,
 };
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -56,25 +55,38 @@ async fn main() {
     let tool_input = serde_json::json!({});
 
     // "read" — not in denylist, default=Allow → allowed
-    let result = agent.harness().check_tool_permission("read", &tool_input).await;
+    let result = agent
+        .harness()
+        .check_tool_permission("read", &tool_input)
+        .await;
     println!("  [read]       → {:?}", result);
 
     // "echo" — in denylist → AskUser
-    let result = agent.harness().check_tool_permission("echo", &tool_input).await;
+    let result = agent
+        .harness()
+        .check_tool_permission("echo", &tool_input)
+        .await;
     println!("  [echo]       → {:?}", result);
 
     // "write" — not in denylist, but `productive_tool_confirm=true` → AskUser
-    let result = agent.harness().check_tool_permission("write", &tool_input).await;
+    let result = agent
+        .harness()
+        .check_tool_permission("write", &tool_input)
+        .await;
     println!("  [write]      → {:?}", result);
 
     // MCP tool from auto-approved server → Allowed
-    let result =
-        agent.harness().check_tool_permission("mcp__akshare__get_news_data", &tool_input).await;
+    let result = agent
+        .harness()
+        .check_tool_permission("mcp__akshare__get_news_data", &tool_input)
+        .await;
     println!("  [mcp_akshare] → {:?}", result);
 
     // MCP tool from non-approved server → default=Allow → Allowed
-    let result =
-        agent.harness().check_tool_permission("mcp__filesystem__read", &tool_input).await;
+    let result = agent
+        .harness()
+        .check_tool_permission("mcp__filesystem__read", &tool_input)
+        .await;
     println!("  [mcp_filesys] → {:?}\n", result);
 
     // ── ApprovalManager with caching ──
@@ -100,12 +112,11 @@ async fn main() {
         .record_audit(&request, &PermissionResult::Allow, 42)
         .await;
 
-    let request2 = PermissionRequest::new("bash", "rm -rf /tmp/test")
-        .with_risk(
-            fox_agent_sdk::RiskLevel::High,
-            "denylist",
-            "Execute bash command: rm -rf /tmp/test",
-        );
+    let request2 = PermissionRequest::new("bash", "rm -rf /tmp/test").with_risk(
+        fox_agent_sdk::RiskLevel::High,
+        "denylist",
+        "Execute bash command: rm -rf /tmp/test",
+    );
     approval
         .record_audit(
             &request2,
@@ -119,9 +130,6 @@ async fn main() {
     // ── Export audit trail ──
     let audit_path = std::env::temp_dir().join("permission_audit_demo.jsonl");
     approval.export_audit(&audit_path).await.unwrap();
-    println!(
-        "> Audit trail exported to {}",
-        audit_path.display()
-    );
+    println!("> Audit trail exported to {}", audit_path.display());
     println!("\nDone.");
 }

@@ -7,11 +7,11 @@ use serde::Deserialize;
 use std::fs;
 use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, OnceLock, mpsc};
-use std::time::Duration;
 #[cfg(test)]
 use std::sync::Mutex;
+use std::sync::{Arc, OnceLock, mpsc};
 use std::thread;
+use std::time::Duration;
 use tracing::{info, warn};
 
 const DEFAULT_HF_ENDPOINT: &str = "https://hf-mirror.com/";
@@ -184,23 +184,21 @@ fn worker_loop(
             WorkerRequest::Embed {
                 inputs,
                 response_tx,
-            } => {
-                match process_embed_request(&runtime, &descriptor, &mut model, &inputs) {
-                    Ok(vectors) => {
-                        if let Some(first) = vectors.first() {
-                            let _ = dimension.set(first.len());
-                        }
-                        if response_tx.send(Ok(vectors)).is_err() {
-                            warn!("embedding result dropped: receiver timed out");
-                        }
+            } => match process_embed_request(&runtime, &descriptor, &mut model, &inputs) {
+                Ok(vectors) => {
+                    if let Some(first) = vectors.first() {
+                        let _ = dimension.set(first.len());
                     }
-                    Err(e) => {
-                        if response_tx.send(Err(e)).is_err() {
-                            warn!("embedding error dropped: receiver timed out");
-                        }
+                    if response_tx.send(Ok(vectors)).is_err() {
+                        warn!("embedding result dropped: receiver timed out");
                     }
                 }
-            }
+                Err(e) => {
+                    if response_tx.send(Err(e)).is_err() {
+                        warn!("embedding error dropped: receiver timed out");
+                    }
+                }
+            },
         }
     }
 }
@@ -254,9 +252,7 @@ fn process_embed_request(
 
     match result {
         Ok(vectors) => Ok(vectors),
-        Err(e) => Err(format!(
-            "embedding failed after model reload: {e}"
-        )),
+        Err(e) => Err(format!("embedding failed after model reload: {e}")),
     }
 }
 
@@ -265,7 +261,9 @@ fn load_embedding_model(
     descriptor: &EmbeddingModelDescriptor,
 ) -> Result<mistralrs::Model, String> {
     runtime.block_on(async {
-        let model_dir = prepare_model_dir(descriptor).await.map_err(|e| e.to_string())?;
+        let model_dir = prepare_model_dir(descriptor)
+            .await
+            .map_err(|e| e.to_string())?;
         tracing::info!(
             path = %model_dir.display(),
             model = %descriptor.model_id,
@@ -294,10 +292,7 @@ async fn prepare_model_dir(descriptor: &EmbeddingModelDescriptor) -> Result<Path
         // User specified a local model directory — create it if missing
         // and let download_repo_snapshot populate it.
         if !local.exists() {
-            info!(
-                "creating embedding model directory: {}",
-                local.display()
-            );
+            info!("creating embedding model directory: {}", local.display());
             fs::create_dir_all(local)
                 .with_context(|| format!("failed to create model directory {}", local.display()))?;
         }
@@ -323,7 +318,10 @@ fn has_model_snapshot(model_dir: &Path) -> bool {
     model_dir.join("config.json").exists()
 }
 
-async fn download_repo_snapshot(descriptor: &EmbeddingModelDescriptor, model_dir: &Path) -> Result<()> {
+async fn download_repo_snapshot(
+    descriptor: &EmbeddingModelDescriptor,
+    model_dir: &Path,
+) -> Result<()> {
     fs::create_dir_all(model_dir)
         .with_context(|| format!("failed to create model cache dir {}", model_dir.display()))?;
     let client = Client::builder()
@@ -339,7 +337,10 @@ async fn download_repo_snapshot(descriptor: &EmbeddingModelDescriptor, model_dir
     Ok(())
 }
 
-async fn list_repo_files(client: &Client, descriptor: &EmbeddingModelDescriptor) -> Result<Vec<String>> {
+async fn list_repo_files(
+    client: &Client,
+    descriptor: &EmbeddingModelDescriptor,
+) -> Result<Vec<String>> {
     let url = format!(
         "{}/api/models/{}",
         descriptor.endpoint.trim_end_matches('/'),
@@ -419,10 +420,10 @@ fn sanitize_repo_id(repo_id: &str) -> String {
 fn derive_embedding_version(descriptor: &EmbeddingModelDescriptor) -> String {
     let model_key = sanitize_repo_id(&descriptor.model_id);
     let model_dir = descriptor.resolved_model_dir();
-    if model_dir.exists() {
-        if let Ok(fingerprint) = fingerprint_model_dir(&model_dir) {
-            return format!("{model_key}@{fingerprint}");
-        }
+    if model_dir.exists()
+        && let Ok(fingerprint) = fingerprint_model_dir(&model_dir)
+    {
+        return format!("{model_key}@{fingerprint}");
     }
     if let Some(local_dir) = &descriptor.local_model_dir {
         return format!(
@@ -586,7 +587,8 @@ mod tests {
 
     #[test]
     fn derive_embedding_version_changes_when_local_snapshot_changes() {
-        let temp = std::env::temp_dir().join(format!("fox-embed-fingerprint-{}", uuid::Uuid::new_v4()));
+        let temp =
+            std::env::temp_dir().join(format!("fox-embed-fingerprint-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&temp).unwrap();
         std::fs::write(temp.join("config.json"), "{\"name\":\"v1\"}").unwrap();
 

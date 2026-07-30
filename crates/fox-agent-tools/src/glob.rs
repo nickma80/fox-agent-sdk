@@ -15,6 +15,12 @@ impl GlobTool {
     }
 }
 
+impl Default for GlobTool {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 #[derive(Deserialize)]
 struct GlobInput {
     pattern: String,
@@ -111,8 +117,12 @@ impl Tool for GlobTool {
     }
 }
 
-fn glob_blocking(base: &Path, pattern: &str) -> Result<Vec<(String, std::time::SystemTime)>, String> {
-    let glob_pattern = glob::Pattern::new(pattern).map_err(|e| format!("invalid glob pattern: {e}"))?;
+fn glob_blocking(
+    base: &Path,
+    pattern: &str,
+) -> Result<Vec<(String, std::time::SystemTime)>, String> {
+    let glob_pattern =
+        glob::Pattern::new(pattern).map_err(|e| format!("invalid glob pattern: {e}"))?;
 
     let collect_limit = MAX_RESULTS * 2;
     let results = Arc::new(std::sync::Mutex::new(Vec::with_capacity(MAX_RESULTS)));
@@ -169,7 +179,9 @@ fn glob_blocking(base: &Path, pattern: &str) -> Result<Vec<(String, std::time::S
                     .unwrap_or(std::time::UNIX_EPOCH);
 
                 count.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                let mut guard = results.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+                let mut guard = results
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner());
                 guard.push((path_str.to_string(), mtime));
             }
 
@@ -178,12 +190,17 @@ fn glob_blocking(base: &Path, pattern: &str) -> Result<Vec<(String, std::time::S
     });
 
     let mut final_results = match Arc::try_unwrap(results) {
-        Ok(mutex) => mutex.into_inner().unwrap_or_else(|poisoned| poisoned.into_inner()),
-        Err(arc) => arc.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).clone(),
+        Ok(mutex) => mutex
+            .into_inner()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()),
+        Err(arc) => arc
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clone(),
     };
 
     // Sort by modification time (newest first)
-    final_results.sort_by(|a, b| b.1.cmp(&a.1));
+    final_results.sort_by_key(|b| std::cmp::Reverse(b.1));
     final_results.truncate(MAX_RESULTS);
 
     Ok(final_results)

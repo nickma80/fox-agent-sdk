@@ -6,16 +6,16 @@
 //! - `trigger_recall_for_next_turn()` — background async recall using the
 //!   `fox_agent_core::MemoryManager` (with MemoryGraph persistence).
 
+use async_trait::async_trait;
+use fox_agent_core::{
+    AgentEvent, AgentEventTx, ContentBlock, ExtractedMemory, MemoryConfig, MemoryExtractor,
+    MemoryManager as CoreMemoryManager, MemoryRelevanceChecker, MemoryScope, Message, Model,
+    RecallMode, Role, format_recall_hits_display_prompt, format_recall_hits_prompt,
+    select_recall_hits_for_injection,
+};
+use futures::StreamExt;
 use std::path::PathBuf;
 use std::sync::Arc;
-use fox_agent_core::{
-    AgentEvent, AgentEventTx, ContentBlock, ExtractedMemory, MemoryExtractor,
-    MemoryManager as CoreMemoryManager, MemoryRelevanceChecker, MemoryScope, Message, Model,
-    RecallMode, Role, MemoryConfig, format_recall_hits_display_prompt,
-    format_recall_hits_prompt, select_recall_hits_for_injection,
-};
-use async_trait::async_trait;
-use futures::StreamExt;
 use tracing::Instrument;
 
 use std::time::Instant;
@@ -57,7 +57,10 @@ impl MemoryInjectionState {
         }
     }
 
-    pub fn apply(&mut self, event: MemoryInjectionEvent) -> Option<fox_agent_core::MemoryStateEvent> {
+    pub fn apply(
+        &mut self,
+        event: MemoryInjectionEvent,
+    ) -> Option<fox_agent_core::MemoryStateEvent> {
         match event {
             MemoryInjectionEvent::InjectionComputed { injection } => {
                 let snapshot = fox_agent_core::MemoryStateEvent::InjectionComputed {
@@ -70,9 +73,7 @@ impl MemoryInjectionState {
                 Some(snapshot)
             }
             MemoryInjectionEvent::InjectionConsumed => {
-                let Some(injection) = self.pending_injection.take() else {
-                    return None;
-                };
+                let injection = self.pending_injection.take()?;
                 self.total_injected_chars += injection.prompt.len() as u64;
                 self.last_injected_at = Some(Instant::now());
                 Some(fox_agent_core::MemoryStateEvent::InjectionConsumed {
@@ -140,11 +141,10 @@ impl MemoryManager {
 
     /// Store a memory entry via the core MemoryManager (project scope).
     pub async fn add_memory(&self, content: impl Into<String>) -> String {
-        let entry = fox_agent_core::MemoryEntry::new(
-            fox_agent_core::MemoryCategory::Fact,
-            content,
-        );
-        self.core.remember_project(entry).unwrap_or_else(|_| "".to_string())
+        let entry = fox_agent_core::MemoryEntry::new(fox_agent_core::MemoryCategory::Fact, content);
+        self.core
+            .remember_project(entry)
+            .unwrap_or_else(|_| "".to_string())
     }
 
     /// Background recall: searches the core MemoryManager for memories
@@ -162,69 +162,76 @@ impl MemoryManager {
         let cfg = self.cfg.clone();
         tokio::spawn(
             async move {
-            // Extract query from the most recent user message
-            let query = messages
-                .iter()
-                .rev()
-                .find_map(|m| {
-                    if m.role != Role::User {
-                        return None;
-                    }
-                    m.content.iter().find_map(|b| match b {
-                        ContentBlock::Text { text } => Some(text.clone()),
-                        _ => None,
+                // Extract query from the most recent user message
+                let query = messages
+                    .iter()
+                    .rev()
+                    .find_map(|m| {
+                        if m.role != Role::User {
+                            return None;
+                        }
+                        m.content.iter().find_map(|b| match b {
+                            ContentBlock::Text { text } => Some(text.clone()),
+                            _ => None,
+                        })
                     })
-                })
-                .unwrap_or_default();
+                    .unwrap_or_default();
 
-            if query.is_empty() {
-                return;
-            }
+                if query.is_empty() {
+                    return;
+                }
 
-            let results = match core.recall_detailed(
-                Some(&query),
-                cfg.max_results,
-                if core.semantic_enabled() { RecallMode::Cascade } else { RecallMode::Keyword },
-                MemoryScope::All,
-            ) {
-                Ok(r) => r,
-                Err(_) => return,
-            };
+                let results = match core.recall_detailed(
+                    Some(&query),
+                    cfg.max_results,
+                    if core.semantic_enabled() {
+                        RecallMode::Cascade
+                    } else {
+                        RecallMode::Keyword
+                    },
+                    MemoryScope::All,
+                ) {
+                    Ok(r) => r,
+                    Err(_) => return,
+                };
 
-            if results.is_empty() {
-                return;
-            }
+                if results.is_empty() {
+                    return;
+                }
 
-            let selected = select_recall_hits_for_injection(
-                &results,
-                cfg.injection_max_chars,
-                cfg.injection_max_per_category,
-            );
-            if selected.is_empty() {
-                return;
-            }
-            let Some(prompt) = format_recall_hits_prompt(
-                &selected,
-                cfg.injection_max_chars,
-                cfg.injection_max_per_category,
-            ) else {
-                return;
-            };
-            let display_prompt = format_recall_hits_display_prompt(
-                &selected,
-                cfg.injection_max_chars,
-                cfg.injection_max_per_category,
-            );
-            let selected_ids = selected.iter().map(|hit| hit.entry.id.clone()).collect::<Vec<_>>();
-            let injection = MemoryInjection {
-                prompt: format!("{prompt}\n"),
-                display_prompt,
-                count: selected.len() as u32,
-                memory_ids: selected_ids,
-            };
+                let selected = select_recall_hits_for_injection(
+                    &results,
+                    cfg.injection_max_chars,
+                    cfg.injection_max_per_category,
+                );
+                if selected.is_empty() {
+                    return;
+                }
+                let Some(prompt) = format_recall_hits_prompt(
+                    &selected,
+                    cfg.injection_max_chars,
+                    cfg.injection_max_per_category,
+                ) else {
+                    return;
+                };
+                let display_prompt = format_recall_hits_display_prompt(
+                    &selected,
+                    cfg.injection_max_chars,
+                    cfg.injection_max_per_category,
+                );
+                let selected_ids = selected
+                    .iter()
+                    .map(|hit| hit.entry.id.clone())
+                    .collect::<Vec<_>>();
+                let injection = MemoryInjection {
+                    prompt: format!("{prompt}\n"),
+                    display_prompt,
+                    count: selected.len() as u32,
+                    memory_ids: selected_ids,
+                };
 
-            let mut state = memory_state.write().await;
-            let _ = state.apply(MemoryInjectionEvent::InjectionComputed { injection });
+                let mut state = memory_state.write().await;
+                let _ = state.apply(MemoryInjectionEvent::InjectionComputed { injection });
             }
             .in_current_span(),
         );
@@ -239,7 +246,8 @@ impl MemoryManager {
         if !self.cfg.enabled || !self.cfg.auto_extract {
             return;
         }
-        let transcript = build_ingestion_transcript(&messages, self.cfg.auto_extract_message_window);
+        let transcript =
+            build_ingestion_transcript(&messages, self.cfg.auto_extract_message_window);
         if transcript.trim().is_empty() {
             return;
         }
@@ -247,34 +255,36 @@ impl MemoryManager {
         let cfg = self.cfg.clone();
         tokio::spawn(
             async move {
-            let worker = model_for_memory_tasks(model, cfg.verify_model.clone());
-            let extractor = ModelBackedExtractor { model: worker.clone() };
-            let checker = ModelBackedRelevanceChecker { model: worker };
-            let checker_ref: Option<&dyn MemoryRelevanceChecker> = Some(&checker);
-            let report = match core
-                .ingest_transcript(&transcript, &extractor, checker_ref)
-                .await
-            {
-                Ok(report) => report,
-                Err(_) => return,
-            };
-            if report.created_ids.is_empty()
-                && report.reinforced_ids.is_empty()
-                && report.skipped_duplicates == 0
-                && report.skipped_irrelevant == 0
-            {
-                return;
-            }
-            let _ = event_tx
-                .send(AgentEvent::MemoryStateChanged {
-                    event: fox_agent_core::MemoryStateEvent::IngestionCompleted {
-                        created_ids: report.created_ids,
-                        reinforced_ids: report.reinforced_ids,
-                        contradiction_ids: report.contradiction_ids,
-                        skipped: report.skipped_duplicates + report.skipped_irrelevant,
-                    },
-                })
-                .await;
+                let worker = model_for_memory_tasks(model, cfg.verify_model.clone());
+                let extractor = ModelBackedExtractor {
+                    model: worker.clone(),
+                };
+                let checker = ModelBackedRelevanceChecker { model: worker };
+                let checker_ref: Option<&dyn MemoryRelevanceChecker> = Some(&checker);
+                let report = match core
+                    .ingest_transcript(&transcript, &extractor, checker_ref)
+                    .await
+                {
+                    Ok(report) => report,
+                    Err(_) => return,
+                };
+                if report.created_ids.is_empty()
+                    && report.reinforced_ids.is_empty()
+                    && report.skipped_duplicates == 0
+                    && report.skipped_irrelevant == 0
+                {
+                    return;
+                }
+                let _ = event_tx
+                    .send(AgentEvent::MemoryStateChanged {
+                        event: fox_agent_core::MemoryStateEvent::IngestionCompleted {
+                            created_ids: report.created_ids,
+                            reinforced_ids: report.reinforced_ids,
+                            contradiction_ids: report.contradiction_ids,
+                            skipped: report.skipped_duplicates + report.skipped_irrelevant,
+                        },
+                    })
+                    .await;
             }
             .in_current_span(),
         );
@@ -333,7 +343,11 @@ struct ModelBackedRelevanceChecker {
 
 #[async_trait]
 impl MemoryExtractor for ModelBackedExtractor {
-    async fn extract(&self, transcript: &str, existing: &[String]) -> Result<Vec<ExtractedMemory>, String> {
+    async fn extract(
+        &self,
+        transcript: &str,
+        existing: &[String],
+    ) -> Result<Vec<ExtractedMemory>, String> {
         let mut system = String::from(
             r#"You are a memory extraction assistant. Extract important NEW learnings from the conversation that should be remembered for future sessions.
 
@@ -414,9 +428,8 @@ async fn run_memory_prompt(
         .map_err(|e| e.to_string())?;
     let mut output = String::new();
     while let Some(event) = stream.next().await {
-        match event.map_err(|e| e.to_string())? {
-            fox_agent_core::StreamEvent::TextDelta { text } => output.push_str(&text),
-            _ => {}
+        if let fox_agent_core::StreamEvent::TextDelta { text } = event.map_err(|e| e.to_string())? {
+            output.push_str(&text);
         }
     }
     Ok(output)

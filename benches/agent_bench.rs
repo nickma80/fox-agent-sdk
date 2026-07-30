@@ -43,7 +43,11 @@ fn bench_run_once_streaming_with_tools(c: &mut Criterion) {
         b.to_async(&rt).iter_with_large_drop(|| async {
             let (agent, provider) = build_mock_agent(vec![Arc::new(EchoTool)]).await;
             push_tool_then_text(
-                &provider, "c1", "echo", serde_json::json!({"text":"hi"}), "done",
+                &provider,
+                "c1",
+                "echo",
+                serde_json::json!({"text":"hi"}),
+                "done",
             );
             let (tx, mut rx) = tokio::sync::mpsc::channel(64);
             let _outcome = agent.run_once_streaming("go", &tx).await.unwrap();
@@ -64,7 +68,11 @@ fn bench_resume_streaming(c: &mut Criterion) {
         b.to_async(&rt).iter_with_large_drop(|| async {
             let (agent, provider) = build_mock_agent(vec![Arc::new(EchoTool)]).await;
             push_tool_then_text(
-                &provider, "c1", "echo", serde_json::json!({"text":"bench"}), "resumed",
+                &provider,
+                "c1",
+                "echo",
+                serde_json::json!({"text":"bench"}),
+                "resumed",
             );
             let (tx, mut rx) = tokio::sync::mpsc::channel(64);
             let _outcome = agent.run_once_streaming("go", &tx).await.unwrap();

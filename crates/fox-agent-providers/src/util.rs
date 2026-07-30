@@ -32,9 +32,10 @@ pub fn build_headers(cfg: &ProviderConfig) -> Result<HeaderMap, ProviderError> {
     }
 
     for (key, value) in &cfg.default_headers {
-        let name = HeaderName::from_bytes(key.as_bytes()).map_err(|err| ProviderError::Message {
-            message: format!("invalid default header name `{key}`: {err}"),
-        })?;
+        let name =
+            HeaderName::from_bytes(key.as_bytes()).map_err(|err| ProviderError::Message {
+                message: format!("invalid default header name `{key}`: {err}"),
+            })?;
         let value = HeaderValue::from_str(value).map_err(|err| ProviderError::Message {
             message: format!("invalid default header value for `{key}`: {err}"),
         })?;

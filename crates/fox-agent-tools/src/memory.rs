@@ -177,9 +177,15 @@ impl Tool for MemoryTool {
                     .with_tags(input.tags.unwrap_or_default());
 
                 let id = match scope {
-                    MemoryScope::Session => manager.remember_session(entry).map_err(|e| ToolError::Message { message: e })?,
-                    MemoryScope::Global => manager.remember_global(entry).map_err(|e| ToolError::Message { message: e })?,
-                    _ => manager.remember_project(entry).map_err(|e| ToolError::Message { message: e })?,
+                    MemoryScope::Session => manager
+                        .remember_session(entry)
+                        .map_err(|e| ToolError::Message { message: e })?,
+                    MemoryScope::Global => manager
+                        .remember_global(entry)
+                        .map_err(|e| ToolError::Message { message: e })?,
+                    _ => manager
+                        .remember_project(entry)
+                        .map_err(|e| ToolError::Message { message: e })?,
                 };
 
                 Ok(ToolOutput {
@@ -203,12 +209,18 @@ impl Tool for MemoryTool {
                     "keyword" => RecallMode::Keyword,
                     "semantic" => RecallMode::Semantic,
                     "cascade" => RecallMode::Cascade,
-                    other => return Err(ToolError::Message {
-                        message: format!("Unknown mode: {other}. Use recent, keyword, semantic, or cascade"),
-                    }),
+                    other => {
+                        return Err(ToolError::Message {
+                            message: format!(
+                                "Unknown mode: {other}. Use recent, keyword, semantic, or cascade"
+                            ),
+                        });
+                    }
                 };
 
-                let results = manager.recall_detailed(query, limit, mode, scope).map_err(|e| ToolError::Message { message: e })?;
+                let results = manager
+                    .recall_detailed(query, limit, mode, scope)
+                    .map_err(|e| ToolError::Message { message: e })?;
 
                 if results.is_empty() {
                     return Ok(ToolOutput {
@@ -231,7 +243,12 @@ impl Tool for MemoryTool {
                     };
                     out.push_str(&format!(
                         "- [{}] {}{}\n  id: {} (score: {:.0}%, source: {:?})\n",
-                        entry.category, entry.content, tags, entry.id, hit.score * 100.0, hit.retrieval_source
+                        entry.category,
+                        entry.content,
+                        tags,
+                        entry.id,
+                        hit.score * 100.0,
+                        hit.retrieval_source
                     ));
                     out.push_str(&format!(
                         "  breakdown: semantic={:?}, keyword={:?}, graph={:?}, recency={:.2}, trust={:.2}, final={:.2}\n\n",
@@ -272,7 +289,9 @@ impl Tool for MemoryTool {
             "search" => {
                 let query = input.query.as_deref().unwrap_or("");
                 let scope = Self::parse_scope(input.scope.as_deref(), MemoryScope::All)?;
-                let results = manager.search(query, scope).map_err(|e| ToolError::Message { message: e })?;
+                let results = manager
+                    .search(query, scope)
+                    .map_err(|e| ToolError::Message { message: e })?;
 
                 if results.is_empty() {
                     return Ok(ToolOutput {
@@ -284,7 +303,10 @@ impl Tool for MemoryTool {
 
                 let mut out = format!("Found {} memories:\n\n", results.len());
                 for e in &results {
-                    out.push_str(&format!("- [{}] {}\n  id: {}\n\n", e.category, e.content, e.id));
+                    out.push_str(&format!(
+                        "- [{}] {}\n  id: {}\n\n",
+                        e.category, e.content, e.id
+                    ));
                 }
                 Ok(ToolOutput {
                     text: out,
@@ -298,7 +320,9 @@ impl Tool for MemoryTool {
 
             "list" => {
                 let scope = Self::parse_scope(input.scope.as_deref(), MemoryScope::All)?;
-                let all = manager.list(scope).map_err(|e| ToolError::Message { message: e })?;
+                let all = manager
+                    .list(scope)
+                    .map_err(|e| ToolError::Message { message: e })?;
                 if all.is_empty() {
                     return Ok(ToolOutput {
                         text: "No memories stored.".to_string(),
@@ -308,7 +332,10 @@ impl Tool for MemoryTool {
                 }
                 let mut out = format!("All memories ({}):\n\n", all.len());
                 for e in &all {
-                    out.push_str(&format!("- [{}] {}\n  id: {}\n\n", e.category, e.content, e.id));
+                    out.push_str(&format!(
+                        "- [{}] {}\n  id: {}\n\n",
+                        e.category, e.content, e.id
+                    ));
                 }
                 Ok(ToolOutput {
                     text: out,
@@ -321,9 +348,15 @@ impl Tool for MemoryTool {
                 let id = input.id.ok_or_else(|| ToolError::Message {
                     message: "id required for forget action".to_string(),
                 })?;
-                let found = manager.forget(&id).map_err(|e| ToolError::Message { message: e })?;
+                let found = manager
+                    .forget(&id)
+                    .map_err(|e| ToolError::Message { message: e })?;
                 Ok(ToolOutput {
-                    text: if found { format!("Forgot: {id}") } else { format!("Not found: {id}") },
+                    text: if found {
+                        format!("Forgot: {id}")
+                    } else {
+                        format!("Not found: {id}")
+                    },
                     is_error: false,
                     json: Some(json!({ "action": "forget", "id": id, "found": found })),
                 })
@@ -361,9 +394,15 @@ impl Tool for MemoryTool {
                 let id = input.id.ok_or_else(|| ToolError::Message {
                     message: "id required for disable action".to_string(),
                 })?;
-                let found = manager.disable_memory(&id).map_err(|e| ToolError::Message { message: e })?;
+                let found = manager
+                    .disable_memory(&id)
+                    .map_err(|e| ToolError::Message { message: e })?;
                 Ok(ToolOutput {
-                    text: if found { format!("Disabled memory: {id}") } else { format!("Not found: {id}") },
+                    text: if found {
+                        format!("Disabled memory: {id}")
+                    } else {
+                        format!("Not found: {id}")
+                    },
                     is_error: false,
                     json: Some(json!({ "action": "disable", "id": id, "found": found })),
                 })
@@ -373,9 +412,15 @@ impl Tool for MemoryTool {
                 let id = input.id.ok_or_else(|| ToolError::Message {
                     message: "id required for enable action".to_string(),
                 })?;
-                let found = manager.enable_memory(&id).map_err(|e| ToolError::Message { message: e })?;
+                let found = manager
+                    .enable_memory(&id)
+                    .map_err(|e| ToolError::Message { message: e })?;
                 Ok(ToolOutput {
-                    text: if found { format!("Enabled memory: {id}") } else { format!("Not found: {id}") },
+                    text: if found {
+                        format!("Enabled memory: {id}")
+                    } else {
+                        format!("Not found: {id}")
+                    },
                     is_error: false,
                     json: Some(json!({ "action": "enable", "id": id, "found": found })),
                 })
@@ -385,7 +430,9 @@ impl Tool for MemoryTool {
                 let id = input.id.ok_or_else(|| ToolError::Message {
                     message: "id required for redact action".to_string(),
                 })?;
-                let replacement = input.replacement.unwrap_or_else(|| "[redacted]".to_string());
+                let replacement = input
+                    .replacement
+                    .unwrap_or_else(|| "[redacted]".to_string());
                 let found = manager
                     .redact_memory(&id, &replacement)
                     .map_err(|e| ToolError::Message { message: e })?;
@@ -413,7 +460,9 @@ impl Tool for MemoryTool {
                     message: "tags required for tag action".to_string(),
                 })?;
                 for tag in &tags {
-                    manager.tag_memory(&id, tag).map_err(|e| ToolError::Message { message: e })?;
+                    manager
+                        .tag_memory(&id, tag)
+                        .map_err(|e| ToolError::Message { message: e })?;
                 }
                 Ok(ToolOutput {
                     text: format!("Tagged memory {id} with: {}", tags.join(", ")),
@@ -430,11 +479,15 @@ impl Tool for MemoryTool {
                     message: "to_id required for link action".to_string(),
                 })?;
                 let weight = input.weight.unwrap_or(0.5);
-                manager.link_memories(&from_id, &to_id, weight).map_err(|e| ToolError::Message { message: e })?;
+                manager
+                    .link_memories(&from_id, &to_id, weight)
+                    .map_err(|e| ToolError::Message { message: e })?;
                 Ok(ToolOutput {
                     text: format!("Linked memories {from_id} -> {to_id} (weight {weight:.2})"),
                     is_error: false,
-                    json: Some(json!({ "action": "link", "from_id": from_id, "to_id": to_id, "weight": weight })),
+                    json: Some(
+                        json!({ "action": "link", "from_id": from_id, "to_id": to_id, "weight": weight }),
+                    ),
                 })
             }
 
@@ -443,7 +496,9 @@ impl Tool for MemoryTool {
                     message: "id required for related action".to_string(),
                 })?;
                 let depth = input.depth.unwrap_or(2);
-                let related = manager.get_related(&id, depth).map_err(|e| ToolError::Message { message: e })?;
+                let related = manager
+                    .get_related(&id, depth)
+                    .map_err(|e| ToolError::Message { message: e })?;
                 if related.is_empty() {
                     return Ok(ToolOutput {
                         text: format!("No related memories found for {id}"),
@@ -451,9 +506,15 @@ impl Tool for MemoryTool {
                         json: Some(json!({ "action": "related", "count": 0 })),
                     });
                 }
-                let mut out = format!("Found {} memories related to {id} (depth {depth}):\n\n", related.len());
+                let mut out = format!(
+                    "Found {} memories related to {id} (depth {depth}):\n\n",
+                    related.len()
+                );
                 for e in &related {
-                    out.push_str(&format!("- [{}] {}\n  id: {}\n\n", e.category, e.content, e.id));
+                    out.push_str(&format!(
+                        "- [{}] {}\n  id: {}\n\n",
+                        e.category, e.content, e.id
+                    ));
                 }
                 Ok(ToolOutput {
                     text: out,
@@ -463,7 +524,9 @@ impl Tool for MemoryTool {
             }
 
             "stats" => {
-                let stats = manager.graph_stats().map_err(|e| ToolError::Message { message: e })?;
+                let stats = manager
+                    .graph_stats()
+                    .map_err(|e| ToolError::Message { message: e })?;
                 Ok(ToolOutput {
                     text: format!(
                         "Memory Graph Statistics:\n  Memories: {}\n  Tags: {}\n  Edges: {}\n  Clusters: {}",
@@ -482,7 +545,9 @@ impl Tool for MemoryTool {
 
             "reembed" => {
                 let scope = Self::parse_scope(input.scope.as_deref(), MemoryScope::All)?;
-                let count = manager.reembed(scope).map_err(|e| ToolError::Message { message: e })?;
+                let count = manager
+                    .reembed(scope)
+                    .map_err(|e| ToolError::Message { message: e })?;
                 Ok(ToolOutput {
                     text: format!("Re-embedded {count} memories."),
                     is_error: false,
@@ -495,7 +560,9 @@ impl Tool for MemoryTool {
 
             "reindex" => {
                 let scope = Self::parse_scope(input.scope.as_deref(), MemoryScope::All)?;
-                let count = manager.reindex(scope).map_err(|e| ToolError::Message { message: e })?;
+                let count = manager
+                    .reindex(scope)
+                    .map_err(|e| ToolError::Message { message: e })?;
                 Ok(ToolOutput {
                     text: format!("Reindexed {count} memories."),
                     is_error: false,
@@ -508,7 +575,9 @@ impl Tool for MemoryTool {
 
             "refresh_clusters" => {
                 let scope = Self::parse_scope(input.scope.as_deref(), MemoryScope::All)?;
-                let stats = manager.refresh_clusters(scope).map_err(|e| ToolError::Message { message: e })?;
+                let stats = manager
+                    .refresh_clusters(scope)
+                    .map_err(|e| ToolError::Message { message: e })?;
                 Ok(ToolOutput {
                     text: format!(
                         "Refreshed clusters. project_clusters={}, global_clusters={}",
@@ -525,7 +594,9 @@ impl Tool for MemoryTool {
 
             "rebuild_ann" => {
                 let scope = Self::parse_scope(input.scope.as_deref(), MemoryScope::All)?;
-                let stats = manager.rebuild_ann(scope).map_err(|e| ToolError::Message { message: e })?;
+                let stats = manager
+                    .rebuild_ann(scope)
+                    .map_err(|e| ToolError::Message { message: e })?;
                 Ok(ToolOutput {
                     text: format!(
                         "Rebuilt ANN indexes. project_vectors={}, global_vectors={}",
@@ -590,11 +661,16 @@ impl Tool for MemoryTool {
             "compact" => {
                 let max_age_hours = input.max_age_hours.unwrap_or(24 * 30);
                 let scope = Self::parse_scope(input.scope.as_deref(), MemoryScope::All)?;
-                let compact = manager.compact(scope, max_age_hours).map_err(|e| ToolError::Message { message: e })?;
+                let compact = manager
+                    .compact(scope, max_age_hours)
+                    .map_err(|e| ToolError::Message { message: e })?;
                 Ok(ToolOutput {
                     text: format!(
                         "Compacted memories. project_removed={}, global_removed={}, removed_files={}, scanned={}.",
-                        compact.project_removed, compact.global_removed, compact.removed_files, compact.total_scanned
+                        compact.project_removed,
+                        compact.global_removed,
+                        compact.removed_files,
+                        compact.total_scanned
                     ),
                     is_error: false,
                     json: Some(json!({

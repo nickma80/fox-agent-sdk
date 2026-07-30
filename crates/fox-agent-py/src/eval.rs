@@ -5,9 +5,7 @@
 //! - BehaviorRuleEngine / RuleViolation (behavior rules)
 //! - TaskJudge / JudgeScores / EvalReport (LLM-as-judge)
 
-use fox_agent_core::{
-    self as core, AssertionReport, CommandAssertion, Provider, TaskAssertions,
-};
+use fox_agent_core::{self as core, AssertionReport, CommandAssertion, Provider, TaskAssertions};
 use fox_agent_sdk::eval::behavior_rules::{BehaviorRuleEngine, RuleSeverity, RuleViolation};
 use fox_agent_sdk::eval::{EvalReport, JudgeScores, TaskJudge};
 use pyo3::prelude::*;
@@ -21,15 +19,17 @@ use std::sync::Arc;
 /// The dict must contain at minimum `provider_name`, `base_url`, and `api_key`.
 fn build_provider_from_config(cfg: &core::ProviderConfig) -> Arc<dyn Provider> {
     match cfg.provider_name.as_str() {
-        "openai" => Arc::new(fox_agent_providers::OpenAiCompatibleProvider::new(cfg.clone())
-            .expect("failed to construct OpenAI provider")),
-        "anthropic" => Arc::new(fox_agent_providers::AnthropicCompatibleProvider::new(cfg.clone())
-            .expect("failed to construct Anthropic provider")),
+        "openai" => Arc::new(
+            fox_agent_providers::OpenAiCompatibleProvider::new(cfg.clone())
+                .expect("failed to construct OpenAI provider"),
+        ),
+        "anthropic" => Arc::new(
+            fox_agent_providers::AnthropicCompatibleProvider::new(cfg.clone())
+                .expect("failed to construct Anthropic provider"),
+        ),
         "deepseek" => Arc::new(fox_agent_providers::DeepSeekProvider::new(cfg.clone())),
         other => {
-            panic!(
-                "unknown provider name: {other}, expected: openai, anthropic, deepseek"
-            )
+            panic!("unknown provider name: {other}, expected: openai, anthropic, deepseek")
         }
     }
 }
@@ -196,15 +196,16 @@ impl PyTaskJudge {
     /// Returns JudgeScores on success, or raises RuntimeError on failure.
     fn evaluate(&self, report: PyEvalReport, py: Python<'_>) -> PyResult<PyJudgeScores> {
         let rt = crate::runtime::get_runtime();
-        let scores = py.allow_threads(|| {
-            rt.block_on(async { self.inner.evaluate(&report.into_inner()).await })
-        })
-        .map_err(|e| {
-            pyo3::exceptions::PyRuntimeError::new_err(format!(
-                "task judge evaluation failed: {}",
-                e
-            ))
-        })?;
+        let scores = py
+            .allow_threads(|| {
+                rt.block_on(async { self.inner.evaluate(&report.into_inner()).await })
+            })
+            .map_err(|e| {
+                pyo3::exceptions::PyRuntimeError::new_err(format!(
+                    "task judge evaluation failed: {}",
+                    e
+                ))
+            })?;
         Ok(PyJudgeScores { inner: scores })
     }
 
@@ -430,8 +431,7 @@ impl PyTaskAssertions {
     ///
     /// Returns an AssertionReport with pass/fail status and failure messages.
     fn run(&self, working_dir: String) -> PyAssertionReport {
-        let report =
-            core::run_task_assertions(&self.inner, &std::path::PathBuf::from(working_dir));
+        let report = core::run_task_assertions(&self.inner, &std::path::PathBuf::from(working_dir));
         PyAssertionReport { inner: report }
     }
 

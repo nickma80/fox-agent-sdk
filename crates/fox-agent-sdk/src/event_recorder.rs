@@ -7,7 +7,7 @@ use fox_agent_core::{AgentEvent, EnvelopePayload, EventEnvelope};
 use std::io::{BufRead, BufReader, Write};
 use std::path::PathBuf;
 use std::sync::Arc;
-use tokio::sync::{mpsc, RwLock};
+use tokio::sync::{RwLock, mpsc};
 
 /// Records agent events to a JSONL file and/or an in-memory buffer.
 ///
@@ -42,20 +42,17 @@ impl EventRecorder {
     /// Create a recorded envelope and return it.
     pub fn record(&self, source: &str, event: EnvelopePayload) -> EventEnvelope {
         let seq = self.seq.blocking_write();
-        let envelope = EventEnvelope::new(
-            &self.session_id,
-            self.turn_id,
-            *seq,
-            source,
-            event,
-        );
+        let envelope = EventEnvelope::new(&self.session_id, self.turn_id, *seq, source, event);
         // Non-blocking push to buffer
         let mut buf = self.buffer.blocking_write();
         buf.push(envelope.clone());
         drop(buf);
         drop(seq);
         // Advance sequence
-        { let mut s = self.seq.blocking_write(); *s += 1; }
+        {
+            let mut s = self.seq.blocking_write();
+            *s += 1;
+        }
         envelope
     }
 
@@ -97,9 +94,9 @@ impl EventRecorder {
         }
         let mut f = std::fs::File::create(path)?;
         for envelope in buf.iter() {
-            let line = envelope.to_json_line().map_err(|e| {
-                std::io::Error::new(std::io::ErrorKind::InvalidData, e.to_string())
-            })?;
+            let line = envelope
+                .to_json_line()
+                .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e.to_string()))?;
             // Scrub secrets from exported data
             let safe_line = crate::scrub::mask_event_payload(&line);
             writeln!(f, "{safe_line}")?;
@@ -117,9 +114,8 @@ impl EventRecorder {
             if line.trim().is_empty() {
                 continue;
             }
-            let envelope: EventEnvelope = serde_json::from_str(&line).map_err(|e| {
-                std::io::Error::new(std::io::ErrorKind::InvalidData, e.to_string())
-            })?;
+            let envelope: EventEnvelope = serde_json::from_str(&line)
+                .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e.to_string()))?;
             envelopes.push(envelope);
         }
         Ok(envelopes)

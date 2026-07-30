@@ -5,6 +5,10 @@ use fox_agent_core::{
 use serde_json::Value;
 use std::sync::Arc;
 
+/// Hook for custom permission logic: receives `(tool_name, input)` and returns
+/// a [`PermissionResult`].
+pub type PermissionHook = Arc<dyn Fn(&str, &Value) -> PermissionResult + Send + Sync + 'static>;
+
 #[derive(Clone)]
 pub struct SafetySystem {
     inner: Arc<SafetySystemInner>,
@@ -12,7 +16,7 @@ pub struct SafetySystem {
 
 struct SafetySystemInner {
     cfg: SafetyConfig,
-    custom_hook: Option<Arc<dyn Fn(&str, &serde_json::Value) -> PermissionResult + Send + Sync>>,
+    custom_hook: Option<PermissionHook>,
 }
 
 impl SafetySystem {
@@ -95,20 +99,48 @@ fn mcp_server_name(tool_name: &str) -> Option<&str> {
 impl SafetySystem {
     /// Check if a bash command is read-only (e.g. ls, grep, cat).
     fn is_readonly_bash(input: &Value) -> bool {
-        let cmd = input.get("command")
-            .and_then(|v| v.as_str())
-            .unwrap_or("");
+        let cmd = input.get("command").and_then(|v| v.as_str()).unwrap_or("");
         let cmd_trimmed = cmd.trim();
 
         // Dangerous patterns — if present, the command can modify the system
         let dangerous_patterns = [
-            "rm ", "mv ", "cp ", "dd ", ">", ">>", "chmod", "chown",
-            "kill", "shutdown", "reboot", "sudo", "su ",
-            "git commit", "git push", "git merge", "git rebase",
-            "cargo publish", "cargo build", "cargo test", "cargo run",
-            "make ", "cmake", "npm install", "pip install", "apt ",
-            "sed ", "awk ", "perl ", "python ", "node ", "ruby ",
-            "curl ", "wget ", "ssh ", "scp ", "rsync",
+            "rm ",
+            "mv ",
+            "cp ",
+            "dd ",
+            ">",
+            ">>",
+            "chmod",
+            "chown",
+            "kill",
+            "shutdown",
+            "reboot",
+            "sudo",
+            "su ",
+            "git commit",
+            "git push",
+            "git merge",
+            "git rebase",
+            "cargo publish",
+            "cargo build",
+            "cargo test",
+            "cargo run",
+            "make ",
+            "cmake",
+            "npm install",
+            "pip install",
+            "apt ",
+            "sed ",
+            "awk ",
+            "perl ",
+            "python ",
+            "node ",
+            "ruby ",
+            "curl ",
+            "wget ",
+            "ssh ",
+            "scp ",
+            "rsync",
         ];
 
         for pattern in &dangerous_patterns {
@@ -119,12 +151,39 @@ impl SafetySystem {
 
         // Known read-only prefixes
         let readonly_prefixes = [
-            "ls", "cat", "head", "tail", "grep", "find", "wc", "du", "df",
-            "file", "stat", "echo", "printf", "date", "uname", "whoami",
-            "which", "type", "env", "printenv", "pwd", "id", "ps",
-            "git log", "git show", "git diff", "git status", "git branch",
-            "cargo check", "cargo doc", "rustc --version",
-            "python --version", "node --version",
+            "ls",
+            "cat",
+            "head",
+            "tail",
+            "grep",
+            "find",
+            "wc",
+            "du",
+            "df",
+            "file",
+            "stat",
+            "echo",
+            "printf",
+            "date",
+            "uname",
+            "whoami",
+            "which",
+            "type",
+            "env",
+            "printenv",
+            "pwd",
+            "id",
+            "ps",
+            "git log",
+            "git show",
+            "git diff",
+            "git status",
+            "git branch",
+            "cargo check",
+            "cargo doc",
+            "rustc --version",
+            "python --version",
+            "node --version",
         ];
 
         for prefix in &readonly_prefixes {
@@ -168,41 +227,39 @@ impl SafetySystem {
         }
 
         // Rule 1: denylist (highest priority — overrides everything except custom hook)
-        if let Some(ref denylist) = self.inner.cfg.tool_denylist {
-            if Self::list_matches(denylist, tool_name) {
-                return PermissionResult::AskUser {
-                    request: PermissionRequest::new(
-                        tool_name,
-                        format!("tool `{tool_name}` is in the denylist and requires your confirmation"),
-                    ).with_risk(
-                        RiskLevel::High,
-                        "denylist",
-                        tool_name.to_string(),
-                    ),
-                };
-            }
+        if let Some(ref denylist) = self.inner.cfg.tool_denylist
+            && Self::list_matches(denylist, tool_name)
+        {
+            return PermissionResult::AskUser {
+                request: PermissionRequest::new(
+                    tool_name,
+                    format!("tool `{tool_name}` is in the denylist and requires your confirmation"),
+                )
+                .with_risk(RiskLevel::High, "denylist", tool_name.to_string()),
+            };
         }
 
         // Rule 2: allowlist — if set, only matching tools pass
         if let Some(ref allowlist) = self.inner.cfg.tool_allowlist {
             if Self::list_matches(allowlist, tool_name) {
-                return self.apply_productive_tool_confirm(tool_name, input, PermissionResult::Allow);
+                return self.apply_productive_tool_confirm(
+                    tool_name,
+                    input,
+                    PermissionResult::Allow,
+                );
             }
             // Allowlist is set but tool didn't match — deny
             return PermissionResult::Deny {
-                reason: format!(
-                    "tool `{tool_name}` is not in the allowlist and has been denied"
-                ),
+                reason: format!("tool `{tool_name}` is not in the allowlist and has been denied"),
             };
         }
 
         // Rule 3: MCP auto-approve — auto-allow tools from listed MCP servers
-        if let Some(ref servers) = self.inner.cfg.mcp_auto_approve_servers {
-            if let Some(server) = mcp_server_name(tool_name)
-                && servers.iter().any(|s| s == server)
-            {
-                return self.apply_productive_tool_confirm(tool_name, input, PermissionResult::Allow);
-            }
+        if let Some(ref servers) = self.inner.cfg.mcp_auto_approve_servers
+            && let Some(server) = mcp_server_name(tool_name)
+            && servers.iter().any(|s| s == server)
+        {
+            return self.apply_productive_tool_confirm(tool_name, input, PermissionResult::Allow);
         }
 
         // Rule 4: MCP profile-aware gating
@@ -220,7 +277,8 @@ impl SafetySystem {
                 request: PermissionRequest::new(
                     tool_name,
                     format!("tool `{tool_name}` requires your confirmation"),
-                ).with_risk(
+                )
+                .with_risk(
                     RiskLevel::Medium,
                     "default:confirm",
                     tool_name.to_string(),
@@ -257,33 +315,11 @@ impl SafetySystem {
             .unwrap_or(tool_name);
 
         let destructive_keywords = [
-            "write",
-            "delete",
-            "remove",
-            "create",
-            "rename",
-            "move",
-            "click",
-            "submit",
-            "type",
-            "fill",
-            "upload",
-            "press",
-            "execute",
-            "run",
-            "post",
-            "patch",
-            "put",
+            "write", "delete", "remove", "create", "rename", "move", "click", "submit", "type",
+            "fill", "upload", "press", "execute", "run", "post", "patch", "put",
         ];
         let interactive_browser_keywords = [
-            "click",
-            "submit",
-            "type",
-            "fill",
-            "upload",
-            "press",
-            "select",
-            "drag",
+            "click", "submit", "type", "fill", "upload", "press", "select", "drag",
         ];
         let readonly_keywords = [
             "read",
@@ -313,9 +349,10 @@ impl SafetySystem {
                 "write" | "mutate" | "delete" | "shell" | "execute" | "browser-interactive"
             )
         });
-        let capability_is_remote = profile.capability_tags.iter().any(|tag| {
-            matches!(tag.as_str(), "network" | "remote" | "http")
-        });
+        let capability_is_remote = profile
+            .capability_tags
+            .iter()
+            .any(|tag| matches!(tag.as_str(), "network" | "remote" | "http"));
 
         let ask = |risk_level: RiskLevel, policy_source: &str, prompt: String| {
             Some(PermissionResult::AskUser {
@@ -391,19 +428,27 @@ impl SafetySystem {
             McpServerKind::Filesystem if looks_destructive => ask(
                 RiskLevel::High,
                 "mcp-profile:filesystem-write",
-                format!("MCP filesystem tool `{original_name}` looks mutating and requires your confirmation"),
-            ),
-            McpServerKind::Unknown if profile.transport == McpTransportKind::Sse && looks_destructive => ask(
-                RiskLevel::Critical,
-                "mcp-profile:sse-unknown-write",
                 format!(
-                    "Remote MCP tool `{original_name}` uses SSE transport and looks mutating, so it requires your confirmation"
+                    "MCP filesystem tool `{original_name}` looks mutating and requires your confirmation"
                 ),
             ),
+            McpServerKind::Unknown
+                if profile.transport == McpTransportKind::Sse && looks_destructive =>
+            {
+                ask(
+                    RiskLevel::Critical,
+                    "mcp-profile:sse-unknown-write",
+                    format!(
+                        "Remote MCP tool `{original_name}` uses SSE transport and looks mutating, so it requires your confirmation"
+                    ),
+                )
+            }
             McpServerKind::Unknown if profile.transport == McpTransportKind::Sse => ask(
                 RiskLevel::High,
                 "mcp-profile:sse-unknown",
-                format!("Remote MCP tool `{original_name}` uses SSE transport and requires your confirmation"),
+                format!(
+                    "Remote MCP tool `{original_name}` uses SSE transport and requires your confirmation"
+                ),
             ),
             // Unknown MCP servers via Stdio still need confirmation — we don't
             // know what they can do, so treat them conservatively.
@@ -450,10 +495,9 @@ impl SafetySystem {
         PermissionResult::AskUser {
             request: PermissionRequest::new(
                 tool_name,
-                format!(
-                    "`{tool_name}` is a modification tool and requires your confirmation"
-                ),
-            ).with_risk(
+                format!("`{tool_name}` is a modification tool and requires your confirmation"),
+            )
+            .with_risk(
                 RiskLevel::High,
                 "productive-tool-confirm",
                 tool_name.to_string(),
@@ -589,9 +633,18 @@ mod tests {
             ..Default::default()
         };
         let system = SafetySystem::new(cfg);
-        assert!(matches!(system.check("read", &serde_json::json!({})), PermissionResult::Allow));
-        assert!(matches!(system.check("grep", &serde_json::json!({})), PermissionResult::Allow));
-        assert!(matches!(system.check("artifact_read", &serde_json::json!({})), PermissionResult::Allow));
+        assert!(matches!(
+            system.check("read", &serde_json::json!({})),
+            PermissionResult::Allow
+        ));
+        assert!(matches!(
+            system.check("grep", &serde_json::json!({})),
+            PermissionResult::Allow
+        ));
+        assert!(matches!(
+            system.check("artifact_read", &serde_json::json!({})),
+            PermissionResult::Allow
+        ));
     }
 
     #[test]
@@ -792,12 +845,24 @@ mod tests {
 
     #[test]
     fn test_is_readonly_bash() {
-        assert!(SafetySystem::is_readonly_bash(&serde_json::json!({"command": "ls -la"})));
-        assert!(SafetySystem::is_readonly_bash(&serde_json::json!({"command": "cat file.txt"})));
-        assert!(SafetySystem::is_readonly_bash(&serde_json::json!({"command": "grep -r pattern ."})));
-        assert!(!SafetySystem::is_readonly_bash(&serde_json::json!({"command": "rm -rf /tmp/foo"})));
-        assert!(!SafetySystem::is_readonly_bash(&serde_json::json!({"command": "git commit -m 'msg'"})));
-        assert!(!SafetySystem::is_readonly_bash(&serde_json::json!({"command": "cargo build"})));
+        assert!(SafetySystem::is_readonly_bash(
+            &serde_json::json!({"command": "ls -la"})
+        ));
+        assert!(SafetySystem::is_readonly_bash(
+            &serde_json::json!({"command": "cat file.txt"})
+        ));
+        assert!(SafetySystem::is_readonly_bash(
+            &serde_json::json!({"command": "grep -r pattern ."})
+        ));
+        assert!(!SafetySystem::is_readonly_bash(
+            &serde_json::json!({"command": "rm -rf /tmp/foo"})
+        ));
+        assert!(!SafetySystem::is_readonly_bash(
+            &serde_json::json!({"command": "git commit -m 'msg'"})
+        ));
+        assert!(!SafetySystem::is_readonly_bash(
+            &serde_json::json!({"command": "cargo build"})
+        ));
     }
 
     // ── Pattern matching tests ──
@@ -810,37 +875,73 @@ mod tests {
 
     #[test]
     fn test_matches_prefix_wildcard() {
-        assert!(SafetySystem::matches_pattern("mcp__*", "mcp__akshare__get_news_data"));
-        assert!(SafetySystem::matches_pattern("mcp__*", "mcp__filesystem__read"));
+        assert!(SafetySystem::matches_pattern(
+            "mcp__*",
+            "mcp__akshare__get_news_data"
+        ));
+        assert!(SafetySystem::matches_pattern(
+            "mcp__*",
+            "mcp__filesystem__read"
+        ));
         assert!(!SafetySystem::matches_pattern("mcp__*", "stock_data"));
     }
 
     #[test]
     fn test_matches_suffix_wildcard() {
-        assert!(SafetySystem::matches_pattern("*__get_news_data", "mcp__akshare__get_news_data"));
-        assert!(!SafetySystem::matches_pattern("*__get_news_data", "mcp__akshare__get_hist_data"));
+        assert!(SafetySystem::matches_pattern(
+            "*__get_news_data",
+            "mcp__akshare__get_news_data"
+        ));
+        assert!(!SafetySystem::matches_pattern(
+            "*__get_news_data",
+            "mcp__akshare__get_hist_data"
+        ));
     }
 
     #[test]
     fn test_matches_middle_wildcard() {
-        assert!(SafetySystem::matches_pattern("mcp__*__get_news_data", "mcp__akshare__get_news_data"));
-        assert!(SafetySystem::matches_pattern("mcp__*__get_news_data", "mcp__filesystem__get_news_data"));
-        assert!(!SafetySystem::matches_pattern("mcp__*__get_news_data", "mcp__akshare__get_hist_data"));
+        assert!(SafetySystem::matches_pattern(
+            "mcp__*__get_news_data",
+            "mcp__akshare__get_news_data"
+        ));
+        assert!(SafetySystem::matches_pattern(
+            "mcp__*__get_news_data",
+            "mcp__filesystem__get_news_data"
+        ));
+        assert!(!SafetySystem::matches_pattern(
+            "mcp__*__get_news_data",
+            "mcp__akshare__get_hist_data"
+        ));
     }
 
     #[test]
     fn test_matches_server_specific() {
-        assert!(SafetySystem::matches_pattern("mcp__akshare__*", "mcp__akshare__get_news_data"));
-        assert!(SafetySystem::matches_pattern("mcp__akshare__*", "mcp__akshare__get_hist_data"));
-        assert!(!SafetySystem::matches_pattern("mcp__akshare__*", "mcp__filesystem__read"));
-        assert!(!SafetySystem::matches_pattern("mcp__akshare__*", "stock_data"));
+        assert!(SafetySystem::matches_pattern(
+            "mcp__akshare__*",
+            "mcp__akshare__get_news_data"
+        ));
+        assert!(SafetySystem::matches_pattern(
+            "mcp__akshare__*",
+            "mcp__akshare__get_hist_data"
+        ));
+        assert!(!SafetySystem::matches_pattern(
+            "mcp__akshare__*",
+            "mcp__filesystem__read"
+        ));
+        assert!(!SafetySystem::matches_pattern(
+            "mcp__akshare__*",
+            "stock_data"
+        ));
     }
 
     // ── MCP server name extraction tests ──
 
     #[test]
     fn test_mcp_server_name_akshare() {
-        assert_eq!(mcp_server_name("mcp__akshare__get_news_data"), Some("akshare"));
+        assert_eq!(
+            mcp_server_name("mcp__akshare__get_news_data"),
+            Some("akshare")
+        );
     }
 
     #[test]
@@ -859,15 +960,15 @@ mod tests {
     #[test]
     fn test_allowlist_with_wildcard_allows_mcp_subset() {
         let cfg = SafetyConfig {
-            tool_allowlist: Some(vec![
-                "read".to_string(),
-                "mcp__akshare__*".to_string(),
-            ]),
+            tool_allowlist: Some(vec!["read".to_string(), "mcp__akshare__*".to_string()]),
             default_policy: DefaultSafetyPolicy::Deny,
             ..Default::default()
         };
         let system = SafetySystem::new(cfg);
-        assert!(matches!(system.check("read", &serde_json::json!({})), PermissionResult::Allow));
+        assert!(matches!(
+            system.check("read", &serde_json::json!({})),
+            PermissionResult::Allow
+        ));
         assert!(matches!(
             system.check("mcp__akshare__get_news_data", &serde_json::json!({})),
             PermissionResult::Allow
@@ -963,10 +1064,7 @@ mod tests {
     fn test_mcp_auto_approve_with_strict_default_deny() {
         let cfg = SafetyConfig {
             default_policy: DefaultSafetyPolicy::Deny,
-            mcp_auto_approve_servers: Some(vec![
-                "akshare".to_string(),
-                "filesystem".to_string(),
-            ]),
+            mcp_auto_approve_servers: Some(vec!["akshare".to_string(), "filesystem".to_string()]),
             ..Default::default()
         };
         let system = SafetySystem::new(cfg);

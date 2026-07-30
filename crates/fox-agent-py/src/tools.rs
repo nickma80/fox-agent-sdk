@@ -17,7 +17,7 @@
 //! builder.with_tool(MyTool())
 //! ```
 
-use fox_agent_core::{Tool, ToolContext, ToolError, ToolOutput, ToolExecutionMode};
+use fox_agent_core::{Tool, ToolContext, ToolError, ToolExecutionMode, ToolOutput};
 use pyo3::prelude::*;
 use pyo3::types::PyDict;
 use serde_json::Value;
@@ -49,7 +49,10 @@ impl PyToolContext {
             session_id: ctx.session_id.clone(),
             message_id: ctx.message_id.clone(),
             tool_call_id: ctx.tool_call_id.clone(),
-            working_dir: ctx.working_dir.as_ref().map(|p| p.to_string_lossy().to_string()),
+            working_dir: ctx
+                .working_dir
+                .as_ref()
+                .map(|p| p.to_string_lossy().to_string()),
             is_background: matches!(ctx.execution_mode, ToolExecutionMode::Background),
             graceful_shutdown_requested: ctx.graceful_shutdown_requested,
         }
@@ -86,9 +89,7 @@ impl PyToolOutput {
         let json_val = json
             .map(|s| serde_json::from_str::<Value>(&s))
             .transpose()
-            .map_err(|e| {
-                pyo3::exceptions::PyValueError::new_err(format!("invalid JSON: {}", e))
-            })?;
+            .map_err(|e| pyo3::exceptions::PyValueError::new_err(format!("invalid JSON: {}", e)))?;
 
         Ok(Self {
             inner: ToolOutput {
@@ -296,8 +297,8 @@ impl Tool for PyToolAdapter {
                 let obj = py_obj.bind(py);
 
                 // Convert serde_json::Value input to Python dict
-                let input_dict = json_value_to_py_dict(py, &input)
-                    .map_err(|e| ToolError::Message {
+                let input_dict =
+                    json_value_to_py_dict(py, &input).map_err(|e| ToolError::Message {
                         message: format!("failed to convert input: {}", e),
                     })?;
 
@@ -330,21 +331,18 @@ impl Tool for PyToolAdapter {
                         .flatten()
                         .and_then(|v| v.extract().ok())
                         .unwrap_or(false);
-                    let json: Option<Value> = dict
-                        .get_item("json")
-                        .ok()
-                        .flatten()
-                        .and_then(|v| {
-                            let s: String = v.extract().ok()?;
-                            serde_json::from_str(&s).ok()
-                        });
-                    Ok(ToolOutput { text, is_error, json })
+                    let json: Option<Value> = dict.get_item("json").ok().flatten().and_then(|v| {
+                        let s: String = v.extract().ok()?;
+                        serde_json::from_str(&s).ok()
+                    });
+                    Ok(ToolOutput {
+                        text,
+                        is_error,
+                        json,
+                    })
                 } else {
                     // Last resort: convert to string
-                    let text: String = output
-                        .str()
-                        .map(|s| s.to_string())
-                        .unwrap_or_default();
+                    let text: String = output.str().map(|s| s.to_string()).unwrap_or_default();
                     Ok(ToolOutput::new(text))
                 }
             })

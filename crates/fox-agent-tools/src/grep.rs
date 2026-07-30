@@ -18,6 +18,12 @@ impl GrepTool {
     }
 }
 
+impl Default for GrepTool {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 #[derive(Deserialize)]
 struct GrepInput {
     pattern: String,
@@ -27,7 +33,7 @@ struct GrepInput {
     include: Option<String>,
     #[serde(default)]
     #[expect(dead_code)]
-    intent: Option<String>,   // accepted but not used — see intent_schema_property
+    intent: Option<String>, // accepted but not used — see intent_schema_property
 }
 
 #[derive(Clone)]
@@ -116,7 +122,10 @@ impl Tool for GrepTool {
         }
 
         if results.len() >= MAX_RESULTS {
-            output.push_str(&format!("\n... results truncated at {} matches", MAX_RESULTS));
+            output.push_str(&format!(
+                "\n... results truncated at {} matches",
+                MAX_RESULTS
+            ));
         }
 
         Ok(ToolOutput {
@@ -131,7 +140,11 @@ impl Tool for GrepTool {
     }
 }
 
-fn grep_blocking(base: &Path, pattern: &str, include: Option<&str>) -> Result<Vec<GrepResult>, String> {
+fn grep_blocking(
+    base: &Path,
+    pattern: &str,
+    include: Option<&str>,
+) -> Result<Vec<GrepResult>, String> {
     let regex = Regex::new(pattern).map_err(|e| format!("invalid regex: {e}"))?;
     let include_pattern = include
         .map(|p| glob::Pattern::new(p).map_err(|e| format!("invalid include pattern: {e}")))
@@ -226,7 +239,9 @@ fn grep_blocking(base: &Path, pattern: &str, include: Option<&str>) -> Result<Ve
                 if !local_results.is_empty() {
                     let count = local_results.len();
                     hit_count.fetch_add(count, Ordering::Relaxed);
-                    let mut guard = results.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+                    let mut guard = results
+                        .lock()
+                        .unwrap_or_else(|poisoned| poisoned.into_inner());
                     guard.extend(local_results);
                 }
             }
@@ -236,8 +251,13 @@ fn grep_blocking(base: &Path, pattern: &str, include: Option<&str>) -> Result<Ve
     });
 
     let mut final_results = match Arc::try_unwrap(results) {
-        Ok(mutex) => mutex.into_inner().unwrap_or_else(|poisoned| poisoned.into_inner()),
-        Err(arc) => arc.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).clone(),
+        Ok(mutex) => mutex
+            .into_inner()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()),
+        Err(arc) => arc
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clone(),
     };
 
     // Sort by file then line number for deterministic output

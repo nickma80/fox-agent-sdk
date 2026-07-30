@@ -9,8 +9,8 @@
 ///
 /// Uses MockProvider — no real LLM credentials needed.
 use fox_agent_sdk::{
-    AgentBuilder, AgentEvent, EventRecorder, FoxAgentSdkConfig, MockProvider,
-    StreamEvent, TurnOutcome,
+    AgentBuilder, AgentEvent, EventRecorder, FoxAgentSdkConfig, MockProvider, StreamEvent,
+    TurnOutcome,
 };
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -52,7 +52,10 @@ async fn main() {
 
     // Spawn agent runner; collect events in main task
     let handle = tokio::spawn(async move {
-        agent.run_once_streaming("什么是生命的答案？", &tx).await.unwrap()
+        agent
+            .run_once_streaming("什么是生命的答案？", &tx)
+            .await
+            .unwrap()
     });
 
     let mut events: Vec<AgentEvent> = Vec::new();
@@ -122,18 +125,23 @@ async fn main() {
         fox_agent_sdk::EnvelopePayload::ModelTextDelta { text } => text.contains("42"),
         _ => false,
     });
-    assert!(has_answer, "Replay assertion failed: no event contains '42'");
+    assert!(
+        has_answer,
+        "Replay assertion failed: no event contains '42'"
+    );
     println!("\n> Replay assertion passed: found '42' in event stream");
 
     // Check: no error events
-    let no_errors = !recorded.iter().any(|e| matches!(&e.event, fox_agent_sdk::EnvelopePayload::Error { .. }));
+    let no_errors = !recorded
+        .iter()
+        .any(|e| matches!(&e.event, fox_agent_sdk::EnvelopePayload::Error { .. }));
     assert!(no_errors, "Replay assertion failed: found error events");
     println!("> Replay assertion passed: no errors in event stream");
 
     // ── 7. Secret scrubbing demo ──
     // Simulate an event that contains a secret, verify it's scrubbed on export
     let scrubbed_line = fox_agent_sdk::mask_event_payload(
-        r#"{"text":"API key is sk-abc123def456 and JWT is eyJhbGciOiJIUzI1NiJ9.abc.def"}"#
+        r#"{"text":"API key is sk-abc123def456 and JWT is eyJhbGciOiJIUzI1NiJ9.abc.def"}"#,
     );
     println!("\n> Secret scrubbing demo:");
     println!("  input:  API key is sk-abc123def456 and JWT is eyJhbGciOiJIUzI1NiJ9.abc.def");

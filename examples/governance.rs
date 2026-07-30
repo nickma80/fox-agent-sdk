@@ -9,8 +9,8 @@
 ///
 /// Uses MockProvider — no real LLM credentials needed.
 use fox_agent_sdk::{
-    AgentBuilder, AgentEvent, BudgetConfig, FoxAgentSdkConfig, GovernanceGuard,
-    MockProvider, StreamEvent, TurnOutcome,
+    AgentBuilder, AgentEvent, BudgetConfig, FoxAgentSdkConfig, GovernanceGuard, MockProvider,
+    StreamEvent, TurnOutcome,
 };
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -21,11 +21,11 @@ async fn main() {
 
     // ── 1. Set up governance guard with budget constraints ──
     let guard = Arc::new(GovernanceGuard::new(BudgetConfig {
-        token_budget: Some(10_000),     // Budget上限：10k tokens
-        cost_budget_cents: Some(100),   // 费用上限：$1.00
-        max_turns: 5,                   // 最大轮次
-        tool_timeout_secs: 30,          // 工具超时
-        tool_concurrency_limit: 4,      // 工具并发数
+        token_budget: Some(10_000),   // Budget上限：10k tokens
+        cost_budget_cents: Some(100), // 费用上限：$1.00
+        max_turns: 5,                 // 最大轮次
+        tool_timeout_secs: 30,        // 工具超时
+        tool_concurrency_limit: 4,    // 工具并发数
         ..Default::default()
     }));
 
@@ -62,7 +62,7 @@ async fn main() {
     let cfg = FoxAgentSdkConfig::load_from_file(project_root.join("agent.toml"))
         .unwrap_or_else(|_| FoxAgentSdkConfig::default());
 
-    let mut agent = AgentBuilder::new()
+    let agent = AgentBuilder::new()
         .working_dir(&project_root)
         .sdk_config(cfg)
         .with_global_agents_md_path(project_root.join("AGENTS.md"))
@@ -82,17 +82,17 @@ async fn main() {
     guard
         .record_usage(
             &fox_agent_sdk::TokenUsage {
-            input_tokens: 150,
-            output_tokens: 40,
-            total_tokens: 190,
-            cache_read_input_tokens: None,
-            cache_creation_input_tokens: None,
-        },
-        520, // provider latency ms
-        2,   // cost cents
-    )
-    .await
-    .ok();
+                input_tokens: 150,
+                output_tokens: 40,
+                total_tokens: 190,
+                cache_read_input_tokens: None,
+                cache_creation_input_tokens: None,
+            },
+            520, // provider latency ms
+            2,   // cost cents
+        )
+        .await
+        .ok();
 
     // Drain events for Turn 1
     {
@@ -115,12 +115,12 @@ async fn main() {
     guard
         .record_usage(
             &fox_agent_sdk::TokenUsage {
-            input_tokens: 120,
-            output_tokens: 35,
-            total_tokens: 155,
-            cache_read_input_tokens: None,
-            cache_creation_input_tokens: None,
-        },
+                input_tokens: 120,
+                output_tokens: 35,
+                total_tokens: 155,
+                cache_read_input_tokens: None,
+                cache_creation_input_tokens: None,
+            },
             480,
             1,
         )
@@ -146,14 +146,14 @@ async fn main() {
     // ── 4. Inspect final metrics snapshot ──
     let snapshot = guard.snapshot().await;
     println!("\n=== Final Metrics ===");
-    println!("  Total tokens:  {} (in: {}, out: {})",
-        snapshot.total_tokens,
-        snapshot.total_input_tokens,
-        snapshot.total_output_tokens,
+    println!(
+        "  Total tokens:  {} (in: {}, out: {})",
+        snapshot.total_tokens, snapshot.total_input_tokens, snapshot.total_output_tokens,
     );
     println!("  Estimated cost: {} cents", snapshot.estimated_cost_cents);
     println!("  Tool calls:     {}", snapshot.tool_calls);
-    println!("  Errors:         {} (rate: {:.1}%)",
+    println!(
+        "  Errors:         {} (rate: {:.1}%)",
         snapshot.tool_error_count,
         snapshot.tool_error_rate() * 100.0,
     );

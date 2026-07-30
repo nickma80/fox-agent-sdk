@@ -106,8 +106,16 @@ mod tests {
 
     #[test]
     fn test_merge() {
-        let mut a = TokenReport { total_input: 10, total_output: 5, ..Default::default() };
-        let b = TokenReport { total_input: 20, total_output: 10, ..Default::default() };
+        let mut a = TokenReport {
+            total_input: 10,
+            total_output: 5,
+            ..Default::default()
+        };
+        let b = TokenReport {
+            total_input: 20,
+            total_output: 10,
+            ..Default::default()
+        };
         a.merge(&b);
         assert_eq!(a.total_input, 30);
         assert_eq!(a.total_output, 15);

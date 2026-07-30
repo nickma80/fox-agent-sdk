@@ -417,7 +417,11 @@ pub fn normalize_search_text(text: &str) -> String {
 
 pub fn normalize_memory_search_text(content: &str, tags: &[String]) -> String {
     let nc = normalize_search_text(content);
-    let nt: Vec<String> = tags.iter().map(|t| normalize_search_text(t)).filter(|t| !t.is_empty()).collect();
+    let nt: Vec<String> = tags
+        .iter()
+        .map(|t| normalize_search_text(t))
+        .filter(|t| !t.is_empty())
+        .collect();
     if nt.is_empty() {
         return nc;
     }
@@ -465,9 +469,9 @@ pub fn is_skill_memory(entry: &MemoryEntry) -> bool {
 
 pub fn collect_skill_query_terms(query_text: &str) -> HashSet<String> {
     const STOPWORDS: &[&str] = &[
-        "about", "after", "before", "could", "from", "have", "just", "make", "ready",
-        "should", "start", "that", "their", "there", "they", "this", "what", "when",
-        "where", "which", "while", "will", "with", "work", "would", "your",
+        "about", "after", "before", "could", "from", "have", "just", "make", "ready", "should",
+        "start", "that", "their", "there", "they", "this", "what", "when", "where", "which",
+        "while", "will", "with", "work", "would", "your",
     ];
     let normalized = normalize_search_text(query_text);
     normalized
@@ -483,7 +487,10 @@ pub fn skill_retrieval_bonus(entry: &MemoryEntry, query_terms: &HashSet<String>)
         return 0.0;
     }
     let searchable = entry.searchable_text();
-    let overlap = query_terms.iter().filter(|t| searchable.contains(t.as_str())).count();
+    let overlap = query_terms
+        .iter()
+        .filter(|t| searchable.contains(t.as_str()))
+        .count();
     match overlap {
         0 | 1 => 0.0,
         2 => 0.08,

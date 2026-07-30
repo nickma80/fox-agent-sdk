@@ -1,8 +1,8 @@
 use async_trait::async_trait;
 use fox_agent_core::{AgentEvent, AgentEventTx, Tool, ToolContext, ToolError, ToolOutput};
 pub use fox_agent_core::{
-    PlanItem, PlanStatus, PlanPriority, PlanningStore, VersionedPlan,
-    load_plan, load_plan_with_store, save_plan, save_plan_with_store,
+    PlanItem, PlanPriority, PlanStatus, PlanningStore, VersionedPlan, load_plan,
+    load_plan_with_store, save_plan, save_plan_with_store,
 };
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -55,8 +55,10 @@ impl PlanPatchItem {
 
 #[derive(Debug, Deserialize)]
 pub(crate) struct PlanToolInput {
-    #[serde(default)] pub items: Option<Vec<PlanPatchItem>>,
-    #[serde(default)] pub merge: bool,
+    #[serde(default)]
+    pub items: Option<Vec<PlanPatchItem>>,
+    #[serde(default)]
+    pub merge: bool,
 }
 
 /// Tool that reads or updates the session-local shared plan.
@@ -68,12 +70,18 @@ pub struct PlanTool {
 
 impl PlanTool {
     pub fn new(store: Arc<dyn PlanningStore>) -> Self {
-        Self { store, event_tx: None }
+        Self {
+            store,
+            event_tx: None,
+        }
     }
 
     /// Create a PlanTool that emits PlanProgress events when the plan changes.
     pub fn with_event_tx(store: Arc<dyn PlanningStore>, event_tx: AgentEventTx) -> Self {
-        Self { store, event_tx: Some(event_tx) }
+        Self {
+            store,
+            event_tx: Some(event_tx),
+        }
     }
 }
 
@@ -85,8 +93,12 @@ impl Default for PlanTool {
 
 #[async_trait]
 impl Tool for PlanTool {
-    fn name(&self) -> &str { "plan" }
-    fn description(&self) -> &str { "Read or update the session-local shared plan" }
+    fn name(&self) -> &str {
+        "plan"
+    }
+    fn description(&self) -> &str {
+        "Read or update the session-local shared plan"
+    }
     fn parameters_schema(&self) -> Value {
         json!({
             "type": "object",
@@ -112,9 +124,10 @@ impl Tool for PlanTool {
     }
 
     async fn execute(&self, input: Value, ctx: ToolContext) -> Result<ToolOutput, ToolError> {
-        let params: PlanToolInput = serde_json::from_value(input).map_err(|err| ToolError::Message {
-            message: format!("invalid plan input: {err}"),
-        })?;
+        let params: PlanToolInput =
+            serde_json::from_value(input).map_err(|err| ToolError::Message {
+                message: format!("invalid plan input: {err}"),
+            })?;
         let plan = match params.items {
             Some(patches) => {
                 if params.merge {
@@ -134,17 +147,23 @@ impl Tool for PlanTool {
         // Emit PlanProgress event if we have an event channel
         if let Some(ref tx) = self.event_tx {
             let total = plan.items.len();
-            let completed = plan.items.iter()
+            let completed = plan
+                .items
+                .iter()
                 .filter(|i| i.status == PlanStatus::Completed)
                 .count();
-            let current = plan.items.iter()
+            let current = plan
+                .items
+                .iter()
                 .find(|i| i.status == PlanStatus::InProgress)
                 .map(|i| i.content.clone());
-            let _ = tx.send(AgentEvent::PlanProgress {
-                completed,
-                total,
-                current_item: current,
-            }).await;
+            let _ = tx
+                .send(AgentEvent::PlanProgress {
+                    completed,
+                    total,
+                    current_item: current,
+                })
+                .await;
         }
 
         Ok(ToolOutput {
@@ -158,7 +177,11 @@ impl Tool for PlanTool {
 }
 
 /// Merge patch items into existing plan — only overwrite provided fields.
-fn plan_merge(store: &dyn PlanningStore, session_id: &str, patches: Vec<PlanPatchItem>) -> VersionedPlan {
+fn plan_merge(
+    store: &dyn PlanningStore,
+    session_id: &str,
+    patches: Vec<PlanPatchItem>,
+) -> VersionedPlan {
     use fox_agent_core::update_session_snapshot;
     update_session_snapshot(store, session_id, Some("plan"), |snapshot| {
         snapshot.plan.version += 1;

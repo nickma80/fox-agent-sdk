@@ -14,9 +14,7 @@ static RUNTIME: OnceLock<Runtime> = OnceLock::new();
 /// Returns a reference to the runtime if initialization succeeded,
 /// or None if a tokio runtime could not be created.
 pub fn get_runtime() -> &'static Runtime {
-    RUNTIME.get_or_init(|| {
-        Runtime::new().expect("failed to create tokio runtime for fox-agent-py")
-    })
+    RUNTIME.get_or_init(|| Runtime::new().expect("failed to create tokio runtime for fox-agent-py"))
 }
 
 /// Run a future on the global tokio runtime, returning the result directly.

@@ -1,6 +1,6 @@
+use crate::SkillsConfig;
 /// SDK top-level configuration.
 use serde::{Deserialize, Serialize};
-use crate::SkillsConfig;
 
 // ── Provider config ──
 
@@ -77,15 +77,21 @@ impl ProviderConfig {
     /// global proxy if one is provided.
     ///
     /// Call this in the builder when constructing provider instances.
-    pub fn build_http_client(&self, proxy: Option<&ProxyConfig>) -> Result<reqwest::Client, String> {
+    pub fn build_http_client(
+        &self,
+        proxy: Option<&ProxyConfig>,
+    ) -> Result<reqwest::Client, String> {
         let mut builder = reqwest::Client::builder()
             .timeout(std::time::Duration::from_secs(self.timeout_secs.max(60)));
         if let Some(proxy_cfg) = proxy {
             builder = builder.proxy(proxy_cfg.to_reqwest_proxy()?);
         }
-        builder
-            .build()
-            .map_err(|e| format!("failed to build HTTP client for provider '{}': {e}", self.provider_name))
+        builder.build().map_err(|e| {
+            format!(
+                "failed to build HTTP client for provider '{}': {e}",
+                self.provider_name
+            )
+        })
     }
 }
 
@@ -235,9 +241,15 @@ pub struct HooksConfig {
     pub load_global: bool,
 }
 
-fn default_hooks_timeout() -> u64 { 30 }
-fn default_hooks_max_concurrent() -> usize { 5 }
-fn default_true() -> bool { true }
+fn default_hooks_timeout() -> u64 {
+    30
+}
+fn default_hooks_max_concurrent() -> usize {
+    5
+}
+fn default_true() -> bool {
+    true
+}
 
 impl Default for HooksConfig {
     fn default() -> Self {
@@ -285,15 +297,15 @@ pub struct MarketplaceConfig {
     pub name: String,
     #[serde(default)]
     pub url: String,
-    pub source: String,               // "GitHub" | "Git" | "Http" | "Local"
+    pub source: String, // "GitHub" | "Git" | "Http" | "Local"
     #[serde(default)]
-    pub auto_update_hours: u64,        // 0 = disabled
+    pub auto_update_hours: u64, // 0 = disabled
     #[serde(default)]
-    pub owner: Option<String>,         // GitHub: owner
+    pub owner: Option<String>, // GitHub: owner
     #[serde(default)]
-    pub repo: Option<String>,          // GitHub: repo name
+    pub repo: Option<String>, // GitHub: repo name
     #[serde(default)]
-    pub branch: Option<String>,        // Git branch
+    pub branch: Option<String>, // Git branch
     #[serde(default)]
     pub path: Option<std::path::PathBuf>, // Local path
 }
@@ -364,16 +376,23 @@ impl FoxAgentSdkConfig {
     /// ```ignore
     /// let cfg = FoxAgentSdkConfig::load_from_file("agent.toml")?;
     /// ```
-    pub fn load_from_file<P: AsRef<std::path::Path>>(path: P) -> Result<FoxAgentSdkConfig, ConfigError> {
+    pub fn load_from_file<P: AsRef<std::path::Path>>(
+        path: P,
+    ) -> Result<FoxAgentSdkConfig, ConfigError> {
         let path = path.as_ref();
-        let content = std::fs::read_to_string(path)
-            .map_err(|e| ConfigError::Io { path: path.display().to_string(), source: e })?;
-        let mut cfg: FoxAgentSdkConfig = toml::from_str(&content)
-            .map_err(|e| ConfigError::Parse { path: path.display().to_string(), source: e })?;
-        
+        let content = std::fs::read_to_string(path).map_err(|e| ConfigError::Io {
+            path: path.display().to_string(),
+            source: e,
+        })?;
+        let mut cfg: FoxAgentSdkConfig =
+            toml::from_str(&content).map_err(|e| ConfigError::Parse {
+                path: path.display().to_string(),
+                source: e,
+            })?;
+
         // Expand ~ in paths to user's home directory
         cfg.expand_home_paths();
-        
+
         Ok(cfg)
     }
 
@@ -389,7 +408,7 @@ impl FoxAgentSdkConfig {
             .build()
             .map_err(|e| format!("failed to build reqwest client: {e}"))
     }
-    
+
     /// Expand paths starting with `~` to the user's home directory.
     fn expand_home_paths(&mut self) {
         if let Some(home) = dirs::home_dir() {
@@ -401,41 +420,38 @@ impl FoxAgentSdkConfig {
                 home.join(rest)
             };
 
-            if let Some(storage_str) = self.storage_dir.to_str() {
-                if storage_str.starts_with("~") {
-                    self.storage_dir = expand(storage_str);
-                }
+            if let Some(storage_str) = self.storage_dir.to_str()
+                && storage_str.starts_with("~")
+            {
+                self.storage_dir = expand(storage_str);
             }
-            
-            if let Some(ref path) = self.global_agents_md_path {
-                if let Some(path_str) = path.to_str() {
-                    if path_str.starts_with("~") {
-                        self.global_agents_md_path = Some(expand(path_str));
-                    }
-                }
+
+            if let Some(ref path) = self.global_agents_md_path
+                && let Some(path_str) = path.to_str()
+                && path_str.starts_with("~")
+            {
+                self.global_agents_md_path = Some(expand(path_str));
             }
-            
-            if let Some(ref path) = self.memory.embedding_model_path {
-                if let Some(path_str) = path.to_str() {
-                    if path_str.starts_with("~") {
-                        self.memory.embedding_model_path = Some(expand(path_str));
-                    }
-                }
+
+            if let Some(ref path) = self.memory.embedding_model_path
+                && let Some(path_str) = path.to_str()
+                && path_str.starts_with("~")
+            {
+                self.memory.embedding_model_path = Some(expand(path_str));
             }
 
             // Also expand memory.embedding_cache_dir
-            if let Some(ref path) = self.memory.embedding_cache_dir {
-                if let Some(path_str) = path.to_str() {
-                    if path_str.starts_with("~") {
-                        self.memory.embedding_cache_dir = Some(expand(path_str));
-                    }
-                }
+            if let Some(ref path) = self.memory.embedding_cache_dir
+                && let Some(path_str) = path.to_str()
+                && path_str.starts_with("~")
+            {
+                self.memory.embedding_cache_dir = Some(expand(path_str));
             }
 
-            if let Some(base_dir_str) = self.artifact_store.base_dir.to_str() {
-                if base_dir_str.starts_with("~") {
-                    self.artifact_store.base_dir = expand(base_dir_str);
-                }
+            if let Some(base_dir_str) = self.artifact_store.base_dir.to_str()
+                && base_dir_str.starts_with("~")
+            {
+                self.artifact_store.base_dir = expand(base_dir_str);
             }
         }
     }
@@ -801,17 +817,39 @@ pub struct ContextManagementConfig {
     pub status_bar_warn_auto_turns: u32,
 }
 
-fn default_l2_noise_threshold() -> f64 { 0.20 }
-fn default_l2_noise_min_chars() -> usize { 1000 }
-fn default_l4_max_narratives() -> usize { 20 }
-fn default_l4_per_turn_budget_chars() -> usize { 500 }
-fn default_l3_pressure_threshold() -> f64 { 0.9 }
-fn default_l3_max_removals() -> usize { 10 }
-fn default_l5_max_consecutive_failures() -> u32 { 3 }
-fn default_l5_cooldown_turns() -> u32 { 5 }
-fn default_l5_llm_summary() -> bool { true }
-fn default_status_bar_enabled() -> bool { true }
-fn default_status_bar_warn_auto_turns() -> u32 { 5 }
+fn default_l2_noise_threshold() -> f64 {
+    0.20
+}
+fn default_l2_noise_min_chars() -> usize {
+    1000
+}
+fn default_l4_max_narratives() -> usize {
+    20
+}
+fn default_l4_per_turn_budget_chars() -> usize {
+    500
+}
+fn default_l3_pressure_threshold() -> f64 {
+    0.9
+}
+fn default_l3_max_removals() -> usize {
+    10
+}
+fn default_l5_max_consecutive_failures() -> u32 {
+    3
+}
+fn default_l5_cooldown_turns() -> u32 {
+    5
+}
+fn default_l5_llm_summary() -> bool {
+    true
+}
+fn default_status_bar_enabled() -> bool {
+    true
+}
+fn default_status_bar_warn_auto_turns() -> u32 {
+    5
+}
 
 impl Default for ContextManagementConfig {
     fn default() -> Self {
@@ -985,9 +1023,7 @@ pub enum SandboxError {
         root: std::path::PathBuf,
     },
     #[error("path resolution error: {message}")]
-    PathResolution {
-        message: String,
-    },
+    PathResolution { message: String },
 }
 
 /// Workspace sandbox that constrains tool file system access to a root directory.
@@ -1052,26 +1088,26 @@ impl WorkspaceSandbox {
         // Canonicalize the path. If it doesn't exist yet (e.g. a new file to write),
         // resolve it relative to cwd or the sandbox root.
         let canonical = if path.exists() {
-            path.canonicalize().map_err(|e| SandboxError::PathResolution {
-                message: format!("failed to canonicalize `{}`: {e}", path.display()),
-            })?
+            path.canonicalize()
+                .map_err(|e| SandboxError::PathResolution {
+                    message: format!("failed to canonicalize `{}`: {e}", path.display()),
+                })?
         } else {
             // For non-existent paths, use the parent's canonical path if it exists,
             // or just use the path as-is
             if let Some(parent) = path.parent() {
                 if parent.exists() {
-                    let parent_canonical = parent.canonicalize().map_err(|e| {
-                        SandboxError::PathResolution {
-                            message: format!(
-                                "failed to canonicalize parent of `{}`: {e}",
-                                path.display()
-                            ),
-                        }
-                    })?;
-                    parent_canonical.join(
-                        path.file_name()
-                            .unwrap_or_else(|| std::ffi::OsStr::new("")),
-                    )
+                    let parent_canonical =
+                        parent
+                            .canonicalize()
+                            .map_err(|e| SandboxError::PathResolution {
+                                message: format!(
+                                    "failed to canonicalize parent of `{}`: {e}",
+                                    path.display()
+                                ),
+                            })?;
+                    parent_canonical
+                        .join(path.file_name().unwrap_or_else(|| std::ffi::OsStr::new("")))
                 } else {
                     path.to_path_buf()
                 }
@@ -1191,7 +1227,12 @@ pub struct TokenUsageEntry {
 
 impl MetricsSnapshot {
     /// Record a model usage event.
-    pub fn record(&mut self, usage: &crate::provider::TokenUsage, latency_ms: u64, cost_cents: u64) {
+    pub fn record(
+        &mut self,
+        usage: &crate::provider::TokenUsage,
+        latency_ms: u64,
+        cost_cents: u64,
+    ) {
         self.total_input_tokens += usage.input_tokens as u64;
         self.total_output_tokens += usage.output_tokens as u64;
         self.total_tokens = self.total_input_tokens + self.total_output_tokens;
@@ -1233,21 +1274,21 @@ impl MetricsSnapshot {
 
     /// Check whether the accumulated metrics exceed the given budget.
     pub fn exceeds_budget(&self, budget: &BudgetConfig) -> Option<String> {
-        if let Some(limit) = budget.token_budget {
-            if self.total_tokens > limit {
-                return Some(format!(
-                    "token budget exceeded: {}/{} tokens",
-                    self.total_tokens, limit
-                ));
-            }
+        if let Some(limit) = budget.token_budget
+            && self.total_tokens > limit
+        {
+            return Some(format!(
+                "token budget exceeded: {}/{} tokens",
+                self.total_tokens, limit
+            ));
         }
-        if let Some(limit) = budget.cost_budget_cents {
-            if self.estimated_cost_cents > limit {
-                return Some(format!(
-                    "cost budget exceeded: {}/{} cents",
-                    self.estimated_cost_cents, limit
-                ));
-            }
+        if let Some(limit) = budget.cost_budget_cents
+            && self.estimated_cost_cents > limit
+        {
+            return Some(format!(
+                "cost budget exceeded: {}/{} cents",
+                self.estimated_cost_cents, limit
+            ));
         }
         None
     }
@@ -1446,10 +1487,16 @@ mod tests {
     fn artifact_store_defaults_are_stable() {
         let cfg = ArtifactStoreConfig::default();
         assert!(cfg.enabled);
-        assert_eq!(cfg.base_dir, std::path::PathBuf::from(".fox-agent-sdk/artifacts"));
+        assert_eq!(
+            cfg.base_dir,
+            std::path::PathBuf::from(".fox-agent-sdk/artifacts")
+        );
         assert!(cfg.gc_high_watermark > cfg.gc_low_watermark);
         assert_eq!(cfg.compression, ArtifactCompression::None);
-        assert_eq!(cfg.eviction_policy, ArtifactEvictionPolicy::TtlLruUnrefFirst);
+        assert_eq!(
+            cfg.eviction_policy,
+            ArtifactEvictionPolicy::TtlLruUnrefFirst
+        );
     }
 
     #[test]

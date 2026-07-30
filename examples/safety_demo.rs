@@ -9,9 +9,8 @@
 /// 运行：
 ///   cargo run --example safety_demo
 use fox_agent_sdk::{
-    AgentBuilder, AgentEvent, ApprovalManager, DefaultSafetyPolicy,
-    FoxAgentSdkConfig, PermissionDecision, PermissionResult,
-    ProviderConfig, SafetyConfig, TurnOutcome,
+    AgentBuilder, AgentEvent, ApprovalManager, DefaultSafetyPolicy, FoxAgentSdkConfig,
+    PermissionDecision, PermissionResult, ProviderConfig, SafetyConfig, TurnOutcome,
 };
 use tokio::sync::mpsc;
 
@@ -51,13 +50,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("  productive_tool_confirm: 开启\n");
 
     // ── 3. 审计管理器（独立实例，由 with_audit_handler 自动驱动） ──
-    let approval = std::sync::Arc::new(tokio::sync::Mutex::new(
-        ApprovalManager::new("safety-demo", SafetyConfig::default()),
-    ));
+    let approval = std::sync::Arc::new(tokio::sync::Mutex::new(ApprovalManager::new(
+        "safety-demo",
+        SafetyConfig::default(),
+    )));
 
     // ── 4. 构建 Agent（注入审计回调） ──
-    let api_key = std::env::var("DEEPSEEK_API_KEY")
-        .unwrap_or_else(|_| "sk-placeholder".to_string());
+    let api_key =
+        std::env::var("DEEPSEEK_API_KEY").unwrap_or_else(|_| "sk-placeholder".to_string());
 
     {
         let approval = approval.clone();
@@ -72,15 +72,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             .with_audit_handler(move |req, dec, turn| {
                 let result = match dec {
                     PermissionDecision::Allow => PermissionResult::Allow,
-                    PermissionDecision::Deny { reason } => {
-                        PermissionResult::Deny { reason: reason.clone() }
-                    }
+                    PermissionDecision::Deny { reason } => PermissionResult::Deny {
+                        reason: reason.clone(),
+                    },
                 };
                 // 克隆所需数据以便在 spawn 中使用（回调参数是引用，不满足 'static）
                 let req = req.clone();
                 let approval = approval.clone();
                 tokio::spawn(async move {
-                    approval.lock().await.record_audit(&req, &result, turn).await;
+                    approval
+                        .lock()
+                        .await
+                        .record_audit(&req, &result, turn)
+                        .await;
                 });
             })
             .build()
@@ -118,9 +122,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
         });
 
-        println!(
-            "发起任务: \"在当前目录创建一个 hello.txt，写入 'Hello from Fox Agent SDK'\"\n"
-        );
+        println!("发起任务: \"在当前目录创建一个 hello.txt，写入 'Hello from Fox Agent SDK'\"\n");
 
         let mut is_first = true;
         let mut decision: Option<PermissionDecision> = None;

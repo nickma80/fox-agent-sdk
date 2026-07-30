@@ -3,15 +3,15 @@ use async_trait::async_trait;
 use fox_agent_core::{
     EventStream, Message, Provider, ProviderError, StreamEvent, TokenUsage, ToolDefinition,
 };
-use futures::{stream, StreamExt};
-use reqwest::header::HeaderMap;
+use futures::{StreamExt, stream};
 use reqwest::Client;
+use reqwest::header::HeaderMap;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::time::Duration;
 
-use fox_agent_core::ProviderConfig;
 use crate::util::build_headers;
+use fox_agent_core::ProviderConfig;
 
 // ── Provider ──
 
@@ -76,7 +76,11 @@ impl AnthropicCompatibleProvider {
 
         AnthropicMessagesRequest {
             model: model_id.to_string(),
-            system: if system.is_empty() { None } else { Some(system) },
+            system: if system.is_empty() {
+                None
+            } else {
+                Some(system)
+            },
             messages,
             tools,
             max_tokens: 4096,
@@ -217,7 +221,10 @@ enum AnthropicRequestContentBlock {
     #[serde(rename = "text")]
     Text { text: String },
     #[serde(rename = "tool_result")]
-    ToolResult { tool_use_id: String, content: String },
+    ToolResult {
+        tool_use_id: String,
+        content: String,
+    },
 }
 
 /// Anthropic tool definition.
@@ -262,7 +269,11 @@ enum AnthropicResponseContentBlock {
     #[serde(rename = "text")]
     Text { text: String },
     #[serde(rename = "tool_use")]
-    ToolUse { id: String, name: String, input: Value },
+    ToolUse {
+        id: String,
+        name: String,
+        input: Value,
+    },
 }
 
 // ── Streaming (SSE) support ──
@@ -327,37 +338,34 @@ fn parse_anthropic_stream(response: reqwest::Response) -> EventStream {
                     }
                     "content_block_start" => {
                         let index = event.get("index").and_then(|v| v.as_u64()).unwrap_or(0) as usize;
-                        if let Some(block) = event.get("content_block") {
-                            if block.get("type").and_then(|v| v.as_str()) == Some("tool_use") {
+                        if let Some(block) = event.get("content_block")
+                            && block.get("type").and_then(|v| v.as_str()) == Some("tool_use") {
                                 let id = block.get("id").and_then(|v| v.as_str()).unwrap_or_default().to_string();
                                 let name = block.get("name").and_then(|v| v.as_str()).unwrap_or_default().to_string();
                                 tool_blocks.insert(index, StreamingToolBlock {
                                     id, name, partial_json: String::new(),
                                 });
                             }
-                        }
                     }
                     "content_block_delta" => {
                         let index = event.get("index").and_then(|v| v.as_u64()).unwrap_or(0) as usize;
                         if let Some(delta) = event.get("delta") {
                             match delta.get("type").and_then(|v| v.as_str()) {
                                 Some("text_delta") => {
-                                    if let Some(text) = delta.get("text").and_then(|v| v.as_str()) {
-                                        if !text.is_empty() {
+                                    if let Some(text) = delta.get("text").and_then(|v| v.as_str())
+                                        && !text.is_empty() {
                                             yield StreamEvent::TextDelta { text: text.to_string() };
-                                        }
                                     }
                                 }
                                 Some("thinking_delta") => {
-                                    if let Some(text) = delta.get("thinking").and_then(|v| v.as_str()) {
-                                        if !text.is_empty() {
+                                    if let Some(text) = delta.get("thinking").and_then(|v| v.as_str())
+                                        && !text.is_empty() {
                                             yield StreamEvent::ThinkingDelta { text: text.to_string() };
-                                        }
                                     }
                                 }
                                 Some("input_json_delta") => {
-                                    if let Some(partial) = delta.get("partial_json").and_then(|v| v.as_str()) {
-                                        if let Some(block) = tool_blocks.get_mut(&index) {
+                                    if let Some(partial) = delta.get("partial_json").and_then(|v| v.as_str())
+                                        && let Some(block) = tool_blocks.get_mut(&index) {
                                             block.partial_json.push_str(partial);
                                             if !partial.is_empty() {
                                                 yield StreamEvent::ToolInputDelta {
@@ -367,7 +375,6 @@ fn parse_anthropic_stream(response: reqwest::Response) -> EventStream {
                                                     delta: partial.to_string(),
                                                 };
                                             }
-                                        }
                                     }
                                 }
                                 _ => {}

@@ -58,7 +58,10 @@ fn resolved_search_scope(
         let glob = resolved
             .file_name()
             .map(|name| name.to_string_lossy().into_owned());
-        return ResolvedSearchScope { root: Some(root), glob };
+        return ResolvedSearchScope {
+            root: Some(root),
+            glob,
+        };
     }
 
     ResolvedSearchScope {
@@ -67,13 +70,13 @@ fn resolved_search_scope(
     }
 }
 
-pub(super) fn build_grep_args(params: &AgentGrepInput, ctx: &ToolContext) -> Result<GrepArgs, ToolError> {
-    let query = params
-        .query
-        .clone()
-        .ok_or_else(|| ToolError::Message {
-            message: "agentgrep grep requires 'query'".to_string(),
-        })?;
+pub(super) fn build_grep_args(
+    params: &AgentGrepInput,
+    ctx: &ToolContext,
+) -> Result<GrepArgs, ToolError> {
+    let query = params.query.clone().ok_or_else(|| ToolError::Message {
+        message: "agentgrep grep requires 'query'".to_string(),
+    })?;
     let scope = resolved_search_scope(ctx, params.path.as_deref(), params.glob.as_deref());
     Ok(GrepArgs {
         query,
@@ -88,7 +91,10 @@ pub(super) fn build_grep_args(params: &AgentGrepInput, ctx: &ToolContext) -> Res
     })
 }
 
-pub(super) fn build_find_args(params: &AgentGrepInput, ctx: &ToolContext) -> Result<FindArgs, ToolError> {
+pub(super) fn build_find_args(
+    params: &AgentGrepInput,
+    ctx: &ToolContext,
+) -> Result<FindArgs, ToolError> {
     let query = params.query.as_deref().unwrap_or_default();
     if query.trim().is_empty()
         && params.path.as_deref().is_none_or(str::is_empty)
@@ -96,7 +102,9 @@ pub(super) fn build_find_args(params: &AgentGrepInput, ctx: &ToolContext) -> Res
         && params.file_type.as_deref().is_none_or(str::is_empty)
     {
         return Err(ToolError::Message {
-            message: "agentgrep find requires 'query' unless path, glob, or type narrows the search".to_string(),
+            message:
+                "agentgrep find requires 'query' unless path, glob, or type narrows the search"
+                    .to_string(),
         });
     }
     let scope = resolved_search_scope(ctx, params.path.as_deref(), params.glob.as_deref());
@@ -204,7 +212,8 @@ fn outline_file_arg(params: &AgentGrepInput) -> Result<String, ToolError> {
                 .and_then(|terms| terms.first().cloned())
         })
         .ok_or_else(|| ToolError::Message {
-            message: "agentgrep outline requires 'file' (or legacy 'query' / first term)".to_string(),
+            message: "agentgrep outline requires 'file' (or legacy 'query' / first term)"
+                .to_string(),
         })
 }
 
@@ -214,7 +223,9 @@ fn parse_full_region_mode(value: Option<&str>) -> Result<FullRegionMode, ToolErr
         "always" => Ok(FullRegionMode::Always),
         "never" => Ok(FullRegionMode::Never),
         other => Err(ToolError::Message {
-            message: format!("agentgrep trace full_region must be one of: auto, always, never; got {other}"),
+            message: format!(
+                "agentgrep trace full_region must be one of: auto, always, never; got {other}"
+            ),
         }),
     }
 }

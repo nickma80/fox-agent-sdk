@@ -1,21 +1,20 @@
 #[cfg(test)]
 mod sdk_tests {
-    use crate::*;
     use crate::routing::{GovernanceMetrics, RoutingInput, RoutingPolicyEngine};
+    use crate::*;
     use fox_agent_core::{
-        AgentEvent, AgentError, CompactionConfig, DefaultModel, DefaultSafetyPolicy,
-        FilePlanningStore, FoxAgentSdkConfig, MemoryConfig, MemoryStateEvent,
-        Message, McpServerKind, McpServerProfile, McpToolDescriptorSnapshot, McpTransportKind,
-        Model, PermissionDecision, PermissionRequest, PermissionResult, PlanningStore,
-        PlanStatus, PlanPriority, SafetyConfig, StreamEvent, TokenUsage, Tool, ToolContext,
-        ToolError, ToolOutput, TurnOutcome, ErrorKind,
-        ArtifactProducer, ArtifactRetentionClass, ArtifactType, ArtifactStoreConfig,
-        EvidenceRef, SubagentOutcome, SubagentSummary, SubagentTask,
-        RoutingPolicyConfig, ToolResultRouting,
+        AgentError, AgentEvent, ArtifactProducer, ArtifactRetentionClass, ArtifactStoreConfig,
+        ArtifactType, CompactionConfig, DefaultModel, DefaultSafetyPolicy, ErrorKind, EvidenceRef,
+        FilePlanningStore, FoxAgentSdkConfig, McpServerKind, McpServerProfile,
+        McpToolDescriptorSnapshot, McpTransportKind, MemoryConfig, MemoryStateEvent, Message,
+        Model, PermissionDecision, PermissionRequest, PermissionResult, PlanPriority, PlanStatus,
+        PlanningStore, RoutingPolicyConfig, SafetyConfig, StreamEvent, SubagentOutcome,
+        SubagentSummary, SubagentTask, TokenUsage, Tool, ToolContext, ToolError, ToolOutput,
+        ToolResultRouting, TurnOutcome,
     };
     use fox_agent_providers::MockProvider;
-    use fox_agent_tools::{TodoItem, TodoStatus, TodoPriority, PlanItem};
-    use serde_json::{json, Value};
+    use fox_agent_tools::{PlanItem, TodoItem, TodoPriority, TodoStatus};
+    use serde_json::{Value, json};
     use std::sync::Arc;
 
     struct EchoTool;
@@ -28,26 +27,46 @@ mod sdk_tests {
 
     #[async_trait::async_trait]
     impl Tool for EchoTool {
-        fn name(&self) -> &str { "echo" }
-        fn description(&self) -> &str { "echo text" }
+        fn name(&self) -> &str {
+            "echo"
+        }
+        fn description(&self) -> &str {
+            "echo text"
+        }
         fn parameters_schema(&self) -> Value {
             json!({"type":"object","properties":{"text":{"type":"string"}},"required":["text"]})
         }
         async fn execute(&self, input: Value, _ctx: ToolContext) -> Result<ToolOutput, ToolError> {
-            let text = input.get("text").and_then(|v| v.as_str()).unwrap_or_default().to_string();
-            Ok(ToolOutput { text, is_error: false, json: None })
+            let text = input
+                .get("text")
+                .and_then(|v| v.as_str())
+                .unwrap_or_default()
+                .to_string();
+            Ok(ToolOutput {
+                text,
+                is_error: false,
+                json: None,
+            })
         }
     }
 
     #[async_trait::async_trait]
     impl Tool for StaticTool {
-        fn name(&self) -> &str { self.name }
-        fn description(&self) -> &str { self.description }
+        fn name(&self) -> &str {
+            self.name
+        }
+        fn description(&self) -> &str {
+            self.description
+        }
         fn parameters_schema(&self) -> Value {
             json!({"type":"object","properties":{}})
         }
         async fn execute(&self, _input: Value, _ctx: ToolContext) -> Result<ToolOutput, ToolError> {
-            Ok(ToolOutput { text: self.text.clone(), is_error: false, json: None })
+            Ok(ToolOutput {
+                text: self.text.clone(),
+                is_error: false,
+                json: None,
+            })
         }
     }
 
@@ -55,18 +74,24 @@ mod sdk_tests {
     async fn tool_call_then_text_completes() {
         let provider = MockProvider::new("mock");
         provider.push_script(vec![
-            StreamEvent::ToolUse { id: "c1".into(), name: "echo".into(), input: json!({"text":"hi"}) },
+            StreamEvent::ToolUse {
+                id: "c1".into(),
+                name: "echo".into(),
+                input: json!({"text":"hi"}),
+            },
             StreamEvent::MessageStop { stop_reason: None },
         ]);
         provider.push_script(vec![
-            StreamEvent::TextDelta { text: "done".into() },
+            StreamEvent::TextDelta {
+                text: "done".into(),
+            },
             StreamEvent::MessageStop { stop_reason: None },
         ]);
 
         let model: Arc<dyn Model> = Arc::new(DefaultModel::new(Arc::new(provider), "mock-1"));
         let harness = Harness::new(FoxAgentSdkConfig::default(), None);
         harness.register_tool(Arc::new(EchoTool)).await;
-        let mut agent = Agent::new(model, harness, Arc::new(tokio::sync::RwLock::new(None)));
+        let agent = Agent::new(model, harness, Arc::new(tokio::sync::RwLock::new(None)));
 
         let (tx, mut rx) = tokio::sync::mpsc::channel(32);
         let outcome = agent.run_once_streaming("go", &tx).await.unwrap();
@@ -74,14 +99,19 @@ mod sdk_tests {
         let mut saw_tool_start = false;
         let mut saw_tool_end = false;
         for _ in 0..16 {
-            let ev = tokio::time::timeout(std::time::Duration::from_millis(200), rx.recv()).await.ok().flatten();
+            let ev = tokio::time::timeout(std::time::Duration::from_millis(200), rx.recv())
+                .await
+                .ok()
+                .flatten();
             let Some(ev) = ev else { break };
             match ev {
                 AgentEvent::ToolCallStart { .. } => saw_tool_start = true,
                 AgentEvent::ToolCallEnd { .. } => saw_tool_end = true,
                 _ => {}
             }
-            if saw_tool_start && saw_tool_end { break; }
+            if saw_tool_start && saw_tool_end {
+                break;
+            }
         }
 
         assert!(saw_tool_start);
@@ -96,7 +126,11 @@ mod sdk_tests {
     async fn ask_user_then_resume_allows() {
         let provider = MockProvider::new("mock");
         provider.push_script(vec![
-            StreamEvent::ToolUse { id: "c1".into(), name: "echo".into(), input: json!({"text":"hi"}) },
+            StreamEvent::ToolUse {
+                id: "c1".into(),
+                name: "echo".into(),
+                input: json!({"text":"hi"}),
+            },
             StreamEvent::MessageStop { stop_reason: None },
         ]);
         provider.push_script(vec![
@@ -106,17 +140,27 @@ mod sdk_tests {
 
         let model: Arc<dyn Model> = Arc::new(DefaultModel::new(Arc::new(provider), "mock-1"));
         let harness = Harness::with_permission_hook(
-            FoxAgentSdkConfig { safety: SafetyConfig { default_policy: DefaultSafetyPolicy::Allow, ..Default::default() }, ..Default::default() },
+            FoxAgentSdkConfig {
+                safety: SafetyConfig {
+                    default_policy: DefaultSafetyPolicy::Allow,
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
             None,
             |tool_name, _input| {
                 if tool_name == "echo" {
-                    PermissionResult::AskUser { request: PermissionRequest::new("echo", "allow echo?") }
-                } else { PermissionResult::Allow }
+                    PermissionResult::AskUser {
+                        request: PermissionRequest::new("echo", "allow echo?"),
+                    }
+                } else {
+                    PermissionResult::Allow
+                }
             },
         );
         harness.register_tool(Arc::new(EchoTool)).await;
 
-        let mut agent = Agent::new(model, harness, Arc::new(tokio::sync::RwLock::new(None)));
+        let agent = Agent::new(model, harness, Arc::new(tokio::sync::RwLock::new(None)));
         let (tx, mut rx) = tokio::sync::mpsc::channel(32);
         let outcome = agent.run_once_streaming("go", &tx).await.unwrap();
         let req = match outcome {
@@ -125,11 +169,18 @@ mod sdk_tests {
         };
         assert_eq!(req.tool_name, "echo");
 
-        while let Ok(ev) = tokio::time::timeout(std::time::Duration::from_millis(10), rx.recv()).await {
-            if ev.is_none() { break; }
+        while let Ok(ev) =
+            tokio::time::timeout(std::time::Duration::from_millis(10), rx.recv()).await
+        {
+            if ev.is_none() {
+                break;
+            }
         }
 
-        let outcome = agent.resume_streaming(PermissionDecision::Allow, &tx).await.unwrap();
+        let outcome = agent
+            .resume_streaming(PermissionDecision::Allow, &tx)
+            .await
+            .unwrap();
         match outcome {
             TurnOutcome::Completed { text } => assert_eq!(text, "ok"),
             _ => panic!("expected Completed"),
@@ -140,21 +191,33 @@ mod sdk_tests {
     async fn phase3_emits_turn_events_and_compaction() {
         let provider = MockProvider::new("mock");
         provider.push_script(vec![
-            StreamEvent::TextDelta { text: "after compact".into() },
+            StreamEvent::TextDelta {
+                text: "after compact".into(),
+            },
             StreamEvent::MessageStop { stop_reason: None },
         ]);
 
         let model: Arc<dyn Model> = Arc::new(DefaultModel::new(Arc::new(provider), "mock-1"));
-        let mut harness = Harness::new(FoxAgentSdkConfig {
-            compaction: CompactionConfig { enabled: true, token_budget: 10, preserve_recent_messages: 2, max_turns_before_compaction: 100, llm_summary_enabled: false, ..Default::default() },
-            ..Default::default()
-        }, None);
+        let harness = Harness::new(
+            FoxAgentSdkConfig {
+                compaction: CompactionConfig {
+                    enabled: true,
+                    token_budget: 10,
+                    preserve_recent_messages: 2,
+                    max_turns_before_compaction: 100,
+                    llm_summary_enabled: false,
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+            None,
+        );
         harness.session_state.write().await.messages.extend([
             Message::user("this is a very long old message"),
             Message::assistant("this is a very long assistant answer"),
             Message::user("keep me"),
         ]);
-        let mut agent = Agent::new(model, harness, Arc::new(tokio::sync::RwLock::new(None)));
+        let agent = Agent::new(model, harness, Arc::new(tokio::sync::RwLock::new(None)));
 
         let (tx, mut rx) = tokio::sync::mpsc::channel(32);
         let outcome = agent.run_once_streaming("go", &tx).await.unwrap();
@@ -163,7 +226,10 @@ mod sdk_tests {
         let mut saw_turn_end = false;
         let mut saw_compaction = false;
         for _ in 0..16 {
-            let ev = tokio::time::timeout(std::time::Duration::from_millis(200), rx.recv()).await.ok().flatten();
+            let ev = tokio::time::timeout(std::time::Duration::from_millis(200), rx.recv())
+                .await
+                .ok()
+                .flatten();
             let Some(ev) = ev else { break };
             match ev {
                 AgentEvent::TurnStart { .. } => saw_turn_start = true,
@@ -171,7 +237,9 @@ mod sdk_tests {
                 AgentEvent::Compaction { .. } => saw_compaction = true,
                 _ => {}
             }
-            if saw_turn_start && saw_turn_end && saw_compaction { break; }
+            if saw_turn_start && saw_turn_end && saw_compaction {
+                break;
+            }
         }
 
         assert!(saw_turn_start);
@@ -193,17 +261,26 @@ mod sdk_tests {
 
         let model: Arc<dyn Model> = Arc::new(DefaultModel::new(Arc::new(provider), "mock-1"));
         let harness = Harness::new(FoxAgentSdkConfig::default(), None);
-        let mut agent = Agent::new(model, harness, Arc::new(tokio::sync::RwLock::new(None)));
-        agent.harness().queue_soft_interrupt("please reconsider", true).await;
+        let agent = Agent::new(model, harness, Arc::new(tokio::sync::RwLock::new(None)));
+        agent
+            .harness()
+            .queue_soft_interrupt("please reconsider", true)
+            .await;
 
         let (tx, mut rx) = tokio::sync::mpsc::channel(32);
         let _ = agent.run_once_streaming("go", &tx).await.unwrap();
 
         let mut saw_interrupt = false;
         for _ in 0..16 {
-            let ev = tokio::time::timeout(std::time::Duration::from_millis(200), rx.recv()).await.ok().flatten();
+            let ev = tokio::time::timeout(std::time::Duration::from_millis(200), rx.recv())
+                .await
+                .ok()
+                .flatten();
             let Some(ev) = ev else { break };
-            if matches!(ev, AgentEvent::SoftInterruptInjected { .. }) { saw_interrupt = true; break; }
+            if matches!(ev, AgentEvent::SoftInterruptInjected { .. }) {
+                saw_interrupt = true;
+                break;
+            }
         }
         assert!(saw_interrupt);
     }
@@ -212,15 +289,27 @@ mod sdk_tests {
     async fn phase3_memory_pipeline_emits_state_events() {
         let provider = MockProvider::new("mock");
         provider.push_script(vec![
-            StreamEvent::TextDelta { text: "done".into() },
+            StreamEvent::TextDelta {
+                text: "done".into(),
+            },
             StreamEvent::MessageStop { stop_reason: None },
         ]);
 
         let model: Arc<dyn Model> = Arc::new(DefaultModel::new(Arc::new(provider), "mock-1"));
-        let harness = Harness::new(FoxAgentSdkConfig {
-            memory: MemoryConfig { enabled: true, max_candidates: 10, max_results: 3, max_graph_depth: 1, verify_relevance: false, ..Default::default() },
-            ..Default::default()
-        }, None);
+        let harness = Harness::new(
+            FoxAgentSdkConfig {
+                memory: MemoryConfig {
+                    enabled: true,
+                    max_candidates: 10,
+                    max_results: 3,
+                    max_graph_depth: 1,
+                    verify_relevance: false,
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+            None,
+        );
         harness.memory_manager.add_memory("user likes rust").await;
         let mut agent = Agent::new(model, harness, Arc::new(tokio::sync::RwLock::new(None)));
 
@@ -230,18 +319,29 @@ mod sdk_tests {
         tokio::time::sleep(std::time::Duration::from_millis(30)).await;
         let provider = MockProvider::new("mock");
         provider.push_script(vec![
-            StreamEvent::TextDelta { text: "second".into() },
+            StreamEvent::TextDelta {
+                text: "second".into(),
+            },
             StreamEvent::MessageStop { stop_reason: None },
         ]);
         agent.model = Arc::new(DefaultModel::new(Arc::new(provider), "mock-1"));
-        let _ = agent.run_once_streaming("continue rust", &tx).await.unwrap();
+        let _ = agent
+            .run_once_streaming("continue rust", &tx)
+            .await
+            .unwrap();
 
         let mut saw_consumed = false;
         for _ in 0..32 {
-            let ev = tokio::time::timeout(std::time::Duration::from_millis(200), rx.recv()).await.ok().flatten();
+            let ev = tokio::time::timeout(std::time::Duration::from_millis(200), rx.recv())
+                .await
+                .ok()
+                .flatten();
             let Some(ev) = ev else { break };
             if let AgentEvent::MemoryStateChanged { event } = ev {
-                if matches!(event, MemoryStateEvent::InjectionConsumed { .. }) { saw_consumed = true; break; }
+                if matches!(event, MemoryStateEvent::InjectionConsumed { .. }) {
+                    saw_consumed = true;
+                    break;
+                }
             }
         }
         assert!(saw_consumed);
@@ -251,33 +351,54 @@ mod sdk_tests {
     async fn phase1_artifact_events_are_emitted() {
         let provider = MockProvider::new("mock");
         provider.push_script(vec![
-            StreamEvent::ToolUse { id: "c1".into(), name: "long_echo".into(), input: json!({}) },
+            StreamEvent::ToolUse {
+                id: "c1".into(),
+                name: "long_echo".into(),
+                input: json!({}),
+            },
             StreamEvent::MessageStop { stop_reason: None },
         ]);
         provider.push_script(vec![
-            StreamEvent::TextDelta { text: "done".into() },
+            StreamEvent::TextDelta {
+                text: "done".into(),
+            },
             StreamEvent::MessageStop { stop_reason: None },
         ]);
 
         let model: Arc<dyn Model> = Arc::new(DefaultModel::new(Arc::new(provider), "mock-1"));
-        let harness = Harness::new(FoxAgentSdkConfig {
-            compaction: CompactionConfig { enabled: true, token_budget: 1000, ..Default::default() },
-            safety: SafetyConfig { default_policy: DefaultSafetyPolicy::Allow, ..Default::default() },
-            ..Default::default()
-        }, None);
-        harness.register_tool(Arc::new(StaticTool {
-            name: "long_echo",
-            description: "returns a large payload",
-            text: "x".repeat(4000),
-        })).await;
-        let mut agent = Agent::new(model, harness, Arc::new(tokio::sync::RwLock::new(None)));
+        let harness = Harness::new(
+            FoxAgentSdkConfig {
+                compaction: CompactionConfig {
+                    enabled: true,
+                    token_budget: 1000,
+                    ..Default::default()
+                },
+                safety: SafetyConfig {
+                    default_policy: DefaultSafetyPolicy::Allow,
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+            None,
+        );
+        harness
+            .register_tool(Arc::new(StaticTool {
+                name: "long_echo",
+                description: "returns a large payload",
+                text: "x".repeat(4000),
+            }))
+            .await;
+        let agent = Agent::new(model, harness, Arc::new(tokio::sync::RwLock::new(None)));
 
         let (tx, mut rx) = tokio::sync::mpsc::channel(64);
         let outcome = agent.run_once_streaming("go", &tx).await.unwrap();
 
         let mut saw_stored = false;
         for _ in 0..32 {
-            let ev = tokio::time::timeout(std::time::Duration::from_millis(200), rx.recv()).await.ok().flatten();
+            let ev = tokio::time::timeout(std::time::Duration::from_millis(200), rx.recv())
+                .await
+                .ok()
+                .flatten();
             let Some(ev) = ev else { break };
             if let AgentEvent::ArtifactStored { tool_name, .. } = ev {
                 assert_eq!(tool_name, "long_echo");
@@ -293,21 +414,38 @@ mod sdk_tests {
     #[tokio::test]
     async fn phase1_artifact_read_emits_event() {
         let provider = MockProvider::new("mock");
-        let harness = Harness::new(FoxAgentSdkConfig {
-            safety: SafetyConfig { default_policy: DefaultSafetyPolicy::Allow, ..Default::default() },
-            ..Default::default()
-        }, None);
+        let harness = Harness::new(
+            FoxAgentSdkConfig {
+                safety: SafetyConfig {
+                    default_policy: DefaultSafetyPolicy::Allow,
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+            None,
+        );
 
-        let record = harness.artifact_store.put_text(
-            harness.session_id(),
-            ArtifactProducer::Tool { tool_name: "read".to_string() },
-            ArtifactType::FileChunk,
-            ArtifactRetentionClass::Ephemeral,
-            "abcdefghij".to_string(),
-            json!({}),
-        ).await.unwrap().record;
+        let record = harness
+            .artifact_store
+            .put_text(
+                harness.session_id(),
+                ArtifactProducer::Tool {
+                    tool_name: "read".to_string(),
+                },
+                ArtifactType::FileChunk,
+                ArtifactRetentionClass::Ephemeral,
+                "abcdefghij".to_string(),
+                json!({}),
+            )
+            .await
+            .unwrap()
+            .record;
 
-        harness.register_tool(Arc::new(ArtifactReadTool::new(harness.artifact_store.clone()))).await;
+        harness
+            .register_tool(Arc::new(ArtifactReadTool::new(
+                harness.artifact_store.clone(),
+            )))
+            .await;
 
         provider.push_script(vec![
             StreamEvent::ToolUse {
@@ -318,20 +456,32 @@ mod sdk_tests {
             StreamEvent::MessageStop { stop_reason: None },
         ]);
         provider.push_script(vec![
-            StreamEvent::TextDelta { text: "done".into() },
+            StreamEvent::TextDelta {
+                text: "done".into(),
+            },
             StreamEvent::MessageStop { stop_reason: None },
         ]);
 
         let model: Arc<dyn Model> = Arc::new(DefaultModel::new(Arc::new(provider), "mock-1"));
-        let mut agent = Agent::new(model, harness, Arc::new(tokio::sync::RwLock::new(None)));
+        let agent = Agent::new(model, harness, Arc::new(tokio::sync::RwLock::new(None)));
         let (tx, mut rx) = tokio::sync::mpsc::channel(64);
         let _ = agent.run_once_streaming("go", &tx).await.unwrap();
 
         let mut saw_read = false;
         for _ in 0..32 {
-            let ev = tokio::time::timeout(std::time::Duration::from_millis(200), rx.recv()).await.ok().flatten();
+            let ev = tokio::time::timeout(std::time::Duration::from_millis(200), rx.recv())
+                .await
+                .ok()
+                .flatten();
             let Some(ev) = ev else { break };
-            if let AgentEvent::ArtifactRead { artifact_id, returned_chars, offset_chars, limit_chars, .. } = ev {
+            if let AgentEvent::ArtifactRead {
+                artifact_id,
+                returned_chars,
+                offset_chars,
+                limit_chars,
+                ..
+            } = ev
+            {
                 assert_eq!(artifact_id, record.artifact_id);
                 assert_eq!(returned_chars, 3);
                 assert_eq!(offset_chars, 1);
@@ -347,25 +497,43 @@ mod sdk_tests {
     async fn phase2_mcp_profile_externalizes_large_result() {
         let provider = MockProvider::new("mock");
         provider.push_script(vec![
-            StreamEvent::ToolUse { id: "c1".into(), name: "mcp__filesystem__read_file".into(), input: json!({}) },
+            StreamEvent::ToolUse {
+                id: "c1".into(),
+                name: "mcp__filesystem__read_file".into(),
+                input: json!({}),
+            },
             StreamEvent::MessageStop { stop_reason: None },
         ]);
         provider.push_script(vec![
-            StreamEvent::TextDelta { text: "done".into() },
+            StreamEvent::TextDelta {
+                text: "done".into(),
+            },
             StreamEvent::MessageStop { stop_reason: None },
         ]);
 
         let model: Arc<dyn Model> = Arc::new(DefaultModel::new(Arc::new(provider), "mock-1"));
-        let harness = Harness::new(FoxAgentSdkConfig {
-            compaction: CompactionConfig { enabled: true, token_budget: 100_000, ..Default::default() },
-            safety: SafetyConfig { default_policy: DefaultSafetyPolicy::Allow, ..Default::default() },
-            ..Default::default()
-        }, None);
-        harness.register_tool(Arc::new(StaticTool {
-            name: "mcp__filesystem__read_file",
-            description: "mock filesystem MCP read",
-            text: "x".repeat(2500),
-        })).await;
+        let harness = Harness::new(
+            FoxAgentSdkConfig {
+                compaction: CompactionConfig {
+                    enabled: true,
+                    token_budget: 100_000,
+                    ..Default::default()
+                },
+                safety: SafetyConfig {
+                    default_policy: DefaultSafetyPolicy::Allow,
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+            None,
+        );
+        harness
+            .register_tool(Arc::new(StaticTool {
+                name: "mcp__filesystem__read_file",
+                description: "mock filesystem MCP read",
+                text: "x".repeat(2500),
+            }))
+            .await;
 
         let mut agent = Agent::new(model, harness, Arc::new(tokio::sync::RwLock::new(None)));
         agent.set_mcp_runtime_metadata(
@@ -379,7 +547,8 @@ mod sdk_tests {
                     allowed_tools: Vec::new(),
                     capability_tags: Vec::new(),
                 },
-            )).collect(),
+            ))
+            .collect(),
             vec![McpToolDescriptorSnapshot {
                 server_name: "filesystem".to_string(),
                 tool_name: "mcp__filesystem__read_file".to_string(),
@@ -396,7 +565,10 @@ mod sdk_tests {
         let mut saw_externalized_output = false;
         let mut saw_artifact_metadata = false;
         for _ in 0..32 {
-            let ev = tokio::time::timeout(std::time::Duration::from_millis(200), rx.recv()).await.ok().flatten();
+            let ev = tokio::time::timeout(std::time::Duration::from_millis(200), rx.recv())
+                .await
+                .ok()
+                .flatten();
             let Some(ev) = ev else { break };
             match ev {
                 AgentEvent::ToolCallEnd { output, .. } => {
@@ -417,13 +589,18 @@ mod sdk_tests {
                     assert_eq!(server_name.as_deref(), Some("filesystem"));
                     assert_eq!(server_kind.as_deref(), Some("filesystem"));
                     assert_eq!(transport.as_deref(), Some("stdio"));
-                    assert_eq!(original_tool_name.as_deref(), Some("mcp://filesystem/read_file"));
+                    assert_eq!(
+                        original_tool_name.as_deref(),
+                        Some("mcp://filesystem/read_file")
+                    );
                     assert_eq!(externalized_reason.as_deref(), Some("mcp:filesystem-large"));
                     saw_artifact_metadata = true;
                 }
                 _ => {}
             }
-            if saw_externalized_output && saw_artifact_metadata { break; }
+            if saw_externalized_output && saw_artifact_metadata {
+                break;
+            }
         }
         assert!(saw_externalized_output);
         assert!(saw_artifact_metadata);
@@ -432,30 +609,45 @@ mod sdk_tests {
     #[tokio::test]
     async fn phase2_artifact_read_emits_mcp_audit_fields() {
         let provider = MockProvider::new("mock");
-        let harness = Harness::new(FoxAgentSdkConfig {
-            safety: SafetyConfig { default_policy: DefaultSafetyPolicy::Allow, ..Default::default() },
-            ..Default::default()
-        }, None);
-
-        let record = harness.artifact_store.put_text(
-            harness.session_id(),
-            ArtifactProducer::Mcp {
-                server_name: "filesystem".to_string(),
-                tool_name: "read_file".to_string(),
+        let harness = Harness::new(
+            FoxAgentSdkConfig {
+                safety: SafetyConfig {
+                    default_policy: DefaultSafetyPolicy::Allow,
+                    ..Default::default()
+                },
+                ..Default::default()
             },
-            ArtifactType::McpFilesystemSnapshot,
-            ArtifactRetentionClass::Referenced,
-            "hello from filesystem artifact".to_string(),
-            json!({
-                "tool_name": "mcp__filesystem__read_file",
-                "server_name": "filesystem",
-                "server_kind": "filesystem",
-                "transport": "stdio",
-                "original_tool_name": "mcp://filesystem/read_file",
-            }),
-        ).await.unwrap().record;
+            None,
+        );
 
-        harness.register_tool(Arc::new(ArtifactReadTool::new(harness.artifact_store.clone()))).await;
+        let record = harness
+            .artifact_store
+            .put_text(
+                harness.session_id(),
+                ArtifactProducer::Mcp {
+                    server_name: "filesystem".to_string(),
+                    tool_name: "read_file".to_string(),
+                },
+                ArtifactType::McpFilesystemSnapshot,
+                ArtifactRetentionClass::Referenced,
+                "hello from filesystem artifact".to_string(),
+                json!({
+                    "tool_name": "mcp__filesystem__read_file",
+                    "server_name": "filesystem",
+                    "server_kind": "filesystem",
+                    "transport": "stdio",
+                    "original_tool_name": "mcp://filesystem/read_file",
+                }),
+            )
+            .await
+            .unwrap()
+            .record;
+
+        harness
+            .register_tool(Arc::new(ArtifactReadTool::new(
+                harness.artifact_store.clone(),
+            )))
+            .await;
 
         provider.push_script(vec![
             StreamEvent::ToolUse {
@@ -466,18 +658,23 @@ mod sdk_tests {
             StreamEvent::MessageStop { stop_reason: None },
         ]);
         provider.push_script(vec![
-            StreamEvent::TextDelta { text: "done".into() },
+            StreamEvent::TextDelta {
+                text: "done".into(),
+            },
             StreamEvent::MessageStop { stop_reason: None },
         ]);
 
         let model: Arc<dyn Model> = Arc::new(DefaultModel::new(Arc::new(provider), "mock-1"));
-        let mut agent = Agent::new(model, harness, Arc::new(tokio::sync::RwLock::new(None)));
+        let agent = Agent::new(model, harness, Arc::new(tokio::sync::RwLock::new(None)));
         let (tx, mut rx) = tokio::sync::mpsc::channel(64);
         let _ = agent.run_once_streaming("go", &tx).await.unwrap();
 
         let mut saw_read = false;
         for _ in 0..32 {
-            let ev = tokio::time::timeout(std::time::Duration::from_millis(200), rx.recv()).await.ok().flatten();
+            let ev = tokio::time::timeout(std::time::Duration::from_millis(200), rx.recv())
+                .await
+                .ok()
+                .flatten();
             let Some(ev) = ev else { break };
             if let AgentEvent::ArtifactRead {
                 artifact_id,
@@ -488,14 +685,21 @@ mod sdk_tests {
                 transport,
                 original_tool_name,
                 ..
-            } = ev {
+            } = ev
+            {
                 assert_eq!(artifact_id, record.artifact_id);
-                assert_eq!(source_tool_name.as_deref(), Some("mcp__filesystem__read_file"));
+                assert_eq!(
+                    source_tool_name.as_deref(),
+                    Some("mcp__filesystem__read_file")
+                );
                 assert_eq!(artifact_type.as_deref(), Some("McpFilesystemSnapshot"));
                 assert_eq!(server_name.as_deref(), Some("filesystem"));
                 assert_eq!(server_kind.as_deref(), Some("filesystem"));
                 assert_eq!(transport.as_deref(), Some("stdio"));
-                assert_eq!(original_tool_name.as_deref(), Some("mcp://filesystem/read_file"));
+                assert_eq!(
+                    original_tool_name.as_deref(),
+                    Some("mcp://filesystem/read_file")
+                );
                 saw_read = true;
                 break;
             }
@@ -507,48 +711,66 @@ mod sdk_tests {
     async fn phase3_auto_extract_emits_ingestion_event_and_persists_memory() {
         let provider = MockProvider::new("mock");
         provider.push_script(vec![
-            StreamEvent::TextDelta { text: "Done, I will keep answers concise.".into() },
+            StreamEvent::TextDelta {
+                text: "Done, I will keep answers concise.".into(),
+            },
             StreamEvent::MessageStop { stop_reason: None },
         ]);
         provider.push_script(vec![
-            StreamEvent::TextDelta { text: "preference|User prefers concise rust answers|high".into() },
+            StreamEvent::TextDelta {
+                text: "preference|User prefers concise rust answers|high".into(),
+            },
             StreamEvent::MessageStop { stop_reason: None },
         ]);
 
         let model: Arc<dyn Model> = Arc::new(DefaultModel::new(Arc::new(provider), "mock-1"));
         let mem_dir = std::env::temp_dir().join(format!("fox-sdk-mem-{}", uuid::Uuid::new_v4()));
-        let harness = Harness::new(FoxAgentSdkConfig {
-            memory: MemoryConfig {
-                enabled: true,
-                auto_extract: true,
-                auto_extract_scope: fox_agent_core::AutoExtractScope::Global,
-                auto_extract_message_window: 4,
-                verify_relevance: false,
-                embedding_enabled: false,
+        let harness = Harness::new(
+            FoxAgentSdkConfig {
+                memory: MemoryConfig {
+                    enabled: true,
+                    auto_extract: true,
+                    auto_extract_scope: fox_agent_core::AutoExtractScope::Global,
+                    auto_extract_message_window: 4,
+                    verify_relevance: false,
+                    embedding_enabled: false,
+                    ..Default::default()
+                },
+                storage_dir: mem_dir,
                 ..Default::default()
             },
-            storage_dir: mem_dir,
-            ..Default::default()
-        }, None);
-        let mut agent = Agent::new(model, harness, Arc::new(tokio::sync::RwLock::new(None)));
+            None,
+        );
+        let agent = Agent::new(model, harness, Arc::new(tokio::sync::RwLock::new(None)));
 
         let (tx, mut rx) = tokio::sync::mpsc::channel(32);
-        let _ = agent.run_once_streaming("Please keep rust answers concise", &tx).await.unwrap();
+        let _ = agent
+            .run_once_streaming("Please keep rust answers concise", &tx)
+            .await
+            .unwrap();
 
         // auto_extract is spawned async; wait for it to complete
         tokio::time::sleep(std::time::Duration::from_millis(500)).await;
         let mut saw_ingestion = false;
         for _ in 0..60 {
-            let ev = tokio::time::timeout(std::time::Duration::from_millis(200), rx.recv()).await.ok().flatten();
+            let ev = tokio::time::timeout(std::time::Duration::from_millis(200), rx.recv())
+                .await
+                .ok()
+                .flatten();
             let Some(ev) = ev else { break };
             if let AgentEvent::MemoryStateChanged { event } = ev {
                 if let MemoryStateEvent::IngestionCompleted { created_ids, .. } = event {
                     saw_ingestion = !created_ids.is_empty();
-                    if saw_ingestion { break; }
+                    if saw_ingestion {
+                        break;
+                    }
                 }
             }
         }
-        assert!(saw_ingestion, "expected IngestionCompleted event from auto_extract");
+        assert!(
+            saw_ingestion,
+            "expected IngestionCompleted event from auto_extract"
+        );
 
         tokio::time::sleep(std::time::Duration::from_millis(50)).await;
         let stored = agent
@@ -557,7 +779,11 @@ mod sdk_tests {
             .core()
             .list(fox_agent_core::MemoryScope::Global)
             .unwrap();
-        assert!(stored.iter().any(|entry| entry.content.contains("concise rust answers")));
+        assert!(
+            stored
+                .iter()
+                .any(|entry| entry.content.contains("concise rust answers"))
+        );
     }
 
     #[tokio::test]
@@ -569,7 +795,10 @@ mod sdk_tests {
             planning_store.as_ref(),
             &session_id,
             vec![TodoItem {
-                id: "t1".into(), content: "implement phase4".into(), status: TodoStatus::InProgress, priority: TodoPriority::High,
+                id: "t1".into(),
+                content: "implement phase4".into(),
+                status: TodoStatus::InProgress,
+                priority: TodoPriority::High,
             }],
             false,
         );
@@ -577,16 +806,34 @@ mod sdk_tests {
             planning_store.as_ref(),
             &session_id,
             vec![PlanItem {
-                id: "p1".into(), content: "spawn worker".into(), status: PlanStatus::Pending, priority: PlanPriority::High,
-                assigned_to: None, blocked_by: vec![],
+                id: "p1".into(),
+                content: "spawn worker".into(),
+                status: PlanStatus::Pending,
+                priority: PlanPriority::High,
+                assigned_to: None,
+                blocked_by: vec![],
             }],
             false,
         );
 
         let builder = crate::prompt_builder::PromptBuilder::new("1.0.0", "abc123");
-        let (split, _) = builder.build_split(&session_id, &planning_store, None, &[], None, None, None, None, None);
+        let (split, _) = builder.build_split(
+            &session_id,
+            &planning_store,
+            None,
+            &[],
+            None,
+            None,
+            None,
+            None,
+            None,
+        );
         assert!(split.dynamic_part.contains("implement phase4"));
-        assert!(split.dynamic_part.contains("implement phase4"), "dynamic part should contain todo items: {}", split.dynamic_part);
+        assert!(
+            split.dynamic_part.contains("implement phase4"),
+            "dynamic part should contain todo items: {}",
+            split.dynamic_part
+        );
         assert!(split.dynamic_part.contains("spawn worker"));
     }
 
@@ -598,17 +845,33 @@ mod sdk_tests {
         let root = std::env::temp_dir().join(format!("fox-sdk-status-{}", uuid::Uuid::new_v4()));
         let planning_store: Arc<dyn PlanningStore> = Arc::new(FilePlanningStore::new(root));
 
-        // No status text → should NOT appear
+        // No status text 鈫?should NOT appear
         let (split_no_status, _) = builder.build_split(
-            &session_id, &planning_store, None, &[], None, None, None, None, None,
+            &session_id,
+            &planning_store,
+            None,
+            &[],
+            None,
+            None,
+            None,
+            None,
+            None,
         );
         assert!(!split_no_status.dynamic_part.contains("Task Status"));
 
-        // With status text → should appear
+        // With status text 鈫?should appear
         let status_text = "<!-- AGENT_STATUS_BAR -->\n# Task Status\n\n## Runtime\n\
 | Turn | 5 |\n<!-- /AGENT_STATUS_BAR -->";
         let (split_with_status, _) = builder.build_split(
-            &session_id, &planning_store, None, &[], None, None, None, None, Some(status_text),
+            &session_id,
+            &planning_store,
+            None,
+            &[],
+            None,
+            None,
+            None,
+            None,
+            Some(status_text),
         );
         assert!(split_with_status.dynamic_part.contains("Task Status"));
         assert!(split_with_status.dynamic_part.contains("AGENT_STATUS_BAR"));
@@ -618,7 +881,9 @@ mod sdk_tests {
     async fn m1_auto_snapshot_persists_and_restores_session_state() {
         let provider = MockProvider::new("mock");
         provider.push_script(vec![
-            StreamEvent::TextDelta { text: "snapshot restored".into() },
+            StreamEvent::TextDelta {
+                text: "snapshot restored".into(),
+            },
             StreamEvent::MessageStop { stop_reason: None },
         ]);
 
@@ -635,17 +900,30 @@ mod sdk_tests {
             },
             Some(working_dir.clone()),
         );
-        let mut agent = Agent::new(model.clone(), harness, Arc::new(tokio::sync::RwLock::new(None)));
+        let agent = Agent::new(
+            model.clone(),
+            harness,
+            Arc::new(tokio::sync::RwLock::new(None)),
+        );
         let session_id = agent.harness().session_id().to_string();
 
         let (tx, _rx) = tokio::sync::mpsc::channel(8);
-        let outcome = agent.run_once_streaming("persist this session", &tx).await.unwrap();
+        let outcome = agent
+            .run_once_streaming("persist this session", &tx)
+            .await
+            .unwrap();
         assert!(matches!(outcome, TurnOutcome::Completed { .. }));
 
         // Wait for the background tokio::spawn in persist_snapshot to finish.
         // The snapshot is saved asynchronously to avoid blocking the agent loop.
         for _ in 0..10 {
-            if agent.harness().session_store.load_session(&session_id).unwrap().is_some() {
+            if agent
+                .harness()
+                .session_store
+                .load_session(&session_id)
+                .unwrap()
+                .is_some()
+            {
                 break;
             }
             tokio::time::sleep(std::time::Duration::from_millis(100)).await;
@@ -681,14 +959,24 @@ mod sdk_tests {
     async fn phase3_emits_model_message_lifecycle_and_usage() {
         let provider = MockProvider::new("mock");
         provider.push_script(vec![
-            StreamEvent::TextDelta { text: "hello".into() },
-            StreamEvent::Usage { usage: TokenUsage { input_tokens: 11, output_tokens: 4, total_tokens: 15, cache_read_input_tokens: None, cache_creation_input_tokens: None } },
+            StreamEvent::TextDelta {
+                text: "hello".into(),
+            },
+            StreamEvent::Usage {
+                usage: TokenUsage {
+                    input_tokens: 11,
+                    output_tokens: 4,
+                    total_tokens: 15,
+                    cache_read_input_tokens: None,
+                    cache_creation_input_tokens: None,
+                },
+            },
             StreamEvent::MessageStop { stop_reason: None },
         ]);
 
         let model: Arc<dyn Model> = Arc::new(DefaultModel::new(Arc::new(provider), "mock-1"));
         let harness = Harness::new(FoxAgentSdkConfig::default(), None);
-        let mut agent = Agent::new(model, harness, Arc::new(tokio::sync::RwLock::new(None)));
+        let agent = Agent::new(model, harness, Arc::new(tokio::sync::RwLock::new(None)));
 
         let (tx, mut rx) = tokio::sync::mpsc::channel(16);
         let outcome = agent.run_once_streaming("go", &tx).await.unwrap();
@@ -698,15 +986,22 @@ mod sdk_tests {
         let mut saw_usage = false;
         let mut saw_end = false;
         for _ in 0..12 {
-            let ev = tokio::time::timeout(std::time::Duration::from_millis(100), rx.recv()).await.ok().flatten();
+            let ev = tokio::time::timeout(std::time::Duration::from_millis(100), rx.recv())
+                .await
+                .ok()
+                .flatten();
             let Some(ev) = ev else { break };
             match ev {
                 AgentEvent::ModelMessageStart { .. } => saw_start = true,
-                AgentEvent::ModelUsage { usage } => { saw_usage = usage.total_tokens == 15; }
+                AgentEvent::ModelUsage { usage } => {
+                    saw_usage = usage.total_tokens == 15;
+                }
                 AgentEvent::ModelMessageEnd { .. } => saw_end = true,
                 _ => {}
             }
-            if saw_start && saw_usage && saw_end { break; }
+            if saw_start && saw_usage && saw_end {
+                break;
+            }
         }
         assert!(saw_start);
         assert!(saw_usage);
@@ -718,7 +1013,7 @@ mod sdk_tests {
         let provider = MockProvider::new("mock");
         let model: Arc<dyn Model> = Arc::new(DefaultModel::new(Arc::new(provider), "mock-1"));
         let harness = Harness::new(FoxAgentSdkConfig::default(), None);
-        let mut agent = Agent::new(model, harness, Arc::new(tokio::sync::RwLock::new(None)));
+        let agent = Agent::new(model, harness, Arc::new(tokio::sync::RwLock::new(None)));
 
         // Simulate an in-progress turn: request graceful shutdown, then run
         // a turn directly via the test helper (which bypasses run_once_streaming's
@@ -732,10 +1027,16 @@ mod sdk_tests {
 
         let mut saw_cancel_error = false;
         for _ in 0..8 {
-            let ev = tokio::time::timeout(std::time::Duration::from_millis(100), rx.recv()).await.ok().flatten();
+            let ev = tokio::time::timeout(std::time::Duration::from_millis(100), rx.recv())
+                .await
+                .ok()
+                .flatten();
             let Some(ev) = ev else { break };
             if let AgentEvent::Error { error } = ev {
-                if error.kind() == ErrorKind::Internal { saw_cancel_error = true; break; }
+                if error.kind() == ErrorKind::Internal {
+                    saw_cancel_error = true;
+                    break;
+                }
             }
         }
         assert!(saw_cancel_error);
@@ -748,12 +1049,16 @@ mod sdk_tests {
         // by a fresh user message.
         let provider = MockProvider::new("mock");
         provider.push_script(vec![
-            StreamEvent::TextDelta { text: "hello from a fresh turn".into() },
-            StreamEvent::MessageStop { stop_reason: Some("stop".into()) },
+            StreamEvent::TextDelta {
+                text: "hello from a fresh turn".into(),
+            },
+            StreamEvent::MessageStop {
+                stop_reason: Some("stop".into()),
+            },
         ]);
         let model: Arc<dyn Model> = Arc::new(DefaultModel::new(Arc::new(provider), "mock-1"));
         let harness = Harness::new(FoxAgentSdkConfig::default(), None);
-        let mut agent = Agent::new(model, harness, Arc::new(tokio::sync::RwLock::new(None)));
+        let agent = Agent::new(model, harness, Arc::new(tokio::sync::RwLock::new(None)));
 
         // Stale shutdown flag left over from a cancelled previous turn.
         agent.harness().request_graceful_shutdown().await;
@@ -768,13 +1073,17 @@ mod sdk_tests {
     async fn phase3_tool_error_emits_structured_error_event() {
         let provider = MockProvider::new("mock");
         provider.push_script(vec![
-            StreamEvent::ToolUse { id: "missing-call".into(), name: "missing_tool".into(), input: json!({}) },
+            StreamEvent::ToolUse {
+                id: "missing-call".into(),
+                name: "missing_tool".into(),
+                input: json!({}),
+            },
             StreamEvent::MessageStop { stop_reason: None },
         ]);
 
         let model: Arc<dyn Model> = Arc::new(DefaultModel::new(Arc::new(provider), "mock-1"));
         let harness = Harness::new(FoxAgentSdkConfig::default(), None);
-        let mut agent = Agent::new(model, harness, Arc::new(tokio::sync::RwLock::new(None)));
+        let agent = Agent::new(model, harness, Arc::new(tokio::sync::RwLock::new(None)));
 
         let (tx, mut rx) = tokio::sync::mpsc::channel(16);
         let err = agent.run_once_streaming("go", &tx).await.unwrap_err();
@@ -785,7 +1094,10 @@ mod sdk_tests {
 
         let mut saw_tool_error = false;
         for _ in 0..8 {
-            let ev = tokio::time::timeout(std::time::Duration::from_millis(100), rx.recv()).await.ok().flatten();
+            let ev = tokio::time::timeout(std::time::Duration::from_millis(100), rx.recv())
+                .await
+                .ok()
+                .flatten();
             let Some(ev) = ev else { break };
             if matches!(&ev, AgentEvent::Error { error } if error.kind() == ErrorKind::Tool) {
                 saw_tool_error = true;
@@ -801,7 +1113,7 @@ mod sdk_tests {
         assert!(saw_tool_error);
     }
 
-    // ── M2: AgentBuilder tests ──
+    // 鈹€鈹€ M2: AgentBuilder tests 鈹€鈹€
 
     /// AgentBuilder::build() with MockProvider and default tools.
     #[tokio::test]
@@ -812,7 +1124,7 @@ mod sdk_tests {
             StreamEvent::MessageStop { stop_reason: None },
         ]);
 
-        let mut agent = AgentBuilder::new()
+        let agent = AgentBuilder::new()
             .with_provider(provider)
             .model_id("mock-1")
             .with_default_tools()
@@ -840,10 +1152,22 @@ mod sdk_tests {
 
         let defs = agent.harness().tool_definitions().await;
         let names: Vec<&str> = defs.iter().map(|d| d.name.as_str()).collect();
-        assert!(names.contains(&"read"), "expected 'read' tool; got: {names:?}");
-        assert!(names.contains(&"todo"), "expected 'todo' tool; got: {names:?}");
-        assert!(names.contains(&"plan"), "expected 'plan' tool; got: {names:?}");
-        assert!(names.contains(&"goal"), "expected 'goal' tool; got: {names:?}");
+        assert!(
+            names.contains(&"read"),
+            "expected 'read' tool; got: {names:?}"
+        );
+        assert!(
+            names.contains(&"todo"),
+            "expected 'todo' tool; got: {names:?}"
+        );
+        assert!(
+            names.contains(&"plan"),
+            "expected 'plan' tool; got: {names:?}"
+        );
+        assert!(
+            names.contains(&"goal"),
+            "expected 'goal' tool; got: {names:?}"
+        );
     }
 
     /// AgentBuilder registers custom tool without direct Harness access.
@@ -868,11 +1192,15 @@ mod sdk_tests {
     async fn m2_builder_safety_denylist_requires_permission() {
         let provider = Arc::new(MockProvider::new("mock"));
         provider.push_script(vec![
-            StreamEvent::ToolUse { id: "c1".into(), name: "echo".into(), input: json!({"text":"hi"}) },
+            StreamEvent::ToolUse {
+                id: "c1".into(),
+                name: "echo".into(),
+                input: json!({"text":"hi"}),
+            },
             StreamEvent::MessageStop { stop_reason: None },
         ]);
 
-        let mut agent = AgentBuilder::new()
+        let agent = AgentBuilder::new()
             .with_provider(provider)
             .model_id("mock-1")
             .with_tool(Arc::new(EchoTool))
@@ -891,7 +1219,9 @@ mod sdk_tests {
 
         let (tx, _rx) = tokio::sync::mpsc::channel(8);
         let outcome = agent.run_once_streaming("go", &tx).await.unwrap();
-        assert!(matches!(outcome, TurnOutcome::RequiresUserDecision { ref request } if request.tool_name == "echo"));
+        assert!(
+            matches!(outcome, TurnOutcome::RequiresUserDecision { ref request } if request.tool_name == "echo")
+        );
     }
 
     /// AgentBuilder with working_dir sets the session directory.
@@ -936,12 +1266,14 @@ mod sdk_tests {
             graceful_shutdown_requested: false,
             progress_tx: None,
         };
-        // Read outside sandbox → should fail
+        // Read outside sandbox 鈫?should fail
         let result = harness
             .execute_tool("read", json!({"file_path": r"C:\Windows"}), ctx)
             .await;
-        assert!(result.is_err() || result.unwrap().is_error,
-            "sandbox should block reads outside the workspace");
+        assert!(
+            result.is_err() || result.unwrap().is_error,
+            "sandbox should block reads outside the workspace"
+        );
 
         let _ = tokio::fs::remove_dir_all(&tmp).await;
     }
@@ -963,11 +1295,11 @@ mod sdk_tests {
         assert!(runtime.cfg().auto_snapshot);
     }
 
-    // ── M4: Swarm + Replay tests ──
+    // 鈹€鈹€ M4: Swarm + Replay tests 鈹€鈹€
 
     use crate::replay_runner::ReplayRunner;
-    use fox_agent_swarm::{WorkerStatus};
     use fox_agent_core::{EnvelopePayload, EventEnvelope};
+    use fox_agent_swarm::WorkerStatus;
 
     /// Swarm coordinator with supervisor: complete lifecycle test.
     #[tokio::test]
@@ -980,27 +1312,40 @@ mod sdk_tests {
         coordinator.spawn("w2", "reviewer").await;
 
         // Upsert plan
-        coordinator.upsert_plan(vec![
-            PlanItem {
+        coordinator
+            .upsert_plan(vec![PlanItem {
                 id: "task-a".into(),
                 content: "analyse".into(),
                 status: PlanStatus::Pending,
                 priority: PlanPriority::High,
                 assigned_to: None,
                 blocked_by: vec![],
-            },
-        ]).await;
+            }])
+            .await;
 
         // Assign and complete
         let task = coordinator.assign_next_runnable_task("w1").await.unwrap();
         assert_eq!(task.id, "task-a");
-        let w1 = coordinator.list_workers().await.iter()
-            .find(|w| w.worker_id == "w1").cloned().unwrap();
+        let w1 = coordinator
+            .list_workers()
+            .await
+            .iter()
+            .find(|w| w.worker_id == "w1")
+            .cloned()
+            .unwrap();
         assert_eq!(w1.status, WorkerStatus::Running);
 
-        coordinator.report_completion("w1", "task-a", "done").await.unwrap();
-        let w1 = coordinator.list_workers().await.iter()
-            .find(|w| w.worker_id == "w1").cloned().unwrap();
+        coordinator
+            .report_completion("w1", "task-a", "done")
+            .await
+            .unwrap();
+        let w1 = coordinator
+            .list_workers()
+            .await
+            .iter()
+            .find(|w| w.worker_id == "w1")
+            .cloned()
+            .unwrap();
         assert_eq!(w1.status, WorkerStatus::Completed);
 
         // Summary
@@ -1016,16 +1361,16 @@ mod sdk_tests {
         let supervisor = fox_agent_swarm::SwarmSupervisor::with_defaults(coordinator.clone());
 
         coordinator.spawn("w1", "worker").await;
-        coordinator.upsert_plan(vec![
-            PlanItem {
+        coordinator
+            .upsert_plan(vec![PlanItem {
                 id: "t1".into(),
                 content: "task".into(),
                 status: PlanStatus::Pending,
                 priority: PlanPriority::High,
                 assigned_to: None,
                 blocked_by: vec![],
-            },
-        ]).await;
+            }])
+            .await;
         coordinator.assign_next_runnable_task("w1").await.unwrap();
 
         // Simulate failure
@@ -1033,8 +1378,13 @@ mod sdk_tests {
         assert!(handled, "failure should be handled");
 
         // Worker should be Ready again
-        let w1 = coordinator.list_workers().await.iter()
-            .find(|w| w.worker_id == "w1").cloned().unwrap();
+        let w1 = coordinator
+            .list_workers()
+            .await
+            .iter()
+            .find(|w| w.worker_id == "w1")
+            .cloned()
+            .unwrap();
         assert_eq!(w1.status, WorkerStatus::Ready);
 
         // Plan item should be Pending
@@ -1047,9 +1397,24 @@ mod sdk_tests {
     #[test]
     fn m4_summary_report_aggregation() {
         let reports = vec![
-            AgentReport { worker_id: "a".into(), task_id: Some("t1".into()), status: WorkerStatus::Completed, summary: "ok".into() },
-            AgentReport { worker_id: "b".into(), task_id: Some("t2".into()), status: WorkerStatus::Failed, summary: "err".into() },
-            AgentReport { worker_id: "c".into(), task_id: Some("t3".into()), status: WorkerStatus::TimedOut, summary: "timeout".into() },
+            AgentReport {
+                worker_id: "a".into(),
+                task_id: Some("t1".into()),
+                status: WorkerStatus::Completed,
+                summary: "ok".into(),
+            },
+            AgentReport {
+                worker_id: "b".into(),
+                task_id: Some("t2".into()),
+                status: WorkerStatus::Failed,
+                summary: "err".into(),
+            },
+            AgentReport {
+                worker_id: "c".into(),
+                task_id: Some("t3".into()),
+                status: WorkerStatus::TimedOut,
+                summary: "timeout".into(),
+            },
         ];
         let summary = SwarmSummaryReport::from_reports(&reports);
         assert_eq!(summary.completed, 1);
@@ -1061,17 +1426,32 @@ mod sdk_tests {
     /// ReplayRunner can load and verify a transcript from JSONL.
     #[tokio::test]
     async fn m4_replay_runner_load_and_verify() {
-        use std::io::Write;
         use fox_agent_swarm::{GoldenTranscript, TranscriptCheck};
+        use std::io::Write;
 
         // Build envelopes directly (avoids EventRecorder blocking inside async runtime)
         let envelopes = vec![
-            EventEnvelope::new("rp-session", 1, 0, "agent", EnvelopePayload::TurnStart { turn_id: 1 }),
-            EventEnvelope::new("rp-session", 1, 1, "agent", EnvelopePayload::ModelTextDelta { text: "hello world".into() }),
+            EventEnvelope::new(
+                "rp-session",
+                1,
+                0,
+                "agent",
+                EnvelopePayload::TurnStart { turn_id: 1 },
+            ),
+            EventEnvelope::new(
+                "rp-session",
+                1,
+                1,
+                "agent",
+                EnvelopePayload::ModelTextDelta {
+                    text: "hello world".into(),
+                },
+            ),
         ];
 
         // Export to temp file
-        let tmp_path = std::env::temp_dir().join(format!("fox-m4-replay-{}.jsonl", uuid::Uuid::new_v4()));
+        let tmp_path =
+            std::env::temp_dir().join(format!("fox-m4-replay-{}.jsonl", uuid::Uuid::new_v4()));
         {
             let mut f = std::fs::File::create(&tmp_path).unwrap();
             for env in &envelopes {
@@ -1087,7 +1467,11 @@ mod sdk_tests {
         // Verify text
         let transcript = GoldenTranscript {
             session_id: "rp-session".into(),
-            events: runner.events().iter().map(|e| serde_json::to_string(e).unwrap()).collect(),
+            events: runner
+                .events()
+                .iter()
+                .map(|e| serde_json::to_string(e).unwrap())
+                .collect(),
             verification_checks: vec![
                 TranscriptCheck {
                     description: "contains hello".into(),
@@ -1107,7 +1491,10 @@ mod sdk_tests {
         };
         let runner2 = ReplayRunner::from_transcript(transcript);
         let failures = runner2.verify();
-        assert!(!failures.is_empty(), "one check should fail (no tool call present)");
+        assert!(
+            !failures.is_empty(),
+            "one check should fail (no tool call present)"
+        );
 
         let _ = tokio::fs::remove_file(&tmp_path).await;
     }
@@ -1116,15 +1503,43 @@ mod sdk_tests {
     #[test]
     fn m4_replay_runner_events_by_source() {
         let envelopes = vec![
-            EventEnvelope::new("s1", 1, 0, "agent", EnvelopePayload::TurnStart { turn_id: 1 }),
-            EventEnvelope::new("s1", 1, 1, "tool", EnvelopePayload::ToolCallStart { call_id: "c1".into(), name: "read".into(), input: serde_json::json!({"file":"x"}) }),
-            EventEnvelope::new("s1", 1, 2, "agent", EnvelopePayload::TurnEnd { turn_id: 1, outcome: "Completed".into() }),
+            EventEnvelope::new(
+                "s1",
+                1,
+                0,
+                "agent",
+                EnvelopePayload::TurnStart { turn_id: 1 },
+            ),
+            EventEnvelope::new(
+                "s1",
+                1,
+                1,
+                "tool",
+                EnvelopePayload::ToolCallStart {
+                    call_id: "c1".into(),
+                    name: "read".into(),
+                    input: serde_json::json!({"file":"x"}),
+                },
+            ),
+            EventEnvelope::new(
+                "s1",
+                1,
+                2,
+                "agent",
+                EnvelopePayload::TurnEnd {
+                    turn_id: 1,
+                    outcome: "Completed".into(),
+                },
+            ),
         ];
 
         // Build a transcript manually
         let transcript = fox_agent_swarm::GoldenTranscript {
             session_id: "s1".into(),
-            events: envelopes.iter().map(|e| serde_json::to_string(e).unwrap()).collect(),
+            events: envelopes
+                .iter()
+                .map(|e| serde_json::to_string(e).unwrap())
+                .collect(),
             verification_checks: vec![],
         };
         let runner = ReplayRunner::from_transcript(transcript);
@@ -1136,7 +1551,7 @@ mod sdk_tests {
         assert_eq!(tool_events.len(), 1);
     }
 
-    // ── Phase 2 integration tests ──
+    // 鈹€鈹€ Phase 2 integration tests 鈹€鈹€
 
     #[test]
     fn phase2_should_externalize_browser_html() {
@@ -1150,7 +1565,8 @@ mod sdk_tests {
                 allowed_tools: Vec::new(),
                 capability_tags: Vec::new(),
             },
-        )).collect::<std::collections::HashMap<_, _>>();
+        ))
+        .collect::<std::collections::HashMap<_, _>>();
         let descriptors = std::iter::once((
             "mcp__browser__navigate".to_string(),
             McpToolDescriptorSnapshot {
@@ -1161,7 +1577,8 @@ mod sdk_tests {
                 input_schema: json!({}),
                 output_hint: None,
             },
-        )).collect::<std::collections::HashMap<_, _>>();
+        ))
+        .collect::<std::collections::HashMap<_, _>>();
 
         let artifact_cfg = ArtifactStoreConfig::default();
         let result = crate::agent::should_externalize_tool_result(
@@ -1172,7 +1589,10 @@ mod sdk_tests {
             "<html><body><p>Hello World</p></body></html>",
             false,
         );
-        assert!(result.should_externalize, "browser HTML should be externalized");
+        assert!(
+            result.should_externalize,
+            "browser HTML should be externalized"
+        );
         assert_eq!(result.reason.as_deref(), Some("mcp:browser-html"));
     }
 
@@ -1180,25 +1600,43 @@ mod sdk_tests {
     async fn phase2_artifact_stored_has_externalized_reason() {
         let provider = MockProvider::new("mock");
         provider.push_script(vec![
-            StreamEvent::ToolUse { id: "c1".into(), name: "mcp__filesystem__read_file".into(), input: json!({}) },
+            StreamEvent::ToolUse {
+                id: "c1".into(),
+                name: "mcp__filesystem__read_file".into(),
+                input: json!({}),
+            },
             StreamEvent::MessageStop { stop_reason: None },
         ]);
         provider.push_script(vec![
-            StreamEvent::TextDelta { text: "done".into() },
+            StreamEvent::TextDelta {
+                text: "done".into(),
+            },
             StreamEvent::MessageStop { stop_reason: None },
         ]);
 
         let model: Arc<dyn Model> = Arc::new(DefaultModel::new(Arc::new(provider), "mock-1"));
-        let harness = Harness::new(FoxAgentSdkConfig {
-            compaction: CompactionConfig { enabled: true, token_budget: 100_000, ..Default::default() },
-            safety: SafetyConfig { default_policy: DefaultSafetyPolicy::Allow, ..Default::default() },
-            ..Default::default()
-        }, None);
-        harness.register_tool(Arc::new(StaticTool {
-            name: "mcp__filesystem__read_file",
-            description: "mock filesystem MCP read",
-            text: "x".repeat(2000),
-        })).await;
+        let harness = Harness::new(
+            FoxAgentSdkConfig {
+                compaction: CompactionConfig {
+                    enabled: true,
+                    token_budget: 100_000,
+                    ..Default::default()
+                },
+                safety: SafetyConfig {
+                    default_policy: DefaultSafetyPolicy::Allow,
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+            None,
+        );
+        harness
+            .register_tool(Arc::new(StaticTool {
+                name: "mcp__filesystem__read_file",
+                description: "mock filesystem MCP read",
+                text: "x".repeat(2000),
+            }))
+            .await;
 
         let mut agent = Agent::new(model, harness, Arc::new(tokio::sync::RwLock::new(None)));
         agent.set_mcp_runtime_metadata(
@@ -1212,7 +1650,8 @@ mod sdk_tests {
                     allowed_tools: Vec::new(),
                     capability_tags: Vec::new(),
                 },
-            )).collect(),
+            ))
+            .collect(),
             vec![McpToolDescriptorSnapshot {
                 server_name: "filesystem".to_string(),
                 tool_name: "mcp__filesystem__read_file".to_string(),
@@ -1228,9 +1667,19 @@ mod sdk_tests {
 
         let mut saw_reason = false;
         for _ in 0..32 {
-            let ev = tokio::time::timeout(std::time::Duration::from_millis(200), rx.recv()).await.ok().flatten();
+            let ev = tokio::time::timeout(std::time::Duration::from_millis(200), rx.recv())
+                .await
+                .ok()
+                .flatten();
             let Some(ev) = ev else { break };
-            if let AgentEvent::ArtifactStored { artifact_type, retention_class, server_kind, externalized_reason, .. } = ev {
+            if let AgentEvent::ArtifactStored {
+                artifact_type,
+                retention_class,
+                server_kind,
+                externalized_reason,
+                ..
+            } = ev
+            {
                 assert!(!artifact_type.is_empty(), "artifact_type must be set");
                 assert!(!retention_class.is_empty(), "retention_class must be set");
                 assert_eq!(server_kind.as_deref(), Some("filesystem"));
@@ -1239,30 +1688,45 @@ mod sdk_tests {
                 break;
             }
         }
-        assert!(saw_reason, "ArtifactStored must carry externalized_reason and classification fields");
+        assert!(
+            saw_reason,
+            "ArtifactStored must carry externalized_reason and classification fields"
+        );
     }
 
     #[tokio::test]
     async fn phase2_unprofiled_mcp_asks_user() {
         let provider = MockProvider::new("mock");
         provider.push_script(vec![
-            StreamEvent::ToolUse { id: "c1".into(), name: "mcp__unknown__tool".into(), input: json!({}) },
+            StreamEvent::ToolUse {
+                id: "c1".into(),
+                name: "mcp__unknown__tool".into(),
+                input: json!({}),
+            },
             StreamEvent::MessageStop { stop_reason: None },
         ]);
 
         let model: Arc<dyn Model> = Arc::new(DefaultModel::new(Arc::new(provider), "mock-1"));
-        let harness = Harness::new(FoxAgentSdkConfig {
-            safety: SafetyConfig { default_policy: DefaultSafetyPolicy::Allow, ..Default::default() },
-            ..Default::default()
-        }, None);
-        harness.register_tool(Arc::new(StaticTool {
-            name: "mcp__unknown__tool",
-            description: "unknown MCP tool",
-            text: "output".to_string(),
-        })).await;
+        let harness = Harness::new(
+            FoxAgentSdkConfig {
+                safety: SafetyConfig {
+                    default_policy: DefaultSafetyPolicy::Allow,
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+            None,
+        );
+        harness
+            .register_tool(Arc::new(StaticTool {
+                name: "mcp__unknown__tool",
+                description: "unknown MCP tool",
+                text: "output".to_string(),
+            }))
+            .await;
 
         let mut agent = Agent::new(model, harness, Arc::new(tokio::sync::RwLock::new(None)));
-        // Provide a profile with Unknown kind — no metadata = conservative
+        // Provide a profile with Unknown kind 鈥?no metadata = conservative
         agent.set_mcp_runtime_metadata(
             std::iter::once((
                 "unknown".to_string(),
@@ -1274,7 +1738,8 @@ mod sdk_tests {
                     allowed_tools: Vec::new(),
                     capability_tags: Vec::new(),
                 },
-            )).collect(),
+            ))
+            .collect(),
             vec![McpToolDescriptorSnapshot {
                 server_name: "unknown".to_string(),
                 tool_name: "mcp__unknown__tool".to_string(),
@@ -1298,36 +1763,58 @@ mod sdk_tests {
     async fn phase2_artifact_store_stats_by_type() {
         let harness = Harness::new(FoxAgentSdkConfig::default(), None);
 
-        let _ = harness.artifact_store.put_text(
-            harness.session_id(),
-            ArtifactProducer::Mcp { server_name: "fs".to_string(), tool_name: "read".to_string() },
-            ArtifactType::McpFilesystemSnapshot,
-            ArtifactRetentionClass::Referenced,
-            "abc".to_string(),
-            json!({}),
-        ).await.unwrap();
+        let _ = harness
+            .artifact_store
+            .put_text(
+                harness.session_id(),
+                ArtifactProducer::Mcp {
+                    server_name: "fs".to_string(),
+                    tool_name: "read".to_string(),
+                },
+                ArtifactType::McpFilesystemSnapshot,
+                ArtifactRetentionClass::Referenced,
+                "abc".to_string(),
+                json!({}),
+            )
+            .await
+            .unwrap();
 
-        let _ = harness.artifact_store.put_text(
-            harness.session_id(),
-            ArtifactProducer::Mcp { server_name: "api".to_string(), tool_name: "search".to_string() },
-            ArtifactType::McpExternalApiPayload,
-            ArtifactRetentionClass::Ephemeral,
-            "defg".to_string(),
-            json!({}),
-        ).await.unwrap();
+        let _ = harness
+            .artifact_store
+            .put_text(
+                harness.session_id(),
+                ArtifactProducer::Mcp {
+                    server_name: "api".to_string(),
+                    tool_name: "search".to_string(),
+                },
+                ArtifactType::McpExternalApiPayload,
+                ArtifactRetentionClass::Ephemeral,
+                "defg".to_string(),
+                json!({}),
+            )
+            .await
+            .unwrap();
 
-        let _ = harness.artifact_store.put_text(
-            harness.session_id(),
-            ArtifactProducer::Tool { tool_name: "read".to_string() },
-            ArtifactType::FileChunk,
-            ArtifactRetentionClass::Ephemeral,
-            "hi".to_string(),
-            json!({}),
-        ).await.unwrap();
+        let _ = harness
+            .artifact_store
+            .put_text(
+                harness.session_id(),
+                ArtifactProducer::Tool {
+                    tool_name: "read".to_string(),
+                },
+                ArtifactType::FileChunk,
+                ArtifactRetentionClass::Ephemeral,
+                "hi".to_string(),
+                json!({}),
+            )
+            .await
+            .unwrap();
 
-        let stats = harness.artifact_store.stats_by_type(
-            harness.session_id(),
-        ).await.unwrap();
+        let stats = harness
+            .artifact_store
+            .stats_by_type(harness.session_id())
+            .await
+            .unwrap();
 
         assert_eq!(stats.total_count, 3);
         assert!(stats.total_bytes > 0);
@@ -1340,7 +1827,7 @@ mod sdk_tests {
         assert!(summary.contains("McpFilesystemSnapshot"));
     }
 
-    // ── Phase 3: sub-agent isolation tests ──
+    // 鈹€鈹€ Phase 3: sub-agent isolation tests 鈹€鈹€
 
     #[test]
     fn phase3_subagent_summary_format_is_compact() {
@@ -1349,13 +1836,11 @@ mod sdk_tests {
             objective: "test objective".into(),
             outcome: SubagentOutcome::Completed,
             findings: vec!["Found 3 files".into(), "All files use UTF-8".into()],
-            evidence_refs: vec![
-                EvidenceRef {
-                    artifact_id: "art_abc".into(),
-                    label: "file list".into(),
-                    snippet: "src/main.rs\nsrc/lib.rs".into(),
-                }
-            ],
+            evidence_refs: vec![EvidenceRef {
+                artifact_id: "art_abc".into(),
+                label: "file list".into(),
+                snippet: "src/main.rs\nsrc/lib.rs".into(),
+            }],
             recommendations: vec!["Refactor to use async".into()],
             uncertainties: vec!["Not sure about Windows paths".into()],
             next_queries: vec!["Check Windows compat".into()],
@@ -1423,7 +1908,7 @@ mod sdk_tests {
         assert_eq!(restored.artifact_id, "a1");
         assert_eq!(restored.snippet, "TODO: fix this");
     }
-    // ── Phase 4: routing policy and governance metrics tests ──
+    // 鈹€鈹€ Phase 4: routing policy and governance metrics tests 鈹€鈹€
 
     #[test]
     fn phase4_routing_engine_inline_for_small_output() {
@@ -1443,8 +1928,13 @@ mod sdk_tests {
         let large = "x".repeat(10_000);
         let input = RoutingInput::simple("read", &large);
         let result = engine.decide(&input, &artifact_cfg);
-        assert!(matches!(result, ToolResultRouting::Externalize | ToolResultRouting::DelegateToSubagent),
-            "large output should externalize or delegate, got {result:?}");
+        assert!(
+            matches!(
+                result,
+                ToolResultRouting::Externalize | ToolResultRouting::DelegateToSubagent
+            ),
+            "large output should externalize or delegate, got {result:?}"
+        );
     }
 
     #[test]
@@ -1455,8 +1945,11 @@ mod sdk_tests {
         let mut input = RoutingInput::simple("read", "small");
         input.truncated_by_context_guard = true;
         let result = engine.decide(&input, &artifact_cfg);
-        assert_eq!(result, ToolResultRouting::Externalize,
-            "truncated by context guard must externalize");
+        assert_eq!(
+            result,
+            ToolResultRouting::Externalize,
+            "truncated by context guard must externalize"
+        );
     }
 
     #[test]
@@ -1467,8 +1960,11 @@ mod sdk_tests {
         let large = "x".repeat(30_000);
         let input = RoutingInput::simple("grep", &large);
         let result = engine.decide(&input, &artifact_cfg);
-        assert_eq!(result, ToolResultRouting::DelegateToSubagent,
-            "grep with 30k chars should delegate to sub-agent");
+        assert_eq!(
+            result,
+            ToolResultRouting::DelegateToSubagent,
+            "grep with 30k chars should delegate to sub-agent"
+        );
     }
 
     #[test]
@@ -1479,8 +1975,13 @@ mod sdk_tests {
         let mut input = RoutingInput::simple("read", "moderate output");
         input.context_pressure = 0.85; // above 0.70 threshold
         let result = engine.decide(&input, &artifact_cfg);
-        assert!(matches!(result, ToolResultRouting::Externalize | ToolResultRouting::DelegateToSubagent),
-            "high pressure should escalate to externalize or delegate, got {result:?}");
+        assert!(
+            matches!(
+                result,
+                ToolResultRouting::Externalize | ToolResultRouting::DelegateToSubagent
+            ),
+            "high pressure should escalate to externalize or delegate, got {result:?}"
+        );
     }
 
     #[test]
@@ -1530,7 +2031,10 @@ mod sdk_tests {
         let cfg = RoutingPolicyConfig::default();
         assert!(cfg.delegate_candidate_tools.contains(&"grep".to_string()));
         assert!(cfg.delegate_candidate_tools.contains(&"read".to_string()));
-        assert!(cfg.delegate_candidate_tools.contains(&"web_fetch".to_string()));
+        assert!(
+            cfg.delegate_candidate_tools
+                .contains(&"web_fetch".to_string())
+        );
         assert!(cfg.local_externalize_threshold_chars > 0);
         assert!(cfg.local_delegate_threshold_chars > cfg.local_externalize_threshold_chars);
     }

@@ -20,15 +20,15 @@ pub fn mask_secrets(text: &str) -> String {
 /// Mask PEM private key blocks.
 fn mask_private_key_blocks(s: &str) -> String {
     let mut result = s.to_string();
-    if let Some(start) = result.find("-----BEGIN ") {
-        if let Some(_rel_end) = result[start..].find("PRIVATE KEY-----") {
-            let block_start = start;
-            if let Some(rel_final) = result[start..].find("-----END ") {
-                let end_abs = start + rel_final;
-                if let Some(rel_end_line) = result[end_abs..].find("PRIVATE KEY-----") {
-                    let block_end = end_abs + rel_end_line + "PRIVATE KEY-----".len();
-                    result.replace_range(block_start..block_end, "[PRIVATE_KEY]");
-                }
+    if let Some(start) = result.find("-----BEGIN ")
+        && let Some(_rel_end) = result[start..].find("PRIVATE KEY-----")
+    {
+        let block_start = start;
+        if let Some(rel_final) = result[start..].find("-----END ") {
+            let end_abs = start + rel_final;
+            if let Some(rel_end_line) = result[end_abs..].find("PRIVATE KEY-----") {
+                let block_end = end_abs + rel_end_line + "PRIVATE KEY-----".len();
+                result.replace_range(block_start..block_end, "[PRIVATE_KEY]");
             }
         }
     }
@@ -38,21 +38,31 @@ fn mask_private_key_blocks(s: &str) -> String {
 /// Mask API key tokens starting with `sk-` prefix.
 fn mask_prefix_keys(s: &str) -> String {
     let mut result = s.to_string();
-    if let Some(pos) = result.find("sk-") {
-        if pos == 0 || {
+    if let Some(pos) = result.find("sk-")
+        && (pos == 0 || {
             let prev = result.as_bytes()[pos - 1];
-            prev.is_ascii_whitespace() || prev == b':' || prev == b'=' || prev == b'\'' || prev == b'"' || prev == b'/' || prev == b'@'
-        } {
-            let token_end = result[pos..].find(|c: char| c.is_ascii_whitespace() || c == ',' || c == '"' || c == '\'' || c == ';' || c == '}' || c == '\n')
-                .map(|e| pos + e)
-                .unwrap_or(result.len());
-            let label = if result[pos..].starts_with("sk-ant-") || result[pos..].starts_with("sk-proj-") {
-                "[API_KEY]"
-            } else {
-                "[API_KEY]"
-            };
-            result.replace_range(pos..token_end, label);
-        }
+            prev.is_ascii_whitespace()
+                || prev == b':'
+                || prev == b'='
+                || prev == b'\''
+                || prev == b'"'
+                || prev == b'/'
+                || prev == b'@'
+        })
+    {
+        let token_end = result[pos..]
+            .find(|c: char| {
+                c.is_ascii_whitespace()
+                    || c == ','
+                    || c == '"'
+                    || c == '\''
+                    || c == ';'
+                    || c == '}'
+                    || c == '\n'
+            })
+            .map(|e| pos + e)
+            .unwrap_or(result.len());
+        result.replace_range(pos..token_end, "[API_KEY]");
     }
     result
 }
@@ -63,15 +73,23 @@ fn mask_jwt_tokens(s: &str) -> String {
     let mut offset = 0;
     while let Some(pos) = result[offset..].find("eyJ") {
         let abs = offset + pos;
-        if let Some(dot1) = result[abs..].find('.') {
-            if let Some(dot2) = result[abs + dot1 + 1..].find('.') {
-                let end = result[abs + dot1 + 1 + dot2..].find(|c: char| c.is_ascii_whitespace() || c == '"' || c == '\'' || c == ',' || c == ';' || c == '}')
-                    .map(|e| abs + dot1 + 1 + dot2 + e)
-                    .unwrap_or(result.len());
-                result.replace_range(abs..end, "[JWT]");
-                offset = abs + "[JWT]".len();
-                continue;
-            }
+        if let Some(dot1) = result[abs..].find('.')
+            && let Some(dot2) = result[abs + dot1 + 1..].find('.')
+        {
+            let end = result[abs + dot1 + 1 + dot2..]
+                .find(|c: char| {
+                    c.is_ascii_whitespace()
+                        || c == '"'
+                        || c == '\''
+                        || c == ','
+                        || c == ';'
+                        || c == '}'
+                })
+                .map(|e| abs + dot1 + 1 + dot2 + e)
+                .unwrap_or(result.len());
+            result.replace_range(abs..end, "[JWT]");
+            offset = abs + "[JWT]".len();
+            continue;
         }
         offset = abs + 3;
     }
@@ -120,7 +138,8 @@ fn mask_assignment_secrets(s: &str) -> String {
         while let Some(pos) = lower[offset..].find(key) {
             let abs = offset + pos;
             let value_start = abs + key.len();
-            let value_end = result[value_start..].find(|c: char| c.is_ascii_whitespace() || c == ',' || c == ';' || c == '\n')
+            let value_end = result[value_start..]
+                .find(|c: char| c.is_ascii_whitespace() || c == ',' || c == ';' || c == '\n')
                 .map(|ve| value_start + ve)
                 .unwrap_or(result.len());
             if value_end > value_start {
@@ -166,7 +185,10 @@ mod tests {
     fn mask_password_assignment() {
         let input = "password=superSecret123!";
         let result = mask_secrets(input);
-        assert!(!result.contains("superSecret"), "should mask password: {result}");
+        assert!(
+            !result.contains("superSecret"),
+            "should mask password: {result}"
+        );
     }
 
     #[test]

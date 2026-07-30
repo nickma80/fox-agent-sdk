@@ -1,11 +1,11 @@
 use fox_agent_core::{
-    AgentError, AgentEvent, AgentEventTx, AgentStatus, CompactionConfig, ContentBlock,
-    GoalCheckpoint, GoalScope, GoalStatus, Message, Model, PermissionDecision,
-    PermissionRequest, PermissionResult, PendingToolCallSnapshot, ProviderError, Role,
-    SessionSnapshot, Skill, StreamEvent, ToolContext, ToolError, ToolExecutionMode,
-    ToolOutput, TurnOutcome, load_goals_with_store, now_secs, save_goals_with_store,
-    ArtifactProducer, ArtifactRetentionClass, ArtifactType, McpServerKind, McpServerProfile,
-    McpToolDescriptorSnapshot, ToolResultRouting,
+    AgentError, AgentEvent, AgentEventTx, AgentStatus, ArtifactProducer, ArtifactRetentionClass,
+    ArtifactType, CompactionConfig, ContentBlock, GoalCheckpoint, GoalScope, GoalStatus,
+    McpServerKind, McpServerProfile, McpToolDescriptorSnapshot, Message, Model,
+    PendingToolCallSnapshot, PermissionDecision, PermissionRequest, PermissionResult,
+    ProviderError, Role, SessionSnapshot, Skill, StreamEvent, ToolContext, ToolError,
+    ToolExecutionMode, ToolOutput, ToolResultRouting, TurnOutcome, load_goals_with_store, now_secs,
+    save_goals_with_store,
 };
 use fox_agent_mcp::McpClient;
 use futures::StreamExt;
@@ -13,7 +13,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Instant;
 use tokio::sync::RwLock;
-use tracing::{debug, error, info, span, trace, warn, Instrument, Level};
+use tracing::{Instrument, Level, debug, error, info, span, trace, warn};
 
 use crate::harness::Harness;
 
@@ -136,7 +136,11 @@ pub struct Agent {
 }
 
 impl Agent {
-    pub fn new(model: Arc<dyn Model>, harness: Harness, active_skill: Arc<RwLock<Option<Skill>>>) -> Self {
+    pub fn new(
+        model: Arc<dyn Model>,
+        harness: Harness,
+        active_skill: Arc<RwLock<Option<Skill>>>,
+    ) -> Self {
         debug!(session_id = %harness.session_id(), "Agent created");
         Self {
             model,
@@ -185,8 +189,12 @@ impl Agent {
         self.governance.as_ref()
     }
 
-    pub fn harness(&self) -> &Harness { &self.harness }
-    pub fn model(&self) -> &Arc<dyn Model> { &self.model }
+    pub fn harness(&self) -> &Harness {
+        &self.harness
+    }
+    pub fn model(&self) -> &Arc<dyn Model> {
+        &self.model
+    }
 
     // ── Per-turn mutable state accessors (interior mutability) ──
     // These use short synchronous critical sections and are never held
@@ -383,7 +391,8 @@ impl Agent {
         self.set_pending_permission(None);
         self.clear_pending_tool_calls();
         // Reset drift detection — new user message means the user is engaged
-        self.consecutive_auto_turns.store(0, std::sync::atomic::Ordering::SeqCst);
+        self.consecutive_auto_turns
+            .store(0, std::sync::atomic::Ordering::SeqCst);
         // Update status bar with current objective
         {
             let mut status = self.status.write().await;
@@ -408,33 +417,37 @@ impl Agent {
         };
 
         // Invoke audit handler with the original request and the user's decision
-        if let Some(ref handler) = self.audit_handler {
-            if let Some(ref request) = self.pending_permission_snapshot() {
-                let turn_id = self.next_turn_id.load(std::sync::atomic::Ordering::SeqCst);
-                handler(request, &decision, turn_id);
-            }
+        if let Some(ref handler) = self.audit_handler
+            && let Some(ref request) = self.pending_permission_snapshot()
+        {
+            let turn_id = self.next_turn_id.load(std::sync::atomic::Ordering::SeqCst);
+            handler(request, &decision, turn_id);
         }
 
-        self.execute_single_tool(pending, decision, event_tx).await?;
+        self.execute_single_tool(pending, decision, event_tx)
+            .await?;
 
         self.set_pending_permission(None);
 
         // Process remaining buffered tool calls from the same model response.
         while !self.pending_tool_calls_is_empty() {
-            let Some(next) = self.first_pending_tool_call() else { break };
+            let Some(next) = self.first_pending_tool_call() else {
+                break;
+            };
             let name = next.name.clone();
 
             match self.harness.check_tool_permission(&name, &next.input).await {
                 PermissionResult::Allow => {
                     let _ = self.pop_first_pending_tool_call();
-                    self.execute_single_tool(next, PermissionDecision::Allow, event_tx).await?;
+                    self.execute_single_tool(next, PermissionDecision::Allow, event_tx)
+                        .await?;
                 }
                 PermissionResult::Deny { reason } => {
                     let _ = self.pop_first_pending_tool_call();
                     info!(tool = %name, reason = %reason, "Remaining tool denied by policy");
-                    self.harness.push_message(
-                        Message::tool_result(&next.call_id, reason, true),
-                    ).await;
+                    self.harness
+                        .push_message(Message::tool_result(&next.call_id, reason, true))
+                        .await;
                 }
                 PermissionResult::AskUser { request } => {
                     info!(tool = %name, "Remaining tool requires user permission");
@@ -463,7 +476,10 @@ impl Agent {
                     tool_call_id: pending.call_id.clone(),
                     working_dir: self.harness.session_working_dir().cloned(),
                     execution_mode: ToolExecutionMode::Foreground,
-                    graceful_shutdown_requested: self.harness.is_graceful_shutdown_requested().await,
+                    graceful_shutdown_requested: self
+                        .harness
+                        .is_graceful_shutdown_requested()
+                        .await,
                     progress_tx: None,
                 };
 
@@ -477,7 +493,8 @@ impl Agent {
                         Err(_) => {
                             error!(tool = %pending.name, "Tool concurrency semaphore closed unexpectedly");
                             return Err(AgentError::Internal {
-                                message: "tool execution aborted: concurrency semaphore closed".into(),
+                                message: "tool execution aborted: concurrency semaphore closed"
+                                    .into(),
                             });
                         }
                     }
@@ -486,20 +503,29 @@ impl Agent {
                 };
 
                 // Timeout enforcement
-                let timeout_dur = self.governance.as_ref()
+                let timeout_dur = self
+                    .governance
+                    .as_ref()
                     .map(|g| std::time::Duration::from_secs(g.budget().tool_timeout_secs))
                     .unwrap_or(std::time::Duration::from_secs(60));
 
                 // ── PreToolUse hooks ──
                 let mut effective_input = pending.input.clone();
                 {
-                    let (allowed, block_reason, modified) = self.harness.run_pre_tool_hooks(&pending.name, &effective_input).await;
+                    let (allowed, block_reason, modified) = self
+                        .harness
+                        .run_pre_tool_hooks(&pending.name, &effective_input)
+                        .await;
                     if !allowed {
                         let reason = block_reason.unwrap_or_else(|| "hook blocked".into());
                         info!(tool = %pending.name, reason = %reason, "Tool blocked by PreToolUse hook");
-                        self.harness.push_message(
-                            Message::tool_result(&pending.call_id, reason.clone(), true),
-                        ).await;
+                        self.harness
+                            .push_message(Message::tool_result(
+                                &pending.call_id,
+                                reason.clone(),
+                                true,
+                            ))
+                            .await;
                         return Ok(());
                     }
                     if let Some(mod_input) = modified {
@@ -518,19 +544,27 @@ impl Agent {
                         let hb_handle = tokio::spawn(async move {
                             tokio::time::sleep(std::time::Duration::from_secs(5)).await;
                             loop {
-                                let _ = hb_tx.send(AgentEvent::ToolExecutionProgress {
-                                    call_id: hb_call_id.clone(),
-                                    tool_name: hb_name.clone(),
-                                    elapsed_secs: hb_start.elapsed().as_secs(),
-                                }).await;
+                                let _ = hb_tx
+                                    .send(AgentEvent::ToolExecutionProgress {
+                                        call_id: hb_call_id.clone(),
+                                        tool_name: hb_name.clone(),
+                                        elapsed_secs: hb_start.elapsed().as_secs(),
+                                    })
+                                    .await;
                                 tokio::time::sleep(std::time::Duration::from_secs(3)).await;
                             }
                         });
-                        let result = self.harness.execute_tool_with_cache(&pending.name, effective_input, ctx).await;
+                        let result = self
+                            .harness
+                            .execute_tool_with_cache(&pending.name, effective_input, ctx)
+                            .await;
                         hb_handle.abort();
                         result
-                    }.in_current_span(),
-                ).await {
+                    }
+                    .in_current_span(),
+                )
+                .await
+                {
                     Ok(Ok(output)) => {
                         if let Some(ref guard) = self.governance {
                             guard.record_tool_success().await;
@@ -544,9 +578,13 @@ impl Agent {
                         }
                         // Push error tool result so conversation history stays valid
                         // for the next API call.
-                        self.harness.push_message(
-                            Message::tool_result(&pending.call_id, format!("tool error: {}", err), true),
-                        ).await;
+                        self.harness
+                            .push_message(Message::tool_result(
+                                &pending.call_id,
+                                format!("tool error: {}", err),
+                                true,
+                            ))
+                            .await;
                         let _ = event_tx
                             .send(AgentEvent::ToolCallEnd {
                                 call_id: pending.call_id.clone(),
@@ -561,25 +599,35 @@ impl Agent {
                     }
                     Err(_elapsed) => {
                         error!(tool = %pending.name, timeout_secs = timeout_dur.as_secs(), "Tool timed out");
-                        let timeout_err = ToolError::Timeout { timeout_secs: timeout_dur.as_secs() };
+                        let timeout_err = ToolError::Timeout {
+                            timeout_secs: timeout_dur.as_secs(),
+                        };
                         if let Some(ref guard) = self.governance {
                             guard.record_tool_error().await;
                         }
                         // Push timeout tool result so conversation history stays valid.
-                        self.harness.push_message(
-                            Message::tool_result(&pending.call_id, format!("tool timed out after {}s", timeout_dur.as_secs()), true),
-                        ).await;
+                        self.harness
+                            .push_message(Message::tool_result(
+                                &pending.call_id,
+                                format!("tool timed out after {}s", timeout_dur.as_secs()),
+                                true,
+                            ))
+                            .await;
                         let _ = event_tx
                             .send(AgentEvent::ToolCallEnd {
                                 call_id: pending.call_id.clone(),
                                 output: ToolOutput {
-                                    text: format!("tool timed out after {}s", timeout_dur.as_secs()),
+                                    text: format!(
+                                        "tool timed out after {}s",
+                                        timeout_dur.as_secs()
+                                    ),
                                     is_error: true,
                                     json: None,
                                 },
                             })
                             .await;
-                        self.emit_error_event(event_tx, AgentError::Tool(timeout_err.clone())).await;
+                        self.emit_error_event(event_tx, AgentError::Tool(timeout_err.clone()))
+                            .await;
                         return Ok(());
                     }
                 };
@@ -587,13 +635,20 @@ impl Agent {
 
                 // ── PostToolUse hooks ──
                 {
-                    let (allowed, block_reason) = self.harness.run_post_tool_hooks(&pending.name, &output.text).await;
+                    let (allowed, block_reason) = self
+                        .harness
+                        .run_post_tool_hooks(&pending.name, &output.text)
+                        .await;
                     if !allowed {
                         let reason = block_reason.unwrap_or_else(|| "hook blocked".into());
                         info!(tool = %pending.name, reason = %reason, "Tool result blocked by PostToolUse hook");
-                        self.harness.push_message(
-                            Message::tool_result(&pending.call_id, reason.clone(), true),
-                        ).await;
+                        self.harness
+                            .push_message(Message::tool_result(
+                                &pending.call_id,
+                                reason.clone(),
+                                true,
+                            ))
+                            .await;
                         let _ = event_tx
                             .send(AgentEvent::ToolCallEnd {
                                 call_id: pending.call_id.clone(),
@@ -622,15 +677,20 @@ impl Agent {
                     })
                     .await;
                 // P2: Push result with duration metadata
-                self.harness.push_message(
-                    tool_result_msg(pending.call_id, output.text, output.is_error, elapsed_ms),
-                ).await;
+                self.harness
+                    .push_message(tool_result_msg(
+                        pending.call_id,
+                        output.text,
+                        output.is_error,
+                        elapsed_ms,
+                    ))
+                    .await;
             }
             PermissionDecision::Deny { reason } => {
                 info!(reason = %reason, "Permission denied");
-                self.harness.push_message(
-                    Message::tool_result(pending.call_id, reason, true),
-                ).await;
+                self.harness
+                    .push_message(Message::tool_result(pending.call_id, reason, true))
+                    .await;
             }
         }
         Ok(())
@@ -638,10 +698,7 @@ impl Agent {
 
     // ── Core turn loop (P0: retry, continuation, filtering) ──
 
-    async fn run_turn_streaming(
-        &self,
-        event_tx: &AgentEventTx,
-    ) -> Result<TurnOutcome, AgentError> {
+    async fn run_turn_streaming(&self, event_tx: &AgentEventTx) -> Result<TurnOutcome, AgentError> {
         let session_id = self.harness.session_id().to_string();
         let mut context_limit_retries = 0u32;
         let mut incomplete_continuations = 0u32;
@@ -663,12 +720,16 @@ impl Agent {
                     iterations = tool_loop_iterations,
                     "Tool loop iteration limit reached"
                 );
-                return Err(self.handle_error(event_tx, turn_id, AgentError::Internal {
-                    message: format!(
-                        "Exceeded maximum tool loop iterations ({})",
-                        MAX_TOOL_LOOP_ITERATIONS
-                    ),
-                }));
+                return Err(self.handle_error(
+                    event_tx,
+                    turn_id,
+                    AgentError::Internal {
+                        message: format!(
+                            "Exceeded maximum tool loop iterations ({})",
+                            MAX_TOOL_LOOP_ITERATIONS
+                        ),
+                    },
+                ));
             }
 
             // NOTE: `run` is the SDK-internal run/session id from the harness,
@@ -691,7 +752,8 @@ impl Agent {
             // display a ⚠️ WARNING when consecutive_auto_turns approaches the limit.
             // No soft interrupt messages are injected — the status bar provides
             // continuous awareness without polluting the message history.
-            self.consecutive_auto_turns.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            self.consecutive_auto_turns
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
 
             let summarizer = Self::make_summarizer(
                 self.model.clone(),
@@ -703,14 +765,21 @@ impl Agent {
             // still fits keeps the full evidence from previous turns.
             if let Some((compaction, narratives)) = self
                 .harness
-                .maybe_compact_messages(summarizer, crate::compaction::CompactionMode::PreSend, turn_id, turn_id)
+                .maybe_compact_messages(
+                    summarizer,
+                    crate::compaction::CompactionMode::PreSend,
+                    turn_id,
+                    turn_id,
+                )
                 .await
             {
                 // ── PreCompact hooks: inject context before compaction ──
                 {
                     let hm = self.harness.hook_manager.read().await;
                     let session_id = self.harness.session_id().to_string();
-                    let working_dir = self.harness.session_working_dir()
+                    let working_dir = self
+                        .harness
+                        .session_working_dir()
                         .map(|p| p.to_string_lossy().to_string())
                         .unwrap_or_default();
                     let ctx = crate::hooks::HookContext {
@@ -722,15 +791,16 @@ impl Agent {
                         tool_output: None,
                         hook_event_name: "PreCompact",
                     };
-                    if let Ok(decision) = hm.execute(crate::hooks::HookEvent::PreCompact, ctx).await {
-                        if let crate::hooks::HookDecision::InjectContext { context } = decision {
-                            if !context.is_empty() {
-                                info!(chars = context.len(), "PreCompact hook injected context");
-                                self.harness.push_message(
-                                    Message::user(format!("[PreCompact hook context]\n{context}")),
-                                ).await;
-                            }
-                        }
+                    if let Ok(crate::hooks::HookDecision::InjectContext { context }) =
+                        hm.execute(crate::hooks::HookEvent::PreCompact, ctx).await
+                        && !context.is_empty()
+                    {
+                        info!(chars = context.len(), "PreCompact hook injected context");
+                        self.harness
+                            .push_message(Message::user(format!(
+                                "[PreCompact hook context]\n{context}"
+                            )))
+                            .await;
                     }
                 }
 
@@ -750,7 +820,12 @@ impl Agent {
                 // Store narrative records for cross-turn/session memory
                 let session_id = self.harness.session_id().to_string();
                 for rec in &narratives {
-                    if let Err(e) = self.harness.memory_manager.core().remember_narrative(rec, &session_id) {
+                    if let Err(e) = self
+                        .harness
+                        .memory_manager
+                        .core()
+                        .remember_narrative(rec, &session_id)
+                    {
                         warn!(error = %e, "Failed to store narrative record");
                     }
                 }
@@ -762,9 +837,9 @@ impl Agent {
                     urgent = interrupt.urgent,
                     "Injecting soft interrupt"
                 );
-                self.harness.push_message(
-                    Message::user(format!("Interrupt: {}", interrupt.content)),
-                ).await;
+                self.harness
+                    .push_message(Message::user(format!("Interrupt: {}", interrupt.content)))
+                    .await;
                 let _ = event_tx
                     .send(AgentEvent::SoftInterruptInjected { interrupt })
                     .await;
@@ -772,11 +847,18 @@ impl Agent {
 
             self.harness.trigger_memory_for_next_turn().await;
             let memory_injection = self.harness.take_memory_injection_for_prompt().await;
-            let memory_prompt: Option<String> = memory_injection.as_ref().map(|(inj, _)| inj.prompt.clone());
+            let memory_prompt: Option<String> =
+                memory_injection.as_ref().map(|(inj, _)| inj.prompt.clone());
             if let Some((inj, memory_state_event)) = memory_injection {
-                debug!(count = inj.count, chars = inj.prompt.len(), "Memory injected into prompt");
+                debug!(
+                    count = inj.count,
+                    chars = inj.prompt.len(),
+                    "Memory injected into prompt"
+                );
                 let _ = event_tx
-                    .send(AgentEvent::MemoryStateChanged { event: memory_state_event })
+                    .send(AgentEvent::MemoryStateChanged {
+                        event: memory_state_event,
+                    })
                     .await;
                 let _ = event_tx
                     .send(AgentEvent::MemoryInjected {
@@ -835,11 +917,17 @@ impl Agent {
 
             // ── 2. API call with P0 context-limit retry ──
 
-            let stream = match self.model.complete(
-                &messages, &tools,
-                &split.static_part, &split.dynamic_part,
-                self.model.runtime_state().resume_session_id.as_deref(),
-            ).await {
+            let stream = match self
+                .model
+                .complete(
+                    &messages,
+                    &tools,
+                    &split.static_part,
+                    &split.dynamic_part,
+                    self.model.runtime_state().resume_session_id.as_deref(),
+                )
+                .await
+            {
                 Ok(stream) => {
                     context_limit_retries = 0;
                     provider_retry_count = 0;
@@ -865,14 +953,21 @@ impl Agent {
                         // proactive path (any trigger) to make the retry fit.
                         if let Some((compaction, _narratives)) = self
                             .harness
-                            .maybe_compact_messages(summarizer, crate::compaction::CompactionMode::Proactive, turn_id, turn_id)
+                            .maybe_compact_messages(
+                                summarizer,
+                                crate::compaction::CompactionMode::Proactive,
+                                turn_id,
+                                turn_id,
+                            )
                             .await
                         {
                             // ── PreCompact hooks ──
                             {
                                 let hm = self.harness.hook_manager.read().await;
                                 let session_id = self.harness.session_id().to_string();
-                                let working_dir = self.harness.session_working_dir()
+                                let working_dir = self
+                                    .harness
+                                    .session_working_dir()
                                     .map(|p| p.to_string_lossy().to_string())
                                     .unwrap_or_default();
                                 let ctx = crate::hooks::HookContext {
@@ -884,14 +979,15 @@ impl Agent {
                                     tool_output: None,
                                     hook_event_name: "PreCompact",
                                 };
-                                if let Ok(decision) = hm.execute(crate::hooks::HookEvent::PreCompact, ctx).await {
-                                    if let crate::hooks::HookDecision::InjectContext { context } = decision {
-                                        if !context.is_empty() {
-                                            self.harness.push_message(
-                                                Message::user(format!("[PreCompact hook context]\n{context}")),
-                                            ).await;
-                                        }
-                                    }
+                                if let Ok(crate::hooks::HookDecision::InjectContext { context }) =
+                                    hm.execute(crate::hooks::HookEvent::PreCompact, ctx).await
+                                    && !context.is_empty()
+                                {
+                                    self.harness
+                                        .push_message(Message::user(format!(
+                                            "[PreCompact hook context]\n{context}"
+                                        )))
+                                        .await;
                                 }
                             }
 
@@ -922,7 +1018,11 @@ impl Agent {
                     // are NOT retried — they fail immediately.
                     if !err.is_retryable() {
                         warn!(error = %err_str, "Non-retryable provider error — giving up");
-                        return Err(self.handle_error(event_tx, turn_id, AgentError::Provider(err)));
+                        return Err(self.handle_error(
+                            event_tx,
+                            turn_id,
+                            AgentError::Provider(err),
+                        ));
                     }
 
                     // Phase 1 — fast retries
@@ -952,9 +1052,10 @@ impl Agent {
                             error = %err_str,
                             "Network appears down — waiting for recovery before retry"
                         );
-                        tokio::time::sleep(
-                            std::time::Duration::from_secs(SLOW_RETRY_INTERVAL_SECS)
-                        ).await;
+                        tokio::time::sleep(std::time::Duration::from_secs(
+                            SLOW_RETRY_INTERVAL_SECS,
+                        ))
+                        .await;
                         continue;
                     }
 
@@ -1017,7 +1118,9 @@ impl Agent {
                             message_id: model_message_id.clone(),
                         })
                         .await;
-                    return self.finish_cancelled_turn(turn_id, event_tx, Some(final_text.clone())).await;
+                    return self
+                        .finish_cancelled_turn(turn_id, event_tx, Some(final_text.clone()))
+                        .await;
                 }
 
                 let ev = ev.map_err(|err| {
@@ -1054,12 +1157,18 @@ impl Agent {
                             ?usage.cache_creation_input_tokens,
                             "Token usage"
                         );
-                        let _ = event_tx.send(AgentEvent::ModelUsage { usage: usage.clone() }).await;
+                        let _ = event_tx
+                            .send(AgentEvent::ModelUsage {
+                                usage: usage.clone(),
+                            })
+                            .await;
 
                         // Governance: record usage & check budget
                         if let Some(ref guard) = self.governance {
                             let cost = crate::governance::estimate_cost_cents(
-                                &self.model.model_id(), &usage);
+                                &self.model.model_id(),
+                                &usage,
+                            );
                             if let Err(msg) = guard.record_usage(&usage, 0, cost).await {
                                 return Err(AgentError::BudgetExceeded { message: msg });
                             }
@@ -1078,9 +1187,15 @@ impl Agent {
                                 input: input.clone(),
                             })
                             .await;
-                        collected_tool_calls.push(PendingToolCall { call_id: id, name, input });
+                        collected_tool_calls.push(PendingToolCall {
+                            call_id: id,
+                            name,
+                            input,
+                        });
                     }
-                    StreamEvent::MessageStop { stop_reason: reason } => {
+                    StreamEvent::MessageStop {
+                        stop_reason: reason,
+                    } => {
                         stop_reason = reason;
                         debug!(?stop_reason, "Model response complete");
                         let _ = event_tx
@@ -1090,7 +1205,12 @@ impl Agent {
                             .await;
                         break;
                     }
-                    StreamEvent::ToolInputDelta { index, id, name, delta } => {
+                    StreamEvent::ToolInputDelta {
+                        index,
+                        id,
+                        name,
+                        delta,
+                    } => {
                         trace!(index, ?name, "ToolInputDelta");
                         let _ = event_tx
                             .send(AgentEvent::ToolInputDelta {
@@ -1102,7 +1222,10 @@ impl Agent {
                             .await;
                     }
                     // P2: Handle provider-side compaction notification
-                    StreamEvent::Compaction { trigger, pre_tokens } => {
+                    StreamEvent::Compaction {
+                        trigger,
+                        pre_tokens,
+                    } => {
                         info!(?trigger, ?pre_tokens, "Provider-side compaction");
                         let _ = event_tx
                             .send(AgentEvent::Compaction {
@@ -1136,7 +1259,9 @@ impl Agent {
             let fingerprints: Vec<(String, String)> = collected_tool_calls
                 .iter()
                 .map(|tc| {
-                    let query = tc.input.get("query")
+                    let query = tc
+                        .input
+                        .get("query")
                         .and_then(|v| v.as_str())
                         .map(|s| s.to_string())
                         .unwrap_or_else(|| {
@@ -1153,7 +1278,8 @@ impl Agent {
                     .filter(|fp| prev_tool_fingerprints.contains(fp))
                     .count();
                 if dup_count as u32 >= DUPLICATE_TOOL_CALL_WARN_THRESHOLD {
-                    let dup_names: Vec<&str> = fingerprints.iter().map(|(n, _)| n.as_str()).collect();
+                    let dup_names: Vec<&str> =
+                        fingerprints.iter().map(|(n, _)| n.as_str()).collect();
                     info!(
                         dup_count = dup_count,
                         ?dup_names,
@@ -1164,7 +1290,10 @@ impl Agent {
                         .write()
                         .await
                         .queue_soft_interrupt(
-                            format!("重复工具调用警告: 工具名称={:?}, 重复次数={}", dup_names, dup_count),
+                            format!(
+                                "重复工具调用警告: 工具名称={:?}, 重复次数={}",
+                                dup_names, dup_count
+                            ),
                             false,
                         );
                 }
@@ -1174,28 +1303,42 @@ impl Agent {
 
             if collected_tool_calls.is_empty() {
                 // P0: Check for incomplete continuation
-                if maybe_continue_incomplete(&stop_reason, &mut incomplete_continuations, &self.harness).await {
+                if maybe_continue_incomplete(
+                    &stop_reason,
+                    &mut incomplete_continuations,
+                    &self.harness,
+                )
+                .await
+                {
                     info!("Requesting continuation for incomplete response");
                     continue;
                 }
                 // P0: Check for degenerate (empty) response
-                if maybe_continue_degenerate(&final_text, &thinking_text, &mut incomplete_continuations, &self.harness).await {
+                if maybe_continue_degenerate(
+                    &final_text,
+                    &thinking_text,
+                    &mut incomplete_continuations,
+                    &self.harness,
+                )
+                .await
+                {
                     info!("Requesting continuation for degenerate response");
                     continue;
                 }
 
                 // Pure text response — save and return.
-                self.push_assistant_message(final_text.clone(), thinking_text.clone()).await;
+                self.push_assistant_message(final_text.clone(), thinking_text.clone())
+                    .await;
                 self.harness.memory_manager.trigger_ingestion_for_turn(
                     self.harness.session_messages().await,
                     self.model.clone(),
                     event_tx.clone(),
                 );
                 // Governance: record turn completion (enforces max_turns)
-                if let Some(ref guard) = self.governance {
-                    if let Err(msg) = guard.turn_end().await {
-                        return Err(AgentError::BudgetExceeded { message: msg });
-                    }
+                if let Some(ref guard) = self.governance
+                    && let Err(msg) = guard.turn_end().await
+                {
+                    return Err(AgentError::BudgetExceeded { message: msg });
                 }
                 // Auto-checkpoint: record progress on focused goals
                 self.auto_checkpoint_focused_goals().await;
@@ -1207,10 +1350,17 @@ impl Agent {
                         .consecutive_auto_turns
                         .load(std::sync::atomic::Ordering::SeqCst);
                 }
-                info!(final_chars = final_text.len(), thinking_chars = thinking_text.len(), "Turn completed");
+                info!(
+                    final_chars = final_text.len(),
+                    thinking_chars = thinking_text.len(),
+                    "Turn completed"
+                );
                 let outcome = TurnOutcome::Completed { text: final_text };
                 let _ = event_tx
-                    .send(AgentEvent::TurnEnd { turn_id, outcome: outcome.clone() })
+                    .send(AgentEvent::TurnEnd {
+                        turn_id,
+                        outcome: outcome.clone(),
+                    })
                     .await;
                 // Proactive convergence: now that the user has received the
                 // answer, preemptively compact so the NEXT turn starts small
@@ -1223,18 +1373,31 @@ impl Agent {
                 );
                 if let Some((compaction, narratives)) = self
                     .harness
-                    .maybe_compact_messages(summarizer, crate::compaction::CompactionMode::Proactive, turn_id, turn_id)
+                    .maybe_compact_messages(
+                        summarizer,
+                        crate::compaction::CompactionMode::Proactive,
+                        turn_id,
+                        turn_id,
+                    )
                     .await
                 {
                     // Store narrative records for cross-turn/session memory
                     let session_id = self.harness.session_id().to_string();
                     for rec in &narratives {
-                        if let Err(e) = self.harness.memory_manager.core().remember_narrative(rec, &session_id) {
+                        if let Err(e) = self
+                            .harness
+                            .memory_manager
+                            .core()
+                            .remember_narrative(rec, &session_id)
+                        {
                             warn!(error = %e, "Failed to store narrative record");
                         }
                     }
                     if !narratives.is_empty() {
-                        info!(count = narratives.len(), "Stored compaction narrative records");
+                        info!(
+                            count = narratives.len(),
+                            "Stored compaction narrative records"
+                        );
                     }
                     info!(
                         trigger = ?compaction.trigger,
@@ -1260,7 +1423,9 @@ impl Agent {
                 content.push(ContentBlock::Text { text: final_text });
             }
             if !thinking_text.is_empty() {
-                content.push(ContentBlock::Reasoning { text: thinking_text });
+                content.push(ContentBlock::Reasoning {
+                    text: thinking_text,
+                });
             }
             for tc in &collected_tool_calls {
                 content.push(ContentBlock::ToolUse {
@@ -1269,9 +1434,12 @@ impl Agent {
                     input: tc.input.clone(),
                 });
             }
-            self.harness.push_message(
-                Message { role: Role::Assistant, content },
-            ).await;
+            self.harness
+                .push_message(Message {
+                    role: Role::Assistant,
+                    content,
+                })
+                .await;
 
             // Execute each tool call.
             let total = collected_tool_calls.len();
@@ -1294,12 +1462,14 @@ impl Agent {
                     )
                     .await
                 {
-                    PermissionResult::Allow => { debug!(tool = %name, "Tool auto-allowed"); }
+                    PermissionResult::Allow => {
+                        debug!(tool = %name, "Tool auto-allowed");
+                    }
                     PermissionResult::Deny { reason } => {
                         info!(tool = %name, reason = %reason, "Tool denied by policy");
-                        self.harness.push_message(
-                            Message::tool_result(&call_id, reason, true),
-                        ).await;
+                        self.harness
+                            .push_message(Message::tool_result(&call_id, reason, true))
+                            .await;
                         continue;
                     }
                     PermissionResult::AskUser { request } => {
@@ -1318,7 +1488,10 @@ impl Agent {
                             .await;
                         let outcome = TurnOutcome::RequiresUserDecision { request };
                         let _ = event_tx
-                            .send(AgentEvent::TurnEnd { turn_id, outcome: outcome.clone() })
+                            .send(AgentEvent::TurnEnd {
+                                turn_id,
+                                outcome: outcome.clone(),
+                            })
                             .await;
                         info!("Turn paused awaiting user decision");
                         self.persist_snapshot("awaiting_permission");
@@ -1332,12 +1505,17 @@ impl Agent {
                     tool_call_id: call_id.clone(),
                     working_dir: self.harness.session_working_dir().cloned(),
                     execution_mode: ToolExecutionMode::Foreground,
-                    graceful_shutdown_requested: self.harness.is_graceful_shutdown_requested().await,
+                    graceful_shutdown_requested: self
+                        .harness
+                        .is_graceful_shutdown_requested()
+                        .await,
                     progress_tx: None,
                 };
 
                 if ctx.graceful_shutdown_requested {
-                    return self.finish_cancelled_turn(turn_id, event_tx, Some(String::new())).await;
+                    return self
+                        .finish_cancelled_turn(turn_id, event_tx, Some(String::new()))
+                        .await;
                 }
 
                 // Concurrency + timeout enforcement
@@ -1349,29 +1527,39 @@ impl Agent {
                         Ok(permit) => Some(permit),
                         Err(_) => {
                             error!(tool = %name, "Tool concurrency semaphore closed unexpectedly");
-                            return Err(self.handle_error(event_tx, turn_id, AgentError::Internal {
-                                message: "tool execution aborted: concurrency semaphore closed".into(),
-                            }));
+                            return Err(self.handle_error(
+                                event_tx,
+                                turn_id,
+                                AgentError::Internal {
+                                    message: "tool execution aborted: concurrency semaphore closed"
+                                        .into(),
+                                },
+                            ));
                         }
                     }
                 } else {
                     None
                 };
 
-                let timeout_dur = self.governance.as_ref()
+                let timeout_dur = self
+                    .governance
+                    .as_ref()
                     .map(|g| std::time::Duration::from_secs(g.budget().tool_timeout_secs))
                     .unwrap_or(std::time::Duration::from_secs(60));
 
                 // ── PreToolUse hooks ──
                 let mut effective_input = input.clone();
                 {
-                    let (allowed, block_reason, modified) = self.harness.run_pre_tool_hooks(&name, &effective_input).await;
+                    let (allowed, block_reason, modified) = self
+                        .harness
+                        .run_pre_tool_hooks(&name, &effective_input)
+                        .await;
                     if !allowed {
                         let reason = block_reason.unwrap_or_else(|| "hook blocked".into());
                         info!(tool = %name, reason = %reason, "Tool blocked by PreToolUse hook");
-                        self.harness.push_message(
-                            Message::tool_result(&call_id, reason.clone(), true),
-                        ).await;
+                        self.harness
+                            .push_message(Message::tool_result(&call_id, reason.clone(), true))
+                            .await;
                         continue;
                     }
                     if let Some(mod_input) = modified {
@@ -1391,19 +1579,27 @@ impl Agent {
                         let hb_handle = tokio::spawn(async move {
                             tokio::time::sleep(std::time::Duration::from_secs(5)).await;
                             loop {
-                                let _ = hb_tx.send(AgentEvent::ToolExecutionProgress {
-                                    call_id: hb_call_id.clone(),
-                                    tool_name: hb_name.clone(),
-                                    elapsed_secs: hb_start.elapsed().as_secs(),
-                                }).await;
+                                let _ = hb_tx
+                                    .send(AgentEvent::ToolExecutionProgress {
+                                        call_id: hb_call_id.clone(),
+                                        tool_name: hb_name.clone(),
+                                        elapsed_secs: hb_start.elapsed().as_secs(),
+                                    })
+                                    .await;
                                 tokio::time::sleep(std::time::Duration::from_secs(3)).await;
                             }
                         });
-                        let result = self.harness.execute_tool_with_cache(&name, effective_input, ctx).await;
+                        let result = self
+                            .harness
+                            .execute_tool_with_cache(&name, effective_input, ctx)
+                            .await;
                         hb_handle.abort();
                         result
-                    }.in_current_span(),
-                ).await {
+                    }
+                    .in_current_span(),
+                )
+                .await
+                {
                     Ok(Ok(output)) => {
                         if let Some(ref guard) = self.governance {
                             guard.record_tool_success().await;
@@ -1428,9 +1624,13 @@ impl Agent {
                             guard.record_tool_error().await;
                         }
                         // Push error tool result so conversation history stays valid.
-                        self.harness.push_message(
-                            Message::tool_result(&call_id, format!("tool error: {}", err), true),
-                        ).await;
+                        self.harness
+                            .push_message(Message::tool_result(
+                                &call_id,
+                                format!("tool error: {}", err),
+                                true,
+                            ))
+                            .await;
                         let _ = event_tx
                             .send(AgentEvent::ToolCallEnd {
                                 call_id: call_id.clone(),
@@ -1442,11 +1642,14 @@ impl Agent {
                             })
                             .await;
                         // Push error results for remaining tools in the batch.
-                        for j in (idx+1)..total {
-                            let tc2 = &collected_tool_calls[j];
-                            self.harness.push_message(
-                                Message::tool_result(&tc2.call_id, format!("skipped: earlier tool '{}' failed", name), true),
-                            ).await;
+                        for tc2 in collected_tool_calls[(idx + 1)..total].iter() {
+                            self.harness
+                                .push_message(Message::tool_result(
+                                    &tc2.call_id,
+                                    format!("skipped: earlier tool '{}' failed", name),
+                                    true,
+                                ))
+                                .await;
                             let _ = event_tx
                                 .send(AgentEvent::ToolCallEnd {
                                     call_id: tc2.call_id.clone(),
@@ -1466,25 +1669,35 @@ impl Agent {
                             guard.record_tool_error().await;
                         }
                         // Push timeout tool result so conversation history stays valid.
-                        self.harness.push_message(
-                            Message::tool_result(&call_id, format!("tool timed out after {}s", timeout_dur.as_secs()), true),
-                        ).await;
+                        self.harness
+                            .push_message(Message::tool_result(
+                                &call_id,
+                                format!("tool timed out after {}s", timeout_dur.as_secs()),
+                                true,
+                            ))
+                            .await;
                         let _ = event_tx
                             .send(AgentEvent::ToolCallEnd {
                                 call_id: call_id.clone(),
                                 output: ToolOutput {
-                                    text: format!("tool timed out after {}s", timeout_dur.as_secs()),
+                                    text: format!(
+                                        "tool timed out after {}s",
+                                        timeout_dur.as_secs()
+                                    ),
                                     is_error: true,
                                     json: None,
                                 },
                             })
                             .await;
                         // Push error results for remaining tools in the batch.
-                        for j in (idx+1)..total {
-                            let tc2 = &collected_tool_calls[j];
-                            self.harness.push_message(
-                                Message::tool_result(&tc2.call_id, format!("skipped: earlier tool '{}' timed out", name), true),
-                            ).await;
+                        for tc2 in collected_tool_calls[(idx + 1)..total].iter() {
+                            self.harness
+                                .push_message(Message::tool_result(
+                                    &tc2.call_id,
+                                    format!("skipped: earlier tool '{}' timed out", name),
+                                    true,
+                                ))
+                                .await;
                             let _ = event_tx
                                 .send(AgentEvent::ToolCallEnd {
                                     call_id: tc2.call_id.clone(),
@@ -1503,13 +1716,14 @@ impl Agent {
 
                 // ── PostToolUse hooks ──
                 {
-                    let (allowed, block_reason) = self.harness.run_post_tool_hooks(&name, &output.text).await;
+                    let (allowed, block_reason) =
+                        self.harness.run_post_tool_hooks(&name, &output.text).await;
                     if !allowed {
                         let reason = block_reason.unwrap_or_else(|| "hook blocked".into());
                         info!(tool = %name, reason = %reason, "Tool result blocked by PostToolUse hook");
-                        self.harness.push_message(
-                            Message::tool_result(&call_id, reason.clone(), true),
-                        ).await;
+                        self.harness
+                            .push_message(Message::tool_result(&call_id, reason.clone(), true))
+                            .await;
                         let _ = event_tx
                             .send(AgentEvent::ToolCallEnd {
                                 call_id: call_id.clone(),
@@ -1557,13 +1771,22 @@ impl Agent {
                         .map(|(server, _)| server)
                         .and_then(|s| self.mcp_profiles.get(s)),
                     mcp_descriptor: self.mcp_descriptors.get(&name),
-                    consecutive_exploration_turns: if name == "grep" || name == "glob" || name == "read" { 1 } else { 0 },
+                    consecutive_exploration_turns: if name == "grep"
+                        || name == "glob"
+                        || name == "read"
+                    {
+                        1
+                    } else {
+                        0
+                    },
                 };
-                let routing_decision = self.harness.routing_engine.decide(
-                    &routing_input,
-                    &self.harness.cfg.artifact_store,
-                );
-                self.harness.governance_metrics.record_routing(routing_decision);
+                let routing_decision = self
+                    .harness
+                    .routing_engine
+                    .decide(&routing_input, &self.harness.cfg.artifact_store);
+                self.harness
+                    .governance_metrics
+                    .record_routing(routing_decision);
 
                 let _ = event_tx
                     .send(AgentEvent::RoutingDecision {
@@ -1578,12 +1801,12 @@ impl Agent {
 
                 if self.harness.cfg.artifact_store.enabled
                     && (externalize_decision.should_externalize
-                        || routing_decision == ToolResultRouting::Externalize) {
-                    let raw_bytes = raw_output_text.as_bytes().len() as u64;
+                        || routing_decision == ToolResultRouting::Externalize)
+                {
+                    let raw_bytes = raw_output_text.len() as u64;
                     if raw_bytes <= self.harness.cfg.artifact_store.max_artifact_bytes {
                         let producer = artifact_producer_from_tool_name(&name);
-                        let artifact_type =
-                            artifact_type_from_tool_name(&self.mcp_profiles, &name);
+                        let artifact_type = artifact_type_from_tool_name(&self.mcp_profiles, &name);
                         let storage_policy = artifact_storage_policy(
                             &self.harness.cfg.artifact_store,
                             &self.mcp_profiles,
@@ -1607,23 +1830,28 @@ impl Agent {
                             "ttl_hours_override": storage_policy.ttl_hours_override,
                             "externalized_reason": externalize_decision.reason,
                         });
-                        match self.harness.artifact_store.put_text(
-                            self.harness.session_id(),
-                            producer,
-                            artifact_type,
-                            storage_policy.class,
-                            raw_output_text.clone(),
-                            metadata,
-                        ).await {
+                        match self
+                            .harness
+                            .artifact_store
+                            .put_text(
+                                self.harness.session_id(),
+                                producer,
+                                artifact_type,
+                                storage_policy.class,
+                                raw_output_text.clone(),
+                                metadata,
+                            )
+                            .await
+                        {
                             Ok(put_result) => {
                                 let record = put_result.record;
                                 // Phase 4: record artifact write metrics
-                                self.harness.governance_metrics.record_artifact_write(raw_bytes);
+                                self.harness
+                                    .governance_metrics
+                                    .record_artifact_write(raw_bytes);
                                 output_text = format!(
                                     "[OUTPUT EXTERNALIZED: artifact_id={} | raw_bytes={}]\n{}",
-                                    record.artifact_id,
-                                    raw_bytes,
-                                    output_text,
+                                    record.artifact_id, raw_bytes, output_text,
                                 );
                                 let _ = event_tx
                                     .send(AgentEvent::ArtifactStored {
@@ -1649,7 +1877,9 @@ impl Agent {
                                         original_tool_name: storage_policy
                                             .original_tool_name
                                             .map(str::to_string),
-                                        externalized_reason: externalize_decision.reason.map(str::to_string),
+                                        externalized_reason: externalize_decision
+                                            .reason
+                                            .map(str::to_string),
                                     })
                                     .await;
                                 if let Some(gc) = put_result.gc_report
@@ -1669,15 +1899,16 @@ impl Agent {
                             }
                             Err(e) => {
                                 if self.harness.cfg.artifact_store.allow_summary_only_fallback {
-                                    output_text = format!(
-                                        "[OUTPUT NOT STORED: {}]\n{}",
-                                        e,
-                                        output_text,
-                                    );
+                                    output_text =
+                                        format!("[OUTPUT NOT STORED: {}]\n{}", e, output_text,);
                                 } else {
-                                    return Err(self.handle_error(event_tx, turn_id, AgentError::Internal {
-                                        message: format!("artifact store failed: {e}"),
-                                    }));
+                                    return Err(self.handle_error(
+                                        event_tx,
+                                        turn_id,
+                                        AgentError::Internal {
+                                            message: format!("artifact store failed: {e}"),
+                                        },
+                                    ));
                                 }
                             }
                         }
@@ -1725,9 +1956,14 @@ impl Agent {
                         output: output.clone(),
                     })
                     .await;
-                self.harness.push_message(
-                    tool_result_msg(call_id, output_text, output.is_error, elapsed_ms),
-                ).await;
+                self.harness
+                    .push_message(tool_result_msg(
+                        call_id,
+                        output_text,
+                        output.is_error,
+                        elapsed_ms,
+                    ))
+                    .await;
             }
 
             info!("Tool calls processed, continuing turn loop");
@@ -1737,7 +1973,10 @@ impl Agent {
     // ── Cancellation ──
 
     async fn finish_cancelled_turn(
-        &self, turn_id: u64, event_tx: &AgentEventTx, partial_text: Option<String>,
+        &self,
+        turn_id: u64,
+        event_tx: &AgentEventTx,
+        partial_text: Option<String>,
     ) -> Result<TurnOutcome, AgentError> {
         warn!("Turn cancelled");
         if let Some(text) = partial_text.filter(|text| !text.is_empty()) {
@@ -1745,12 +1984,17 @@ impl Agent {
         }
         let _ = event_tx
             .send(AgentEvent::Error {
-                error: AgentError::Internal { message: "graceful shutdown requested".to_string() },
+                error: AgentError::Internal {
+                    message: "graceful shutdown requested".to_string(),
+                },
             })
             .await;
         let outcome = TurnOutcome::Cancelled;
         let _ = event_tx
-            .send(AgentEvent::TurnEnd { turn_id, outcome: outcome.clone() })
+            .send(AgentEvent::TurnEnd {
+                turn_id,
+                outcome: outcome.clone(),
+            })
             .await;
         self.persist_snapshot("turn_cancelled");
         Ok(outcome)
@@ -1768,9 +2012,12 @@ impl Agent {
         if !thinking.is_empty() {
             content.push(ContentBlock::Reasoning { text: thinking });
         }
-        self.harness.push_message(
-            Message { role: Role::Assistant, content },
-        ).await;
+        self.harness
+            .push_message(Message {
+                role: Role::Assistant,
+                content,
+            })
+            .await;
     }
 
     /// Record a progress checkpoint on any focused goal.
@@ -1786,7 +2033,9 @@ impl Agent {
 
         for scope in [GoalScope::Session, GoalScope::Global] {
             let goals = load_goals_with_store(store.as_ref(), session_id, scope.clone());
-            let has_focused = goals.iter().any(|g| g.focused && g.status == GoalStatus::Active);
+            let has_focused = goals
+                .iter()
+                .any(|g| g.focused && g.status == GoalStatus::Active);
             if !has_focused {
                 continue;
             }
@@ -1801,8 +2050,11 @@ impl Agent {
                     });
                     // Cap checkpoints to avoid unbounded growth
                     if goal.checkpoints.len() > 32 {
-                        goal.checkpoints = goal.checkpoints
-                            .split_at(goal.checkpoints.len() - 16).1.to_vec();
+                        goal.checkpoints = goal
+                            .checkpoints
+                            .split_at(goal.checkpoints.len() - 16)
+                            .1
+                            .to_vec();
                     }
                 }
             }
@@ -1811,7 +2063,12 @@ impl Agent {
                 GoalScope::Global => "global",
             };
             let _ = save_goals_with_store(
-                store.as_ref(), session_id, scope, goals, false, Some(scope_str),
+                store.as_ref(),
+                session_id,
+                scope,
+                goals,
+                false,
+                Some(scope_str),
             );
         }
     }
@@ -1820,7 +2077,9 @@ impl Agent {
         error!(turn = turn_id, kind = ?error.kind(), message = %error, "Turn loop error");
         let tx = event_tx.clone();
         let err_event = error.clone();
-        let outcome = TurnOutcome::Failed { error: error.clone() };
+        let outcome = TurnOutcome::Failed {
+            error: error.clone(),
+        };
         tokio::spawn(
             async move {
                 let _ = tx.send(AgentEvent::Error { error: err_event }).await;
@@ -1869,7 +2128,11 @@ impl Agent {
                         }
                     }
                 }
-                if output.trim().is_empty() { None } else { Some(output) }
+                if output.trim().is_empty() {
+                    None
+                } else {
+                    Some(output)
+                }
             }) as crate::compaction::SummarizerFuture
         }
     }
@@ -1936,10 +2199,10 @@ fn detect_context_limit(error: &str) -> bool {
 
 /// Filter out tool calls that were truncated mid-generation (null/empty input).
 fn filter_truncated_tool_calls(stop_reason: &Option<String>, calls: &mut Vec<PendingToolCall>) {
-    let should_filter = match stop_reason.as_deref() {
-        Some("max_tokens" | "length" | "tool_use") => true,
-        _ => false,
-    };
+    let should_filter = matches!(
+        stop_reason.as_deref(),
+        Some("max_tokens" | "length" | "tool_use")
+    );
     if !should_filter {
         return;
     }
@@ -1963,15 +2226,12 @@ async fn maybe_continue_incomplete(
     if *attempts >= MAX_INCOMPLETE_CONTINUATION_ATTEMPTS {
         return false;
     }
-    let should_continue = match stop_reason.as_deref() {
-        Some("max_tokens" | "length") => true,
-        _ => false,
-    };
+    let should_continue = matches!(stop_reason.as_deref(), Some("max_tokens" | "length"));
     if should_continue {
         *attempts += 1;
-        harness.push_message(
-            Message::user("Please continue."),
-        ).await;
+        harness
+            .push_message(Message::user("Please continue."))
+            .await;
         true
     } else {
         false
@@ -2000,9 +2260,9 @@ async fn maybe_continue_degenerate(
     let trimmed = text.trim();
     if trimmed.is_empty() {
         *attempts += 1;
-        harness.push_message(
-            Message::user("Your response was empty. Please try again."),
-        ).await;
+        harness
+            .push_message(Message::user("Your response was empty. Please try again."))
+            .await;
         return true;
     }
     // Text-only response where the model planned to use tools in thinking
@@ -2012,15 +2272,15 @@ async fn maybe_continue_degenerate(
     // staged workflow, not a degenerate response.
     if thinking_contains_tool_plan(thinking) && !thinking_contains_planning(thinking) {
         *attempts += 1;
-        harness.push_message(
-            Message::user(
+        harness
+            .push_message(Message::user(
                 "Your response did not include any tool calls, but your \
                  thinking shows you planned to inspect the codebase or \
                  execute commands. Please actually issue the tool calls \
                  now — do not speculate about what the code does without \
-                 checking it first."
-            ),
-        ).await;
+                 checking it first.",
+            ))
+            .await;
         return true;
     }
     false
@@ -2034,9 +2294,7 @@ async fn maybe_continue_degenerate(
 /// execution tools.
 fn thinking_contains_planning(thinking: &str) -> bool {
     let lower = thinking.to_lowercase();
-    lower.contains("<goal")
-        || lower.contains("<plan")
-        || lower.contains("<todo")
+    lower.contains("<goal") || lower.contains("<plan") || lower.contains("<todo")
 }
 
 /// Check whether the thinking text contains planned but unexecuted tool usage.
@@ -2096,9 +2354,7 @@ fn artifact_type_from_tool_name(
 
 fn parse_mcp_tool_name(tool_name: &str) -> Option<(&str, &str)> {
     let rest = tool_name.strip_prefix("mcp__")?;
-    let mut parts = rest.splitn(2, "__");
-    let server = parts.next()?;
-    let tool = parts.next()?;
+    let (server, tool) = rest.split_once("__")?;
     Some((server, tool))
 }
 
@@ -2237,7 +2493,13 @@ pub(crate) fn should_externalize_tool_result(
     let profile = mcp_profiles.get(server_name);
     let descriptor = mcp_descriptors.get(tool_name);
     let descriptor_text = descriptor
-        .map(|d| format!("{} {}", d.description.to_lowercase(), d.original_name.to_lowercase()))
+        .map(|d| {
+            format!(
+                "{} {}",
+                d.description.to_lowercase(),
+                d.original_name.to_lowercase()
+            )
+        })
         .unwrap_or_else(|| mcp_tool_name.to_lowercase());
     let is_html_payload = raw_output_text.to_lowercase().contains("<html");
 
@@ -2285,14 +2547,16 @@ pub(crate) fn should_externalize_tool_result(
         McpServerKind::Unknown => output_chars > 5_000 && noisy_descriptor,
     };
     let reason = if decision {
-        Some(match profile.map(|p| p.kind).unwrap_or(McpServerKind::Unknown) {
-            McpServerKind::Filesystem => "mcp:filesystem-large",
-            McpServerKind::Browser => "mcp:browser-large",
-            McpServerKind::ExternalApi => "mcp:external-api-large",
-            McpServerKind::ReadOnly => "mcp:readonly-large",
-            McpServerKind::Shell => "mcp:shell-large",
-            McpServerKind::Unknown => "mcp:unknown-large",
-        })
+        Some(
+            match profile.map(|p| p.kind).unwrap_or(McpServerKind::Unknown) {
+                McpServerKind::Filesystem => "mcp:filesystem-large",
+                McpServerKind::Browser => "mcp:browser-large",
+                McpServerKind::ExternalApi => "mcp:external-api-large",
+                McpServerKind::ReadOnly => "mcp:readonly-large",
+                McpServerKind::Shell => "mcp:shell-large",
+                McpServerKind::Unknown => "mcp:unknown-large",
+            },
+        )
     } else {
         None
     };
@@ -2319,7 +2583,10 @@ fn mcp_server_kind_label(kind: McpServerKind) -> &'static str {
 fn tool_result_msg(call_id: String, text: String, is_error: bool, duration_ms: u64) -> Message {
     // Append duration metadata so the model sees execution timing.
     let duration_suffix = if duration_ms > 100 {
-        format!("\n[Tool execution duration: {:.2}s]", duration_ms as f64 / 1000.0)
+        format!(
+            "\n[Tool execution duration: {:.2}s]",
+            duration_ms as f64 / 1000.0
+        )
     } else {
         String::new()
     };
@@ -2456,26 +2723,36 @@ fn truncate(s: &str, max: usize) -> String {
 }
 
 fn format_message_summaries(messages: &[Message]) -> Vec<String> {
-    messages.iter().map(|msg| {
-        let role = match msg.role {
-            Role::System => "sys",
-            Role::User => "usr",
-            Role::Assistant => "asst",
-            Role::Tool => "tool",
-        };
-        let preview: String = msg.content.iter().filter_map(|block| match block {
-            ContentBlock::Text { text } | ContentBlock::Reasoning { text } => {
-                let (short, _) = fox_agent_core::format_truncated(text, 80);
-                Some(short)
-            }
-            ContentBlock::ToolResult { text, .. } => {
-                let (short, _) = fox_agent_core::format_truncated(text, 60);
-                Some(format!("[result: {}]", short))
-            }
-            ContentBlock::ToolUse { name, .. } => Some(format!("[tool_call: {name}]")),
-            ContentBlock::Image { .. } => Some("[image]".to_string()),
-            ContentBlock::NarrativeSummary { text } => Some(format!("[narrative: {}...]", &text[..text.len().min(80)])),
-        }).collect::<Vec<_>>().join(" | ");
-        format!("[{role}] {preview}")
-    }).collect()
+    messages
+        .iter()
+        .map(|msg| {
+            let role = match msg.role {
+                Role::System => "sys",
+                Role::User => "usr",
+                Role::Assistant => "asst",
+                Role::Tool => "tool",
+            };
+            let preview: String = msg
+                .content
+                .iter()
+                .map(|block| match block {
+                    ContentBlock::Text { text } | ContentBlock::Reasoning { text } => {
+                        let (short, _) = fox_agent_core::format_truncated(text, 80);
+                        short
+                    }
+                    ContentBlock::ToolResult { text, .. } => {
+                        let (short, _) = fox_agent_core::format_truncated(text, 60);
+                        format!("[result: {}]", short)
+                    }
+                    ContentBlock::ToolUse { name, .. } => format!("[tool_call: {name}]"),
+                    ContentBlock::Image { .. } => "[image]".to_string(),
+                    ContentBlock::NarrativeSummary { text } => {
+                        format!("[narrative: {}...]", &text[..text.len().min(80)])
+                    }
+                })
+                .collect::<Vec<_>>()
+                .join(" | ");
+            format!("[{role}] {preview}")
+        })
+        .collect()
 }

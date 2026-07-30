@@ -66,9 +66,8 @@ impl AgentStatus {
     /// Returns `None` if there is no meaningful status to show (no objective,
     /// no plan steps, and no turn executed yet).
     pub fn render(&self) -> Option<String> {
-        let has_content = !self.current_objective.is_empty()
-            || !self.plan_steps.is_empty()
-            || self.turn > 0;
+        let has_content =
+            !self.current_objective.is_empty() || !self.plan_steps.is_empty() || self.turn > 0;
 
         if !has_content {
             return None;
@@ -102,8 +101,14 @@ impl AgentStatus {
         out.push_str("| Metric              | Value |\n");
         out.push_str("|---------------------|-------|\n");
         out.push_str(&format!("| Turn                | {}     |\n", self.turn));
-        out.push_str(&format!("| Tools Called        | {}     |\n", self.tools_called));
-        out.push_str(&format!("| Compactions         | {}     |\n", self.compactions));
+        out.push_str(&format!(
+            "| Tools Called        | {}     |\n",
+            self.tools_called
+        ));
+        out.push_str(&format!(
+            "| Compactions         | {}     |\n",
+            self.compactions
+        ));
         out.push_str(&format!(
             "| Auto-Turns          | {}/{}  |\n",
             self.consecutive_auto_turns, self.auto_turn_limit
@@ -117,9 +122,18 @@ impl AgentStatus {
 
         // ── Token Usage (optional) ──
         if let Some(ref tu) = self.token_usage {
-            out.push_str(&format!("| Prompt Tokens       | {}     |\n", tu.prompt_tokens));
-            out.push_str(&format!("| Completion Tokens   | {}     |\n", tu.completion_tokens));
-            out.push_str(&format!("| Total Tokens        | {}     |\n", tu.total_tokens));
+            out.push_str(&format!(
+                "| Prompt Tokens       | {}     |\n",
+                tu.prompt_tokens
+            ));
+            out.push_str(&format!(
+                "| Completion Tokens   | {}     |\n",
+                tu.completion_tokens
+            ));
+            out.push_str(&format!(
+                "| Total Tokens        | {}     |\n",
+                tu.total_tokens
+            ));
         }
 
         // ── Drift Warning ──

@@ -2,8 +2,8 @@
 mod tools_tests {
     use crate::*;
     use fox_agent_core::{
-        storage, FilePlanningStore, MemoryConfig, MemoryManager, PlanningScope, PlanningStore,
-        Tool, ToolContext, ToolExecutionMode,
+        FilePlanningStore, MemoryConfig, MemoryManager, PlanningScope, PlanningStore, Tool,
+        ToolContext, ToolExecutionMode, storage,
     };
     use serde_json::json;
     use std::sync::Arc;
@@ -15,7 +15,9 @@ mod tools_tests {
         let dir = std::env::temp_dir().join(format!("fox-agent-tools-{}", Uuid::new_v4()));
         tokio::fs::create_dir_all(&dir).await.unwrap();
         let file_path = dir.join("note.txt");
-        tokio::fs::write(&file_path, "hello\nworld\nfoo\nbar").await.unwrap();
+        tokio::fs::write(&file_path, "hello\nworld\nfoo\nbar")
+            .await
+            .unwrap();
 
         let tool = ReadTool::new();
         let output = tool
@@ -28,7 +30,7 @@ mod tools_tests {
                     working_dir: Some(dir.clone()),
                     execution_mode: ToolExecutionMode::Foreground,
                     graceful_shutdown_requested: false,
-            progress_tx: None,
+                    progress_tx: None,
                 },
             )
             .await
@@ -54,7 +56,10 @@ mod tools_tests {
         };
 
         let output = tool
-            .execute(json!({"file_path":"note.txt","content":"hello"}), ctx.clone())
+            .execute(
+                json!({"file_path":"note.txt","content":"hello"}),
+                ctx.clone(),
+            )
             .await
             .unwrap();
         assert!(output.text.contains("Created"));
@@ -85,7 +90,7 @@ mod tools_tests {
                     working_dir: Some(dir.clone()),
                     execution_mode: ToolExecutionMode::Foreground,
                     graceful_shutdown_requested: false,
-            progress_tx: None,
+                    progress_tx: None,
                 },
             )
             .await
@@ -109,7 +114,7 @@ mod tools_tests {
                     working_dir: None,
                     execution_mode: ToolExecutionMode::Foreground,
                     graceful_shutdown_requested: false,
-            progress_tx: None,
+                    progress_tx: None,
                 },
             )
             .await;
@@ -135,7 +140,7 @@ mod tools_tests {
                     working_dir: Some(dir.clone()),
                     execution_mode: ToolExecutionMode::Foreground,
                     graceful_shutdown_requested: false,
-            progress_tx: None,
+                    progress_tx: None,
                 },
             )
             .await
@@ -164,7 +169,7 @@ mod tools_tests {
                     working_dir: Some(dir.clone()),
                     execution_mode: ToolExecutionMode::Foreground,
                     graceful_shutdown_requested: false,
-            progress_tx: None,
+                    progress_tx: None,
                 },
             )
             .await
@@ -178,7 +183,9 @@ mod tools_tests {
     async fn bash_tool_runs_command_in_working_dir() {
         let dir = std::env::temp_dir().join(format!("fox-agent-tools-{}", Uuid::new_v4()));
         tokio::fs::create_dir_all(&dir).await.unwrap();
-        tokio::fs::write(dir.join("sample.txt"), "abc").await.unwrap();
+        tokio::fs::write(dir.join("sample.txt"), "abc")
+            .await
+            .unwrap();
 
         let command = if cfg!(windows) {
             "type sample.txt"
@@ -195,7 +202,7 @@ mod tools_tests {
                     working_dir: Some(dir.clone()),
                     execution_mode: ToolExecutionMode::Foreground,
                     graceful_shutdown_requested: false,
-            progress_tx: None,
+                    progress_tx: None,
                 },
             )
             .await
@@ -367,15 +374,17 @@ mod tools_tests {
                     working_dir: None,
                     execution_mode: ToolExecutionMode::Foreground,
                     graceful_shutdown_requested: false,
-            progress_tx: None,
+                    progress_tx: None,
                 },
             )
             .await;
         assert!(result.is_err());
-        assert!(result
-            .unwrap_err()
-            .to_string()
-            .contains("must start with http"));
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("must start with http")
+        );
     }
 
     #[tokio::test]
@@ -410,7 +419,7 @@ mod tools_tests {
                     working_dir: None,
                     execution_mode: ToolExecutionMode::Foreground,
                     graceful_shutdown_requested: false,
-            progress_tx: None,
+                    progress_tx: None,
                 },
             )
             .await
@@ -437,7 +446,7 @@ mod tools_tests {
                     working_dir: Some(dir.clone()),
                     execution_mode: ToolExecutionMode::Foreground,
                     graceful_shutdown_requested: false,
-            progress_tx: None,
+                    progress_tx: None,
                 },
             )
             .await
@@ -484,7 +493,8 @@ mod tools_tests {
 
     #[tokio::test]
     async fn planning_tools_persist_to_file_store_snapshot() {
-        let root = std::env::temp_dir().join(format!("fox-agent-tools-planning-{}", Uuid::new_v4()));
+        let root =
+            std::env::temp_dir().join(format!("fox-agent-tools-planning-{}", Uuid::new_v4()));
         let store = Arc::new(FilePlanningStore::new(root.clone()));
         let session_id = format!("plan-file-{}", Uuid::new_v4());
         let ctx = ToolContext {
@@ -541,10 +551,22 @@ mod tools_tests {
             graceful_shutdown_requested: false,
             progress_tx: None,
         };
-        let out = tool.execute(json!({"action":"remember","content":"test memory entry","category":"fact"}), ctx.clone()).await.unwrap();
+        let out = tool
+            .execute(
+                json!({"action":"remember","content":"test memory entry","category":"fact"}),
+                ctx.clone(),
+            )
+            .await
+            .unwrap();
         assert!(out.text.contains("Remembered"));
 
-        let recalled = tool.execute(json!({"action":"recall","mode":"keyword","query":"test"}), ctx.clone()).await.unwrap();
+        let recalled = tool
+            .execute(
+                json!({"action":"recall","mode":"keyword","query":"test"}),
+                ctx.clone(),
+            )
+            .await
+            .unwrap();
         assert!(recalled.text.contains("test memory entry"));
 
         tool.execute(json!({"action":"list"}), ctx).await.unwrap();
@@ -554,8 +576,11 @@ mod tools_tests {
     async fn memory_tool_stats_action() {
         let tool = MemoryTool::new_test();
         let ctx = ToolContext {
-            session_id: "mem-stats".into(), message_id: "m1".into(), tool_call_id: "t1".into(),
-            working_dir: None, execution_mode: ToolExecutionMode::Foreground,
+            session_id: "mem-stats".into(),
+            message_id: "m1".into(),
+            tool_call_id: "t1".into(),
+            working_dir: None,
+            execution_mode: ToolExecutionMode::Foreground,
             graceful_shutdown_requested: false,
             progress_tx: None,
         };
@@ -567,17 +592,31 @@ mod tools_tests {
     async fn memory_tool_supports_reindex_and_reembed_actions() {
         let tool = MemoryTool::new_test();
         let ctx = ToolContext {
-            session_id: "mem-maint".into(), message_id: "m1".into(), tool_call_id: "t1".into(),
-            working_dir: None, execution_mode: ToolExecutionMode::Foreground,
+            session_id: "mem-maint".into(),
+            message_id: "m1".into(),
+            tool_call_id: "t1".into(),
+            working_dir: None,
+            execution_mode: ToolExecutionMode::Foreground,
             graceful_shutdown_requested: false,
             progress_tx: None,
         };
-        tool.execute(json!({"action":"remember","content":"reindex me"}), ctx.clone()).await.unwrap();
+        tool.execute(
+            json!({"action":"remember","content":"reindex me"}),
+            ctx.clone(),
+        )
+        .await
+        .unwrap();
 
-        let reindex = tool.execute(json!({"action":"reindex"}), ctx.clone()).await.unwrap();
+        let reindex = tool
+            .execute(json!({"action":"reindex"}), ctx.clone())
+            .await
+            .unwrap();
         assert!(reindex.text.contains("Reindexed"));
 
-        let reembed = tool.execute(json!({"action":"reembed"}), ctx).await.unwrap();
+        let reembed = tool
+            .execute(json!({"action":"reembed"}), ctx)
+            .await
+            .unwrap();
         assert!(reembed.text.contains("Re-embedded"));
     }
 
@@ -645,8 +684,12 @@ mod tools_tests {
 
     #[tokio::test]
     async fn memory_tool_supports_export_import_and_rebuild_ann_actions() {
-        let source_storage = std::env::temp_dir().join(format!("fox-agent-tools-memory-src-{}", Uuid::new_v4()));
-        let source_project = std::env::temp_dir().join(format!("fox-agent-tools-memory-src-project-{}", Uuid::new_v4()));
+        let source_storage =
+            std::env::temp_dir().join(format!("fox-agent-tools-memory-src-{}", Uuid::new_v4()));
+        let source_project = std::env::temp_dir().join(format!(
+            "fox-agent-tools-memory-src-project-{}",
+            Uuid::new_v4()
+        ));
         tokio::fs::create_dir_all(&source_storage).await.unwrap();
         tokio::fs::create_dir_all(&source_project).await.unwrap();
 
@@ -695,8 +738,12 @@ mod tools_tests {
             .unwrap();
         assert!(rebuilt.text.contains("Rebuilt ANN indexes"));
 
-        let target_storage = std::env::temp_dir().join(format!("fox-agent-tools-memory-dst-{}", Uuid::new_v4()));
-        let target_project = std::env::temp_dir().join(format!("fox-agent-tools-memory-dst-project-{}", Uuid::new_v4()));
+        let target_storage =
+            std::env::temp_dir().join(format!("fox-agent-tools-memory-dst-{}", Uuid::new_v4()));
+        let target_project = std::env::temp_dir().join(format!(
+            "fox-agent-tools-memory-dst-project-{}",
+            Uuid::new_v4()
+        ));
         tokio::fs::create_dir_all(&target_storage).await.unwrap();
         tokio::fs::create_dir_all(&target_project).await.unwrap();
 
@@ -732,8 +779,12 @@ mod tools_tests {
 
     #[tokio::test]
     async fn memory_tool_compact_removes_stale_memory_files() {
-        let storage_dir = std::env::temp_dir().join(format!("fox-agent-tools-memory-gc-{}", Uuid::new_v4()));
-        let project_dir = std::env::temp_dir().join(format!("fox-agent-tools-memory-gc-project-{}", Uuid::new_v4()));
+        let storage_dir =
+            std::env::temp_dir().join(format!("fox-agent-tools-memory-gc-{}", Uuid::new_v4()));
+        let project_dir = std::env::temp_dir().join(format!(
+            "fox-agent-tools-memory-gc-project-{}",
+            Uuid::new_v4()
+        ));
         tokio::fs::create_dir_all(&storage_dir).await.unwrap();
         tokio::fs::create_dir_all(&project_dir).await.unwrap();
 

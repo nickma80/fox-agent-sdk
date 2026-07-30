@@ -3,7 +3,7 @@
 //! All state changes flow through `SessionEvent` → `SessionState::apply()` → `SessionChange`,
 //! ensuring traceable, testable state transitions.
 
-use fox_agent_core::{EnvSnapshot, Message, SessionStatus, SessionSnapshot};
+use fox_agent_core::{EnvSnapshot, Message, SessionSnapshot, SessionStatus};
 use std::path::PathBuf;
 
 /// Immutable session identifier.
@@ -17,6 +17,12 @@ impl SessionId {
 
     pub fn as_str(&self) -> &str {
         &self.0
+    }
+}
+
+impl Default for SessionId {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
@@ -126,7 +132,11 @@ impl SessionState {
             }
             SessionEvent::AddEnvSnapshot(snapshot) => {
                 // Replace existing entry for the same key
-                if let Some(existing) = self.env_snapshots.iter_mut().find(|e| e.key == snapshot.key) {
+                if let Some(existing) = self
+                    .env_snapshots
+                    .iter_mut()
+                    .find(|e| e.key == snapshot.key)
+                {
                     existing.value = snapshot.value;
                 } else {
                     self.env_snapshots.push(snapshot);

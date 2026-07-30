@@ -132,7 +132,9 @@ impl CompactionManager {
         };
 
         self.circuit_breaker.record_pre_compact(messages.len());
-        let result = self.do_compact(messages, trigger, Some(summarizer), turn_start, turn_end).await;
+        let result = self
+            .do_compact(messages, trigger, Some(summarizer), turn_start, turn_end)
+            .await;
         self.circuit_breaker.report(messages.len(), turn_end);
 
         if !self.circuit_breaker.is_closed() {
@@ -148,8 +150,21 @@ impl CompactionManager {
 
     /// Force compaction immediately (e.g. Manual trigger or context-limit retry).
     /// Uses mechanical summarization only (no LLM).
-    pub async fn force_compact(&mut self, messages: &mut Vec<Message>, trigger: CompactionTrigger, turn_start: u64, turn_end: u64) -> (CompactionEvent, Vec<NarrativeRecord>) {
-        self.do_compact(messages, trigger, None::<fn(Vec<Message>) -> SummarizerFuture>, turn_start, turn_end).await
+    pub async fn force_compact(
+        &mut self,
+        messages: &mut Vec<Message>,
+        trigger: CompactionTrigger,
+        turn_start: u64,
+        turn_end: u64,
+    ) -> (CompactionEvent, Vec<NarrativeRecord>) {
+        self.do_compact(
+            messages,
+            trigger,
+            None::<fn(Vec<Message>) -> SummarizerFuture>,
+            turn_start,
+            turn_end,
+        )
+        .await
     }
 
     /// Perform the actual compaction operation.
@@ -171,7 +186,11 @@ impl CompactionManager {
         self.compaction_count += 1;
         self.turns_since_last_compaction = 0;
         let preserve = self.cfg.preserve_recent_messages.min(messages.len());
-        let mut split_at = if messages.len() > preserve { messages.len() - preserve } else { 0 };
+        let mut split_at = if messages.len() > preserve {
+            messages.len() - preserve
+        } else {
+            0
+        };
 
         // Safety: never leave orphaned Tool results without their preceding
         // Assistant tool_calls message.  If the preserved section starts with
@@ -205,7 +224,7 @@ impl CompactionManager {
             // summary subsumes previous ones.
             if let Some(existing) = messages.iter_mut().find(|m| {
                 m.role == Role::System
-                    && m.content.first().map_or(false, |b| {
+                    && m.content.first().is_some_and(|b| {
                         matches!(b, ContentBlock::Text { text } if text.starts_with("Conversation summary:"))
                     })
             }) {
@@ -229,12 +248,15 @@ impl CompactionManager {
             Vec::new()
         };
 
-        (CompactionEvent {
-            trigger,
-            removed_messages: old_messages.len(),
-            kept_messages: messages.len(),
-            summary_chars,
-        }, narratives)
+        (
+            CompactionEvent {
+                trigger,
+                removed_messages: old_messages.len(),
+                kept_messages: messages.len(),
+                summary_chars,
+            },
+            narratives,
+        )
     }
 }
 
@@ -281,7 +303,8 @@ pub(crate) fn extract_narrative_records(
     turn_end: u64,
 ) -> Vec<fox_agent_core::NarrativeRecord> {
     // Try structured JSON first
-    if let Ok(record) = serde_json::from_str::<fox_agent_core::NarrativeRecord>(summary_text.trim()) {
+    if let Ok(record) = serde_json::from_str::<fox_agent_core::NarrativeRecord>(summary_text.trim())
+    {
         return vec![record];
     }
     // Try extracting JSON from within markdown code fences
@@ -299,7 +322,10 @@ pub(crate) fn extract_narrative_records(
     if text.is_empty() || text.len() < 20 {
         return Vec::new();
     }
-    let mut record = NarrativeRecord::new((turn_start, turn_end), format!("(compacted conversation, turns {turn_start}-{turn_end})"));
+    let mut record = NarrativeRecord::new(
+        (turn_start, turn_end),
+        format!("(compacted conversation, turns {turn_start}-{turn_end})"),
+    );
     record.findings = vec![text.to_string()];
     vec![record]
 }
@@ -316,7 +342,9 @@ pub(crate) fn format_narrative_for_prompt(record: &NarrativeRecord, max_chars: u
     ));
 
     if !record.actions_taken.is_empty() {
-        let actions = record.actions_taken.iter()
+        let actions = record
+            .actions_taken
+            .iter()
             .take(5)
             .map(|a| format!("  - {a}"))
             .collect::<Vec<_>>()
@@ -325,7 +353,9 @@ pub(crate) fn format_narrative_for_prompt(record: &NarrativeRecord, max_chars: u
     }
 
     if !record.findings.is_empty() {
-        let findings = record.findings.iter()
+        let findings = record
+            .findings
+            .iter()
             .take(3)
             .map(|f| format!("  - {f}"))
             .collect::<Vec<_>>()
@@ -334,7 +364,9 @@ pub(crate) fn format_narrative_for_prompt(record: &NarrativeRecord, max_chars: u
     }
 
     if !record.files_modified.is_empty() {
-        let files = record.files_modified.iter()
+        let files = record
+            .files_modified
+            .iter()
             .take(5)
             .map(|f| format!("  - {f}"))
             .collect::<Vec<_>>()
@@ -343,7 +375,9 @@ pub(crate) fn format_narrative_for_prompt(record: &NarrativeRecord, max_chars: u
     }
 
     if !record.decisions.is_empty() {
-        let decs = record.decisions.iter()
+        let decs = record
+            .decisions
+            .iter()
             .take(3)
             .map(|d| format!("  - {d}"))
             .collect::<Vec<_>>()
@@ -392,7 +426,11 @@ pub(crate) fn inject_narrative_summaries(
     // Count existing narratives + new ones.
     let existing_count = messages
         .iter()
-        .filter(|m| m.content.iter().any(|b| matches!(b, ContentBlock::NarrativeSummary { .. })))
+        .filter(|m| {
+            m.content
+                .iter()
+                .any(|b| matches!(b, ContentBlock::NarrativeSummary { .. }))
+        })
         .count();
 
     // Insert new narratives after any existing conversation summary,
@@ -402,9 +440,9 @@ pub(crate) fn inject_narrative_summaries(
         .iter()
         .position(|m| {
             m.role == Role::System
-                && m.content.first().map_or(false, |b| {
-                    matches!(b, ContentBlock::NarrativeSummary { .. })
-                })
+                && m.content.first().is_some_and(|b| {
+                        matches!(b, ContentBlock::NarrativeSummary { .. })
+                    })
         })
         .map(|pos| pos + 1) // After the first narrative
         .unwrap_or_else(|| {
@@ -413,9 +451,9 @@ pub(crate) fn inject_narrative_summaries(
                 .iter()
                 .position(|m| {
                     m.role == Role::System
-                        && m.content.first().map_or(false, |b| {
-                            matches!(b, ContentBlock::Text { text } if text.starts_with("Conversation summary:"))
-                        })
+                        && m.content.first().is_some_and(|b| {
+                                matches!(b, ContentBlock::Text { text } if text.starts_with("Conversation summary:"))
+                            })
                 })
                 .map(|pos| pos + 1)
                 .unwrap_or(0)
@@ -432,7 +470,10 @@ pub(crate) fn inject_narrative_summaries(
         let to_remove = total_narratives - max_narratives;
         let mut removed = 0usize;
         messages.retain(|m| {
-            let is_narrative = m.content.iter().any(|b| matches!(b, ContentBlock::NarrativeSummary { .. }));
+            let is_narrative = m
+                .content
+                .iter()
+                .any(|b| matches!(b, ContentBlock::NarrativeSummary { .. }));
             if is_narrative && removed < to_remove {
                 removed += 1;
                 false
@@ -461,56 +502,67 @@ pub(crate) fn inject_narrative_summaries(
 fn mechanical_transcript(messages: &[Message]) -> String {
     const MAX_CONTENT_LEN: usize = 500; // Truncate each content block to 500 chars
     const MAX_SUMMARY_LEN: usize = 4000; // Truncate total summary to 4KB
-    
+
     let mut summary = String::new();
-    
+
     for message in messages {
         let role = match message.role {
-            Role::System => "system", Role::User => "user",
-            Role::Assistant => "assistant", Role::Tool => "tool",
+            Role::System => "system",
+            Role::User => "user",
+            Role::Assistant => "assistant",
+            Role::Tool => "tool",
         };
-        
-        let content = message.content.iter().map(|block| {
-            let text = match block {
-                ContentBlock::Text { text } => text.as_str(),
-                ContentBlock::Reasoning { text } => text.as_str(),
-                ContentBlock::ToolResult { text, .. } => text.as_str(),
-                ContentBlock::NarrativeSummary { text } => text.as_str(),
-                ContentBlock::ToolUse { .. } | ContentBlock::Image { .. } => "",
-            };
-            // Safe truncation: uses char_indices() to find the byte offset
-            // of the MAX_CONTENT_LEN-th character, guaranteeing we never
-            // slice in the middle of a multi-byte UTF-8 codepoint.
-            let (truncated, overflow) = fox_agent_core::format_truncated(text, MAX_CONTENT_LEN);
-            if overflow.is_empty() {
-                text.to_string()
-            } else {
-                format!("{truncated}{overflow}")
-            }
-        }).collect::<Vec<_>>().join(" ");
-        
+
+        let content = message
+            .content
+            .iter()
+            .map(|block| {
+                let text = match block {
+                    ContentBlock::Text { text } => text.as_str(),
+                    ContentBlock::Reasoning { text } => text.as_str(),
+                    ContentBlock::ToolResult { text, .. } => text.as_str(),
+                    ContentBlock::NarrativeSummary { text } => text.as_str(),
+                    ContentBlock::ToolUse { .. } | ContentBlock::Image { .. } => "",
+                };
+                // Safe truncation: uses char_indices() to find the byte offset
+                // of the MAX_CONTENT_LEN-th character, guaranteeing we never
+                // slice in the middle of a multi-byte UTF-8 codepoint.
+                let (truncated, overflow) = fox_agent_core::format_truncated(text, MAX_CONTENT_LEN);
+                if overflow.is_empty() {
+                    text.to_string()
+                } else {
+                    format!("{truncated}{overflow}")
+                }
+            })
+            .collect::<Vec<_>>()
+            .join(" ");
+
         let line = format!("[{role}] {content}");
         summary.push_str(&line);
         summary.push('\n');
-        
+
         // Stop if summary is getting too long
         if summary.len() > MAX_SUMMARY_LEN {
             summary.push_str("...[summary truncated]\n");
             break;
         }
     }
-    
+
     summary
 }
 
 pub(crate) fn message_chars(messages: &[Message]) -> usize {
-    messages.iter().flat_map(|m| &m.content).map(|block| match block {
-        ContentBlock::Text { text } => text.len(),
-        ContentBlock::Reasoning { text } => text.len(),
-        ContentBlock::ToolResult { text, .. } => text.len(),
-        ContentBlock::ToolUse { .. } | ContentBlock::Image { .. } => 0,
-        ContentBlock::NarrativeSummary { .. } => 0,
-    }).sum()
+    messages
+        .iter()
+        .flat_map(|m| &m.content)
+        .map(|block| match block {
+            ContentBlock::Text { text } => text.len(),
+            ContentBlock::Reasoning { text } => text.len(),
+            ContentBlock::ToolResult { text, .. } => text.len(),
+            ContentBlock::ToolUse { .. } | ContentBlock::Image { .. } => 0,
+            ContentBlock::NarrativeSummary { .. } => 0,
+        })
+        .sum()
 }
 
 // ── Compaction artifact detection ──
@@ -519,7 +571,7 @@ pub(crate) fn message_chars(messages: &[Message]) -> usize {
 #[expect(dead_code)]
 fn is_summary_block(m: &Message) -> bool {
     m.role == Role::System
-        && m.content.first().map_or(false, |b| {
+        && m.content.first().is_some_and(|b| {
             matches!(b, ContentBlock::Text { text } if text.starts_with("Conversation summary:"))
         })
 }
@@ -529,7 +581,6 @@ fn is_summary_block(m: &Message) -> bool {
 fn is_compaction_artifact(m: &Message) -> bool {
     is_summary_block(m)
 }
-
 
 #[cfg(test)]
 mod tests {
@@ -548,7 +599,10 @@ mod tests {
                 input: serde_json::json!({}),
             });
         }
-        Message { role: Role::Assistant, content }
+        Message {
+            role: Role::Assistant,
+            content,
+        }
     }
 
     fn build_tool_result(call_id: &str, text: &str) -> Message {
@@ -556,7 +610,10 @@ mod tests {
     }
 
     fn build_user(text: &str) -> Message {
-        Message { role: Role::User, content: vec![ContentBlock::Text { text: text.into() }] }
+        Message {
+            role: Role::User,
+            content: vec![ContentBlock::Text { text: text.into() }],
+        }
     }
 
     /// Regression test: compaction must NOT leave orphaned Tool results
@@ -584,21 +641,22 @@ mod tests {
             ..Default::default()
         };
         let mut mgr = CompactionManager::new(cfg);
-        let (event, _) = mgr.force_compact(&mut messages, CompactionTrigger::TokenBudget, 1, 1).await;
+        let (event, _) = mgr
+            .force_compact(&mut messages, CompactionTrigger::TokenBudget, 1, 1)
+            .await;
 
         // verify no Tool messages appear without preceding Assistant(tool_calls)
         let mut last_was_tool_calls = false;
         for msg in &messages {
             let is_assistant_tool_calls = msg.role == Role::Assistant
-                && msg.content.iter().any(|b| matches!(b, ContentBlock::ToolUse { .. }));
+                && msg
+                    .content
+                    .iter()
+                    .any(|b| matches!(b, ContentBlock::ToolUse { .. }));
 
             match msg.role {
                 Role::Tool => {
-                    assert!(
-                        last_was_tool_calls,
-                        "orphaned tool result found: {:?}",
-                        msg
-                    );
+                    assert!(last_was_tool_calls, "orphaned tool result found: {:?}", msg);
                 }
                 _ => {}
             }
@@ -606,8 +664,14 @@ mod tests {
         }
 
         // also verify that the summary message is present
-        assert!(messages[0].role == Role::System || messages[0].role == Role::Tool, "first message should be system or tool");
-        println!("fine: {} removed, {} kept", event.removed_messages, event.kept_messages);
+        assert!(
+            messages[0].role == Role::System || messages[0].role == Role::Tool,
+            "first message should be system or tool"
+        );
+        println!(
+            "fine: {} removed, {} kept",
+            event.removed_messages, event.kept_messages
+        );
     }
 
     /// When the split boundary is safe (before a User message), the orphan
@@ -634,12 +698,18 @@ mod tests {
             ..Default::default()
         };
         let mut mgr = CompactionManager::new(cfg);
-        let (_, _) = mgr.force_compact(&mut messages, CompactionTrigger::TokenBudget, 1, 1).await;
+        let (_, _) = mgr
+            .force_compact(&mut messages, CompactionTrigger::TokenBudget, 1, 1)
+            .await;
 
         // After compaction, first non-system message should be User
         let has_non_system = messages.iter().find(|m| m.role != Role::System);
         if let Some(non_sys) = has_non_system {
-            assert_eq!(non_sys.role, Role::User, "safe boundary should preserve User as first");
+            assert_eq!(
+                non_sys.role,
+                Role::User,
+                "safe boundary should preserve User as first"
+            );
         }
     }
 
@@ -668,7 +738,13 @@ mod tests {
         let mut approaching: Vec<Message> = (0..5).map(|_| build_user(&"x".repeat(18))).collect();
         let mut mgr = CompactionManager::new(mode_test_cfg());
         let ev = mgr
-            .maybe_compact(&mut approaching, noop_summarizer, CompactionMode::PreSend, 1, 1)
+            .maybe_compact(
+                &mut approaching,
+                noop_summarizer,
+                CompactionMode::PreSend,
+                1,
+                1,
+            )
             .await;
         assert!(ev.is_none(), "PreSend must not fire on approaching-only");
 
@@ -676,7 +752,13 @@ mod tests {
         let mut overflow: Vec<Message> = (0..6).map(|_| build_user(&"x".repeat(20))).collect();
         let mut mgr2 = CompactionManager::new(mode_test_cfg());
         let ev2 = mgr2
-            .maybe_compact(&mut overflow, noop_summarizer, CompactionMode::PreSend, 1, 1)
+            .maybe_compact(
+                &mut overflow,
+                noop_summarizer,
+                CompactionMode::PreSend,
+                1,
+                1,
+            )
             .await;
         assert!(ev2.is_some(), "PreSend must fire on overflow");
     }
@@ -688,9 +770,14 @@ mod tests {
         let mut approaching: Vec<Message> = (0..5).map(|_| build_user(&"x".repeat(18))).collect();
         let mut mgr = CompactionManager::new(mode_test_cfg());
         let ev = mgr
-            .maybe_compact(&mut approaching, noop_summarizer, CompactionMode::Proactive, 1, 1)
+            .maybe_compact(
+                &mut approaching,
+                noop_summarizer,
+                CompactionMode::Proactive,
+                1,
+                1,
+            )
             .await;
         assert!(ev.is_some(), "Proactive must fire on approaching threshold");
     }
-
 }

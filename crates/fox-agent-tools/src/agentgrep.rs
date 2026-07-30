@@ -6,9 +6,7 @@ use args::{
     resolve_search_root,
 };
 use fox_agent_core::{Tool, ToolContext, ToolError, ToolOutput, intent_schema_property};
-use render::{
-    render_find_output, render_grep_output, render_outline_output, render_smart_output,
-};
+use render::{render_find_output, render_grep_output, render_outline_output, render_smart_output};
 use serde::Deserialize;
 use serde_json::{Value, json};
 
@@ -60,6 +58,12 @@ pub struct AgentGrepTool;
 impl AgentGrepTool {
     pub fn new() -> Self {
         Self
+    }
+}
+
+impl Default for AgentGrepTool {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
@@ -129,9 +133,10 @@ impl Tool for AgentGrepTool {
     }
 
     async fn execute(&self, input: Value, ctx: ToolContext) -> Result<ToolOutput, ToolError> {
-        let params: AgentGrepInput = serde_json::from_value(input).map_err(|e| ToolError::Message {
-            message: format!("invalid agentgrep input: {e}"),
-        })?;
+        let params: AgentGrepInput =
+            serde_json::from_value(input).map_err(|e| ToolError::Message {
+                message: format!("invalid agentgrep input: {e}"),
+            })?;
 
         let outcome = execute_agentgrep(&params, &ctx);
         match outcome {
@@ -143,16 +148,15 @@ impl Tool for AgentGrepTool {
     }
 }
 
-fn execute_agentgrep(
-    params: &AgentGrepInput,
-    ctx: &ToolContext,
-) -> Result<ToolOutput, ToolError> {
+fn execute_agentgrep(params: &AgentGrepInput, ctx: &ToolContext) -> Result<ToolOutput, ToolError> {
     match params.mode.as_str() {
         "grep" => {
             let args = build_grep_args(params, ctx)?;
             let root = resolve_search_root(ctx, args.path.as_deref());
-            let result = agentgrep::search::run_grep(&root, &args)
-                .map_err(|e| ToolError::Message { message: format!("grep failed: {e}") })?;
+            let result =
+                agentgrep::search::run_grep(&root, &args).map_err(|e| ToolError::Message {
+                    message: format!("grep failed: {e}"),
+                })?;
             Ok(ToolOutput {
                 text: render_grep_output(&result, &args, params.max_regions),
                 is_error: false,
@@ -180,8 +184,10 @@ fn execute_agentgrep(
         "outline" => {
             let args = build_outline_args(params, ctx)?;
             let root = resolve_search_root(ctx, args.path.as_deref());
-            let result = agentgrep::outline::run_outline(&root, &args)
-                .map_err(|e| ToolError::Message { message: format!("outline failed: {e}") })?;
+            let result =
+                agentgrep::outline::run_outline(&root, &args).map_err(|e| ToolError::Message {
+                    message: format!("outline failed: {e}"),
+                })?;
             Ok(ToolOutput {
                 text: render_outline_output(&result),
                 is_error: false,
@@ -196,8 +202,11 @@ fn execute_agentgrep(
         "trace" | "smart" => {
             let (args, query) = build_smart_args_and_query(params, ctx)?;
             let root = resolve_search_root(ctx, args.path.as_deref());
-            let result = agentgrep::smart_engine::run_smart(&root, &query, &args)
-                .map_err(|e| ToolError::Message { message: format!("trace failed: {e}") })?;
+            let result = agentgrep::smart_engine::run_smart(&root, &query, &args).map_err(|e| {
+                ToolError::Message {
+                    message: format!("trace failed: {e}"),
+                }
+            })?;
             Ok(ToolOutput {
                 text: render_smart_output(&result, &args),
                 is_error: false,

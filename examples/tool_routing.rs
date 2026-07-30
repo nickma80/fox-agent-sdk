@@ -11,15 +11,13 @@
 ///
 /// Uses MockProvider — no real LLM credentials needed.
 use fox_agent_core::{
-    ArtifactStoreConfig, ArtifactEvictionPolicy, ArtifactCompression,
-    RoutingPolicyConfig, Tool, ToolContext, ToolError, ToolOutput,
-    ToolExecutionMode, DefaultSafetyPolicy, SafetyConfig,
+    ArtifactCompression, ArtifactEvictionPolicy, ArtifactStoreConfig, DefaultSafetyPolicy,
+    RoutingPolicyConfig, SafetyConfig, Tool, ToolContext, ToolError, ToolExecutionMode, ToolOutput,
 };
 use fox_agent_sdk::{
-    AgentBuilder, AgentEvent, FoxAgentSdkConfig, MockProvider, StreamEvent,
-    TurnOutcome,
+    AgentBuilder, AgentEvent, FoxAgentSdkConfig, MockProvider, StreamEvent, TurnOutcome,
 };
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -30,7 +28,9 @@ struct LargeEchoTool {
 
 #[async_trait::async_trait]
 impl Tool for LargeEchoTool {
-    fn name(&self) -> &str { "large_echo" }
+    fn name(&self) -> &str {
+        "large_echo"
+    }
 
     fn description(&self) -> &str {
         "Returns a very large text payload that simulates a full-repo search result."
@@ -40,11 +40,7 @@ impl Tool for LargeEchoTool {
         json!({"type": "object", "properties": {}})
     }
 
-    async fn execute(
-        &self,
-        _input: Value,
-        _ctx: ToolContext,
-    ) -> Result<ToolOutput, ToolError> {
+    async fn execute(&self, _input: Value, _ctx: ToolContext) -> Result<ToolOutput, ToolError> {
         Ok(ToolOutput {
             text: self.text.clone(),
             is_error: false,
@@ -102,7 +98,8 @@ async fn main() {
     // Turn 2: agent receives externalized summary and produces final answer
     provider.push_script(vec![
         StreamEvent::TextDelta {
-            text: "I have retrieved the externalized search results from the artifact store.".into(),
+            text: "I have retrieved the externalized search results from the artifact store."
+                .into(),
         },
         StreamEvent::MessageStop { stop_reason: None },
     ]);
@@ -183,12 +180,17 @@ async fn main() {
                 retention_class,
                 ..
             } => {
-                println!("  [artifact]   {tool_name} stored ({artifact_type:?}, {retention_class:?})");
+                println!(
+                    "  [artifact]   {tool_name} stored ({artifact_type:?}, {retention_class:?})"
+                );
             }
             _ => {}
         }
         // Capture artifact_id from stored event
-        if let AgentEvent::ArtifactStored { artifact_id: id, .. } = &ev {
+        if let AgentEvent::ArtifactStored {
+            artifact_id: id, ..
+        } = &ev
+        {
             artifact_id = Some(id.clone());
         }
     }

@@ -2,7 +2,9 @@
 //!
 //! Import this module from individual bench files to avoid duplication.
 
-use fox_agent_core::{AgentEvent, FoxAgentSdkConfig, StreamEvent, Tool, ToolContext, ToolError, ToolOutput};
+use fox_agent_core::{
+    AgentEvent, FoxAgentSdkConfig, StreamEvent, Tool, ToolContext, ToolError, ToolOutput,
+};
 use fox_agent_sdk::{Agent, Harness, MockProvider};
 use serde_json::{Value, json};
 use std::sync::Arc;
@@ -10,9 +12,7 @@ use tracing_chrome::ChromeLayerBuilder;
 use tracing_subscriber::prelude::*;
 
 /// Build an Agent backed by a MockProvider with the given tools registered.
-pub async fn build_mock_agent(
-    tools: Vec<Arc<dyn Tool>>,
-) -> (Agent, MockProvider) {
+pub async fn build_mock_agent(tools: Vec<Arc<dyn Tool>>) -> (Agent, MockProvider) {
     let provider = MockProvider::new("bench-mock");
     let harness = Harness::new(FoxAgentSdkConfig::default(), None);
     for t in tools {
@@ -29,13 +29,13 @@ pub async fn build_mock_agent(
 /// Initialise a tracing subscriber for Chrome trace output.
 /// Set `BENCH_TRACE_DIR` env var to enable; otherwise no-op.
 pub fn init_tracing() {
-    let Ok(dir) = std::env::var("BENCH_TRACE_DIR") else { return };
+    let Ok(dir) = std::env::var("BENCH_TRACE_DIR") else {
+        return;
+    };
     let (chrome_layer, _guard) = ChromeLayerBuilder::new()
         .file(std::path::PathBuf::from(&dir).join("bench-trace.json"))
         .build();
-    let _ = tracing_subscriber::registry()
-        .with(chrome_layer)
-        .try_init();
+    let _ = tracing_subscriber::registry().with(chrome_layer).try_init();
 }
 
 // ── Standard test tools ──
@@ -45,14 +45,26 @@ pub struct EchoTool;
 
 #[async_trait::async_trait]
 impl Tool for EchoTool {
-    fn name(&self) -> &str { "echo" }
-    fn description(&self) -> &str { "Echo tool" }
+    fn name(&self) -> &str {
+        "echo"
+    }
+    fn description(&self) -> &str {
+        "Echo tool"
+    }
     fn parameters_schema(&self) -> Value {
         json!({"type":"object","properties":{"text":{"type":"string"}},"required":["text"]})
     }
     async fn execute(&self, input: Value, _ctx: ToolContext) -> Result<ToolOutput, ToolError> {
-        let text = input.get("text").and_then(|v| v.as_str()).unwrap_or_default().to_string();
-        Ok(ToolOutput { text, is_error: false, json: None })
+        let text = input
+            .get("text")
+            .and_then(|v| v.as_str())
+            .unwrap_or_default()
+            .to_string();
+        Ok(ToolOutput {
+            text,
+            is_error: false,
+            json: None,
+        })
     }
 }
 
@@ -65,26 +77,40 @@ pub struct StaticTool {
 
 impl StaticTool {
     pub fn new(name: &'static str, text: impl Into<String>) -> Self {
-        Self { name, description: name, text: text.into() }
+        Self {
+            name,
+            description: name,
+            text: text.into(),
+        }
     }
 }
 
 #[async_trait::async_trait]
 impl Tool for StaticTool {
-    fn name(&self) -> &str { self.name }
-    fn description(&self) -> &str { self.description }
+    fn name(&self) -> &str {
+        self.name
+    }
+    fn description(&self) -> &str {
+        self.description
+    }
     fn parameters_schema(&self) -> Value {
         json!({"type":"object","properties":{}})
     }
     async fn execute(&self, _input: Value, _ctx: ToolContext) -> Result<ToolOutput, ToolError> {
-        Ok(ToolOutput { text: self.text.clone(), is_error: false, json: None })
+        Ok(ToolOutput {
+            text: self.text.clone(),
+            is_error: false,
+            json: None,
+        })
     }
 }
 
 /// Helper: build a simple "text-done" script for MockProvider.
 pub fn text_done_script(text: &str) -> Vec<StreamEvent> {
     vec![
-        StreamEvent::TextDelta { text: text.to_string() },
+        StreamEvent::TextDelta {
+            text: text.to_string(),
+        },
         StreamEvent::MessageStop { stop_reason: None },
     ]
 }
@@ -102,12 +128,18 @@ pub fn push_tool_then_text(
 ) {
     // Turn 1: model decides to call a tool
     provider.push_script(vec![
-        StreamEvent::ToolUse { id: call_id.into(), name: tool_name.into(), input },
+        StreamEvent::ToolUse {
+            id: call_id.into(),
+            name: tool_name.into(),
+            input,
+        },
         StreamEvent::MessageStop { stop_reason: None },
     ]);
     // Turn 2: model responds after seeing the tool result
     provider.push_script(vec![
-        StreamEvent::TextDelta { text: text.to_string() },
+        StreamEvent::TextDelta {
+            text: text.to_string(),
+        },
         StreamEvent::MessageStop { stop_reason: None },
     ]);
 }

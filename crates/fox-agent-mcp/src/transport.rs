@@ -6,7 +6,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::{Child, Command};
-use tokio::sync::{mpsc, Notify};
+use tokio::sync::{Notify, mpsc};
 
 // ── Transport trait ──
 
@@ -67,11 +67,7 @@ pub struct StdioTransportConfig {
 
 impl StdioTransportConfig {
     /// Create a config with sensible defaults for `startup_grace_ms`.
-    pub fn new(
-        command: impl Into<String>,
-        args: Vec<String>,
-        request_timeout_ms: u64,
-    ) -> Self {
+    pub fn new(command: impl Into<String>, args: Vec<String>, request_timeout_ms: u64) -> Self {
         Self {
             command: command.into(),
             args,
@@ -85,7 +81,10 @@ impl StdioTransportConfig {
 
 /// One in-flight request sent to the stdio I/O task: the serialized request
 /// JSON paired with a oneshot channel to deliver the matching response.
-type PendingRequest = (String, tokio::sync::oneshot::Sender<Result<McpResponse, TransportError>>);
+type PendingRequest = (
+    String,
+    tokio::sync::oneshot::Sender<Result<McpResponse, TransportError>>,
+);
 
 // ── Helper: build a human‑readable diagnostic from captured output buffers ──
 
@@ -165,18 +164,19 @@ impl McpTransport for StdioTransport {
         cmd.stderr(std::process::Stdio::piped());
 
         let mut child = cmd.spawn().map_err(|e| {
-            TransportError::ProcessExited(format!(
-                "failed to spawn '{}': {e}",
-                self.config.command,
-            ))
+            TransportError::ProcessExited(
+                format!("failed to spawn '{}': {e}", self.config.command,),
+            )
         })?;
 
         let child_id = child.id().unwrap_or(0);
 
         // ── Startup health‑check: wait and see if the child died immediately ──
         if self.config.startup_grace_ms > 0 {
-            tokio::time::sleep(std::time::Duration::from_millis(self.config.startup_grace_ms))
-                .await;
+            tokio::time::sleep(std::time::Duration::from_millis(
+                self.config.startup_grace_ms,
+            ))
+            .await;
 
             match child.try_wait() {
                 Ok(Some(status)) => {
@@ -232,12 +232,14 @@ impl McpTransport for StdioTransport {
         }
 
         // ── Take the pipes ──
-        let stdout = child.stdout.take().ok_or_else(|| {
-            TransportError::Protocol("child process has no stdout".into())
-        })?;
-        let stdin = child.stdin.take().ok_or_else(|| {
-            TransportError::Protocol("child process has no stdin".into())
-        })?;
+        let stdout = child
+            .stdout
+            .take()
+            .ok_or_else(|| TransportError::Protocol("child process has no stdout".into()))?;
+        let stdin = child
+            .stdin
+            .take()
+            .ok_or_else(|| TransportError::Protocol("child process has no stdin".into()))?;
         let stderr = child.stderr.take();
 
         // Shared buffers for diagnostic output.
@@ -305,9 +307,10 @@ impl McpTransport for StdioTransport {
         {
             let sender_guard = self.sender.lock().await;
             let sender = sender_guard.as_ref().ok_or(TransportError::NotStarted)?;
-            sender.send((json, reply_tx)).await.map_err(|_| {
-                TransportError::ProcessExited("transport channel closed".into())
-            })?;
+            sender
+                .send((json, reply_tx))
+                .await
+                .map_err(|_| TransportError::ProcessExited("transport channel closed".into()))?;
         }
 
         match tokio::time::timeout(
@@ -626,10 +629,12 @@ impl McpTransport for SseTransport {
         let mut headers = reqwest::header::HeaderMap::new();
         for (k, v) in &self.config.headers {
             headers.insert(
-                reqwest::header::HeaderName::from_bytes(k.as_bytes())
-                    .map_err(|e| TransportError::Protocol(format!("invalid header name '{k}': {e}")))?,
-                reqwest::header::HeaderValue::from_str(v)
-                    .map_err(|e| TransportError::Protocol(format!("invalid header value '{v}': {e}")))?,
+                reqwest::header::HeaderName::from_bytes(k.as_bytes()).map_err(|e| {
+                    TransportError::Protocol(format!("invalid header name '{k}': {e}"))
+                })?,
+                reqwest::header::HeaderValue::from_str(v).map_err(|e| {
+                    TransportError::Protocol(format!("invalid header value '{v}': {e}"))
+                })?,
             );
         }
         headers.insert(
@@ -643,7 +648,9 @@ impl McpTransport for SseTransport {
         );
 
         let client = reqwest::Client::builder()
-            .connect_timeout(std::time::Duration::from_secs(self.config.connect_timeout_secs))
+            .connect_timeout(std::time::Duration::from_secs(
+                self.config.connect_timeout_secs,
+            ))
             .default_headers(headers)
             .build()
             .map_err(|e| TransportError::Protocol(format!("failed to build http client: {e}")))?;
@@ -712,9 +719,10 @@ impl McpTransport for SseTransport {
             });
         }
 
-        let body = resp.text().await.map_err(|e| {
-            TransportError::Protocol(format!("failed to read response body: {e}"))
-        })?;
+        let body = resp
+            .text()
+            .await
+            .map_err(|e| TransportError::Protocol(format!("failed to read response body: {e}")))?;
 
         if body.trim().is_empty() {
             // Empty body (e.g. accepted notification) — synthesize an ok response.
@@ -750,7 +758,8 @@ mod tests {
 
     #[test]
     fn parses_sse_framed_response() {
-        let body = "event: message\ndata: {\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"ok\":true}}\n\n";
+        let body =
+            "event: message\ndata: {\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"ok\":true}}\n\n";
         let resp = parse_sse_response(body).expect("should parse SSE frame");
         assert_eq!(resp.id, serde_json::json!(1));
         assert_eq!(resp.result, Some(serde_json::json!({"ok": true})));
@@ -778,4 +787,3 @@ mod tests {
         assert!(parse_sse_response(body).is_none());
     }
 }
-

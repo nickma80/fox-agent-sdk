@@ -1,7 +1,7 @@
 use async_trait::async_trait;
-use futures::stream;
-use futures::StreamExt;
 use fox_agent_core::{EventStream, Message, Provider, ProviderError, StreamEvent, ToolDefinition};
+use futures::StreamExt;
+use futures::stream;
 use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};
 
@@ -28,7 +28,9 @@ impl MockProvider {
         // Acquire the shared script queue lock. If poisoned (e.g. a previous
         // panic in `complete()`), silently return — no more scripts needed
         // since the consumer side is already broken.
-        let Ok(mut guard) = self.scripts.lock() else { return };
+        let Ok(mut guard) = self.scripts.lock() else {
+            return;
+        };
         // Append this script to the end of the FIFO queue.
         guard.push_back(events);
     }

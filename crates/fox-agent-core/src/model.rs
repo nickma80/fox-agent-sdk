@@ -34,8 +34,12 @@ pub enum ModelStateEvent {
 pub trait Model: Send + Sync {
     /// Send messages and get a streaming response via the underlying provider.
     async fn complete(
-        &self, messages: &[Message], tools: &[ToolDefinition],
-        system_static: &str, system_dynamic: &str, resume_session_id: Option<&str>,
+        &self,
+        messages: &[Message],
+        tools: &[ToolDefinition],
+        system_static: &str,
+        system_dynamic: &str,
+        resume_session_id: Option<&str>,
     ) -> Result<EventStream, ProviderError>;
 
     /// Provider name.
@@ -76,23 +80,43 @@ impl DefaultModel {
         }
     }
 
-    pub fn provider(&self) -> Arc<dyn Provider> { self.provider.clone() }
+    pub fn provider(&self) -> Arc<dyn Provider> {
+        self.provider.clone()
+    }
 }
 
 #[async_trait]
 impl Model for DefaultModel {
     async fn complete(
-        &self, messages: &[Message], tools: &[ToolDefinition],
-        system_static: &str, system_dynamic: &str, resume_session_id: Option<&str>,
+        &self,
+        messages: &[Message],
+        tools: &[ToolDefinition],
+        system_static: &str,
+        system_dynamic: &str,
+        resume_session_id: Option<&str>,
     ) -> Result<EventStream, ProviderError> {
         let model_id = self.model_id();
-        self.provider.complete(&model_id, messages, tools, system_static, system_dynamic, resume_session_id).await
+        self.provider
+            .complete(
+                &model_id,
+                messages,
+                tools,
+                system_static,
+                system_dynamic,
+                resume_session_id,
+            )
+            .await
     }
 
-    fn provider_name(&self) -> &str { self.provider.name() }
+    fn provider_name(&self) -> &str {
+        self.provider.name()
+    }
 
     fn model_id(&self) -> String {
-        self.model_id.read().map(|s| s.clone()).unwrap_or_else(|_| "unknown".to_string())
+        self.model_id
+            .read()
+            .map(|s| s.clone())
+            .unwrap_or_else(|_| "unknown".to_string())
     }
 
     fn set_model(&self, model: &str) -> Result<(), ProviderError> {
@@ -103,25 +127,41 @@ impl Model for DefaultModel {
         Ok(())
     }
 
-    fn available_models_display(&self) -> Vec<String> { vec![self.model_id()] }
+    fn available_models_display(&self) -> Vec<String> {
+        vec![self.model_id()]
+    }
 
     fn model_routes(&self) -> Vec<ModelRoute> {
-        vec![ModelRoute { provider_name: self.provider.name().to_string(), model_id: self.model_id() }]
+        vec![ModelRoute {
+            provider_name: self.provider.name().to_string(),
+            model_id: self.model_id(),
+        }]
     }
 
     fn fork(&self) -> Arc<dyn Model> {
-        Arc::new(Self { provider: self.provider.clone(), model_id: self.model_id.clone(), runtime_state: self.runtime_state.clone() })
+        Arc::new(Self {
+            provider: self.provider.clone(),
+            model_id: self.model_id.clone(),
+            runtime_state: self.runtime_state.clone(),
+        })
     }
 
     fn runtime_state(&self) -> ModelRuntimeState {
-        self.runtime_state.read().map(|s| s.clone()).unwrap_or_default()
+        self.runtime_state
+            .read()
+            .map(|s| s.clone())
+            .unwrap_or_default()
     }
 
     fn apply_state_event(&self, event: ModelStateEvent) {
         let runtime_state = self.runtime_state.clone();
         let _ = std::thread::spawn(move || {
-            let Ok(mut state) = runtime_state.write() else { return };
-            match event { ModelStateEvent::SetResumeSessionId(id) => state.resume_session_id = id }
+            let Ok(mut state) = runtime_state.write() else {
+                return;
+            };
+            match event {
+                ModelStateEvent::SetResumeSessionId(id) => state.resume_session_id = id,
+            }
         });
     }
 }

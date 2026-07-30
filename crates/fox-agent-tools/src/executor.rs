@@ -1,13 +1,15 @@
-use fox_agent_core::{AgentEventTx, PlanningStore, SandboxError, SandboxOperation, Skill, SkillRegistry, Tool, ToolContext, ToolDefinition, ToolError, ToolOutput, WorkspaceSandbox};
+use fox_agent_core::{
+    AgentEventTx, PlanningStore, SandboxError, SandboxOperation, Skill, SkillRegistry, Tool,
+    ToolContext, ToolDefinition, ToolError, ToolOutput, WorkspaceSandbox,
+};
+use serde_json::Value;
 use std::collections::HashMap;
 use std::path::Path;
 use std::sync::Arc;
 use tokio::sync::RwLock;
-use serde_json::Value;
 
 use crate::agentgrep::AgentGrepTool;
 use crate::bash::BashTool;
-use crate::memory::MemoryTool;
 use crate::edit::EditTool;
 use crate::glob::GlobTool;
 use crate::goals::GoalTool;
@@ -15,6 +17,7 @@ use crate::grep::GrepTool;
 use crate::invalid::InvalidTool;
 use crate::ls::LsTool;
 use crate::lsp::LspTool;
+use crate::memory::MemoryTool;
 use crate::plans::PlanTool;
 use crate::read::ReadTool;
 use crate::skills::SkillTool;
@@ -140,14 +143,15 @@ pub fn validate_tool_call(
 
     // For bash, validate the working directory against sandbox root
     if tool_name == "bash" {
-        if let Some(ref wd) = ctx.working_dir {
-            if !sandbox.allow_exec_outside && !wd.starts_with(&sandbox.root_dir) {
-                return Err(SandboxError::AccessDenied {
-                    path: wd.clone(),
-                    operation: SandboxOperation::Execute,
-                    root: sandbox.root_dir.clone(),
-                });
-            }
+        if let Some(ref wd) = ctx.working_dir
+            && !sandbox.allow_exec_outside
+            && !wd.starts_with(&sandbox.root_dir)
+        {
+            return Err(SandboxError::AccessDenied {
+                path: wd.clone(),
+                operation: SandboxOperation::Execute,
+                root: sandbox.root_dir.clone(),
+            });
         }
         return Ok(());
     }
@@ -172,7 +176,8 @@ fn resolve_path(working_dir: Option<&Path>, path: &Path) -> std::path::PathBuf {
 
 /// Register all default built-in tools on an executor.
 pub async fn register_default_tools(executor: &ToolExecutor) {
-    register_default_tools_with_planning_store(executor, fox_agent_core::default_planning_store()).await;
+    register_default_tools_with_planning_store(executor, fox_agent_core::default_planning_store())
+        .await;
 }
 
 pub async fn register_default_tools_with_planning_store(
@@ -180,8 +185,12 @@ pub async fn register_default_tools_with_planning_store(
     planning_store: Arc<dyn PlanningStore>,
 ) {
     register_default_tools_with_planning_store_and_skill_registry(
-        executor, planning_store, None, None,
-    ).await;
+        executor,
+        planning_store,
+        None,
+        None,
+    )
+    .await;
 }
 
 /// Register default tools with optional skill support.
@@ -198,8 +207,13 @@ pub async fn register_default_tools_with_planning_store_and_skill_registry(
     active_skill: Option<Arc<RwLock<Option<Skill>>>>,
 ) {
     register_default_tools_with_planning_store_and_skill_registry_and_events(
-        executor, planning_store, skill_registry, active_skill, None,
-    ).await
+        executor,
+        planning_store,
+        skill_registry,
+        active_skill,
+        None,
+    )
+    .await
 }
 
 /// Like [`register_default_tools_with_planning_store_and_skill_registry`] but
@@ -220,22 +234,37 @@ pub async fn register_default_tools_with_planning_store_and_skill_registry_and_e
     executor.register_tool(Arc::new(BashTool)).await;
     executor.register_tool(Arc::new(WebFetchTool::new())).await;
     executor.register_tool(Arc::new(WebSearchTool::new())).await;
-    executor.register_tool(Arc::new(TodoTool::new(planning_store.clone()))).await;
+    executor
+        .register_tool(Arc::new(TodoTool::new(planning_store.clone())))
+        .await;
     if let Some(tx) = event_tx {
-        executor.register_tool(Arc::new(PlanTool::with_event_tx(planning_store.clone(), tx))).await;
+        executor
+            .register_tool(Arc::new(PlanTool::with_event_tx(
+                planning_store.clone(),
+                tx,
+            )))
+            .await;
     } else {
-        executor.register_tool(Arc::new(PlanTool::new(planning_store.clone()))).await;
+        executor
+            .register_tool(Arc::new(PlanTool::new(planning_store.clone())))
+            .await;
     }
-    executor.register_tool(Arc::new(GoalTool::new(planning_store))).await;
+    executor
+        .register_tool(Arc::new(GoalTool::new(planning_store)))
+        .await;
     if let (Some(reg), Some(active)) = (skill_registry, active_skill) {
-        executor.register_tool(Arc::new(SkillTool::new(reg, active))).await;
+        executor
+            .register_tool(Arc::new(SkillTool::new(reg, active)))
+            .await;
     }
     executor.register_tool(Arc::new(LspTool)).await;
     executor.register_tool(Arc::new(InvalidTool)).await;
     executor.register_tool(Arc::new(AgentGrepTool)).await;
-    executor.register_tool(Arc::new(MemoryTool::with_manager(
-        fox_agent_core::MemoryManager::new(&fox_agent_core::MemoryConfig::default()),
-    ))).await;
+    executor
+        .register_tool(Arc::new(MemoryTool::with_manager(
+            fox_agent_core::MemoryManager::new(&fox_agent_core::MemoryConfig::default()),
+        )))
+        .await;
 }
 
 /// Create a ToolExecutor pre-loaded with all default tools.

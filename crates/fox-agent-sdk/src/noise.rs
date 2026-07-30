@@ -40,7 +40,11 @@ pub struct NoiseCleanResult {
 
 impl NoiseCleanResult {
     pub fn empty() -> Self {
-        Self { tools_cleaned: 0, lines_removed: 0, chars_saved: 0 }
+        Self {
+            tools_cleaned: 0,
+            lines_removed: 0,
+            chars_saved: 0,
+        }
     }
 
     #[expect(dead_code)]
@@ -80,7 +84,10 @@ impl Default for NoiseCleanConfig {
 /// unreferenced lines from low-reference outputs.
 ///
 /// This is designed to be called before compaction or at the end of each turn.
-pub fn clean_noise_from_messages(messages: &mut Vec<Message>, config: &NoiseCleanConfig) -> NoiseCleanResult {
+pub fn clean_noise_from_messages(
+    messages: &mut [Message],
+    config: &NoiseCleanConfig,
+) -> NoiseCleanResult {
     if !config.enabled || messages.is_empty() {
         return NoiseCleanResult::empty();
     }
@@ -126,7 +133,11 @@ pub fn clean_noise_from_messages(messages: &mut Vec<Message>, config: &NoiseClea
 
         let (ref_count, total_lines) = noise_ratio(&output_lines, &subsequent);
 
-        let ratio = if total_lines == 0 { 0.0 } else { ref_count as f64 / total_lines as f64 };
+        let ratio = if total_lines == 0 {
+            0.0
+        } else {
+            ref_count as f64 / total_lines as f64
+        };
 
         if ratio >= config.reference_threshold {
             continue; // enough lines referenced, keep as-is
@@ -153,10 +164,7 @@ pub fn clean_noise_from_messages(messages: &mut Vec<Message>, config: &NoiseClea
 ///
 /// A line is considered "referenced" if at least half of its significant
 /// tokens (words >= 3 chars) appear in the subsequent messages.
-fn noise_ratio(
-    output_lines: &[&str],
-    subsequent_messages: &[&Message],
-) -> (usize, usize) {
+fn noise_ratio(output_lines: &[&str], subsequent_messages: &[&Message]) -> (usize, usize) {
     let mut referenced = vec![false; output_lines.len()];
     let combined_text: String = subsequent_messages
         .iter()
@@ -263,7 +271,7 @@ fn remove_noise_lines(
 
 /// Check if a tool name is eligible for noise removal.
 fn is_noise_tool(name: &str) -> bool {
-    NOISE_TOOLS.iter().any(|t| *t == name)
+    NOISE_TOOLS.contains(&name)
 }
 
 /// Extract the tool name from a tool result message.
@@ -319,9 +327,13 @@ impl ToolText for Message {
             .filter_map(|b| match b {
                 ContentBlock::Text { text } => Some(text.as_str()),
                 ContentBlock::Reasoning { text } => Some(text.as_str()),
-                ContentBlock::ToolUse { name, input, .. } => {
-                    Some(Box::leak(format!("[{name}: {}]", serde_json::to_string(input).unwrap_or_default()).into_boxed_str()))
-                }
+                ContentBlock::ToolUse { name, input, .. } => Some(Box::leak(
+                    format!(
+                        "[{name}: {}]",
+                        serde_json::to_string(input).unwrap_or_default()
+                    )
+                    .into_boxed_str(),
+                )),
                 ContentBlock::ToolResult { text, .. } => Some(text.as_str()),
                 _ => None,
             })
@@ -358,7 +370,9 @@ mod tests {
     fn test_noise_ratio_all_referenced() {
         let output = "line1: foo\nline2: bar\nline3: baz";
         let lines: Vec<&str> = output.lines().collect();
-        let subsequent = vec![make_assistant_msg("I found foo, bar, and baz in the results")];
+        let subsequent = vec![make_assistant_msg(
+            "I found foo, bar, and baz in the results",
+        )];
         let msgs: Vec<&Message> = subsequent.iter().collect();
         let (ref_count, total) = noise_ratio(&lines, &msgs);
         assert_eq!(ref_count, total, "all lines should be referenced");
@@ -389,7 +403,9 @@ mod tests {
     fn test_remove_noise_lines_partial() {
         let output = "line1: keep this\nline2: noise\nline3: noise\nline4: also keep";
         let lines: Vec<&str> = output.lines().collect();
-        let subsequent = vec![make_assistant_msg("I see keep this and also keep in the results")];
+        let subsequent = vec![make_assistant_msg(
+            "I see keep this and also keep in the results",
+        )];
         let msgs: Vec<&Message> = subsequent.iter().collect();
         let cleaned = remove_noise_lines(output, &lines, &msgs);
         assert!(cleaned.contains("line1: keep this"));

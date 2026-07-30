@@ -99,8 +99,7 @@ impl CompactionCircuitBreaker {
     /// Report compaction result.
     /// `post_compact_count` is the message count after compaction.
     pub fn report(&mut self, post_compact_count: usize, current_turn: u64) {
-        let reduced = post_compact_count < self.pre_compact_count
-            && post_compact_count > 0;
+        let reduced = post_compact_count < self.pre_compact_count && post_compact_count > 0;
 
         if reduced {
             self.state = CircuitState::Closed;
@@ -161,10 +160,14 @@ pub fn select_messages_for_l3_removal(messages: &[Message], max_removals: usize)
         if msg.role != Role::Tool {
             continue;
         }
-        let text_len: usize = msg.content.iter().map(|b| match b {
-            ContentBlock::ToolResult { text, .. } => text.len(),
-            _ => 0,
-        }).sum();
+        let text_len: usize = msg
+            .content
+            .iter()
+            .map(|b| match b {
+                ContentBlock::ToolResult { text, .. } => text.len(),
+                _ => 0,
+            })
+            .sum();
 
         if text_len < LARGE_TOOL_RESULT_CHARS {
             continue;
@@ -174,9 +177,10 @@ pub fn select_messages_for_l3_removal(messages: &[Message], max_removals: usize)
         // remove the tool_use message too (it becomes meaningless without the result).
         let mut indices_to_remove = vec![i];
         if i > 0 && messages[i - 1].role == Role::Assistant {
-            let has_tool_call = messages[i - 1].content.iter().any(|b| {
-                matches!(b, ContentBlock::ToolUse { .. })
-            });
+            let has_tool_call = messages[i - 1]
+                .content
+                .iter()
+                .any(|b| matches!(b, ContentBlock::ToolUse { .. }));
             if has_tool_call {
                 indices_to_remove.push(i - 1);
             }
@@ -342,9 +346,7 @@ mod tests {
     #[test]
     fn test_l3_removes_large_tool_results() {
         let large_text = "x".repeat(5000);
-        let messages = vec![
-            make_tool_result_msg(&large_text),
-        ];
+        let messages = vec![make_tool_result_msg(&large_text)];
         let indices = select_messages_for_l3_removal(&messages, 10);
         assert!(!indices.is_empty());
         assert!(indices.contains(&0));

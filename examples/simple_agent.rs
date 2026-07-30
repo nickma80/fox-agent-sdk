@@ -9,12 +9,12 @@
 ///
 /// Supports all DeepSeek v4 features (thinking, prefix caching, streaming).
 use fox_agent_core::{
-    GoalScope, MilestoneStatus, PlanStatus, TodoStatus,
-    load_goals_with_store, load_plan_with_store, load_todos_with_store,
+    GoalScope, MilestoneStatus, PlanStatus, TodoStatus, load_goals_with_store,
+    load_plan_with_store, load_todos_with_store,
 };
 use fox_agent_sdk::{
-    AgentBuilder, AgentEvent, FoxAgentSdkConfig, InMemoryPlanningStore,
-    PermissionDecision, PlanningStore, ProviderConfig, TurnOutcome,
+    AgentBuilder, AgentEvent, FoxAgentSdkConfig, InMemoryPlanningStore, PermissionDecision,
+    PlanningStore, ProviderConfig, TurnOutcome,
 };
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -33,7 +33,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .unwrap_or_else(|_| FoxAgentSdkConfig::default());
 
     // ── Build agent with planning tools + store ──
-    let mut agent = AgentBuilder::new()
+    let agent = AgentBuilder::new()
         .working_dir(&project_root)
         .sdk_config(cfg)
         .with_global_agents_md_path(project_root.join("AGENTS.md"))
@@ -91,8 +91,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 AgentEvent::Error { error } => {
                     eprintln!("\n[ERROR] {error}");
                 }
-                _ => {
-                }
+                _ => {}
             }
         }
     });
@@ -109,8 +108,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             TurnOutcome::RequiresUserDecision { request } => {
                 println!();
                 println!("[!] Permission required — {}", request.prompt);
-                println!("    Tool: {} | Risk: {:?} | Policy: {}",
-                    request.tool_name, request.risk_level, request.policy_source);
+                println!(
+                    "    Tool: {} | Risk: {:?} | Policy: {}",
+                    request.tool_name, request.risk_level, request.policy_source
+                );
                 println!("    Summary: {}", request.tool_summary);
                 println!();
                 println!("    [a]llow  [d]eny  [A]llow all (this session)");
@@ -174,8 +175,10 @@ fn print_planning_state(store: &dyn PlanningStore, session_id: &str) {
         println!("──── GOALS ────");
         for g in session_goals.iter().chain(global_goals.iter()) {
             let focus = if g.focused { "★" } else { " " };
-            println!("{focus} [{:?}|{}%|{:?}] {}",
-                g.status, g.progress, g.scope, g.title);
+            println!(
+                "{focus} [{:?}|{}%|{:?}] {}",
+                g.status, g.progress, g.scope, g.title
+            );
             for m in &g.milestones {
                 let icon = match m.status {
                     MilestoneStatus::Completed => "✓",
@@ -185,9 +188,14 @@ fn print_planning_state(store: &dyn PlanningStore, session_id: &str) {
                 println!("    {icon} {}", m.content);
             }
             if !g.checkpoints.is_empty() {
-                println!("  {} checkpoints (latest: {})",
+                println!(
+                    "  {} checkpoints (latest: {})",
                     g.checkpoints.len(),
-                    g.checkpoints.last().map(|c| c.summary.as_str()).unwrap_or("-"));
+                    g.checkpoints
+                        .last()
+                        .map(|c| c.summary.as_str())
+                        .unwrap_or("-")
+                );
             }
         }
     }
@@ -195,7 +203,11 @@ fn print_planning_state(store: &dyn PlanningStore, session_id: &str) {
     // ── Plan ──
     let plan = load_plan_with_store(store, session_id);
     if !plan.items.is_empty() {
-        let done = plan.items.iter().filter(|i| i.status == PlanStatus::Completed).count();
+        let done = plan
+            .items
+            .iter()
+            .filter(|i| i.status == PlanStatus::Completed)
+            .count();
         println!("\n──── PLAN v{} ────", plan.version);
         for item in &plan.items {
             let icon = match item.status {
@@ -216,7 +228,10 @@ fn print_planning_state(store: &dyn PlanningStore, session_id: &str) {
     // ── Todos ──
     let todos = load_todos_with_store(store, session_id);
     if !todos.is_empty() {
-        let done = todos.iter().filter(|t| t.status == TodoStatus::Completed).count();
+        let done = todos
+            .iter()
+            .filter(|t| t.status == TodoStatus::Completed)
+            .count();
         println!("\n──── TODOS ────");
         for t in &todos {
             let icon = match t.status {

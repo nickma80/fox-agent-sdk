@@ -70,7 +70,12 @@ pub struct AssertionReport {
 
 impl AssertionReport {
     pub fn new() -> Self {
-        Self { passed: true, total: 0, passed_count: 0, failures: Vec::new() }
+        Self {
+            passed: true,
+            total: 0,
+            passed_count: 0,
+            failures: Vec::new(),
+        }
     }
 
     fn record(&mut self, passed: bool, msg: impl Into<String>) {
@@ -85,13 +90,19 @@ impl AssertionReport {
 }
 
 impl Default for AssertionReport {
-    fn default() -> Self { Self::new() }
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl std::fmt::Display for AssertionReport {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let status = if self.passed { "PASSED" } else { "FAILED" };
-        writeln!(f, "╔══ Task Assertions: {} ({}/{})", status, self.passed_count, self.total)?;
+        writeln!(
+            f,
+            "╔══ Task Assertions: {} ({}/{})",
+            status, self.passed_count, self.total
+        )?;
         if !self.failures.is_empty() {
             writeln!(f, "╠══ Failures:")?;
             for fail in &self.failures {
@@ -113,14 +124,28 @@ pub fn run_task_assertions(assertions: &TaskAssertions, working_dir: &Path) -> A
     for path in &assertions.file_exists {
         let resolved = resolve(path, working_dir);
         let exists = resolved.exists();
-        report.record(exists, format!("file_exists: {} — {}", path.display(), if exists { "OK" } else { "MISSING" }));
+        report.record(
+            exists,
+            format!(
+                "file_exists: {} — {}",
+                path.display(),
+                if exists { "OK" } else { "MISSING" }
+            ),
+        );
     }
 
     // ── dir_exists ──
     for path in &assertions.dir_exists {
         let resolved = resolve(path, working_dir);
         let exists = resolved.is_dir();
-        report.record(exists, format!("dir_exists: {} — {}", path.display(), if exists { "OK" } else { "MISSING" }));
+        report.record(
+            exists,
+            format!(
+                "dir_exists: {} — {}",
+                path.display(),
+                if exists { "OK" } else { "MISSING" }
+            ),
+        );
     }
 
     // ── file_contains ──
@@ -129,13 +154,21 @@ pub fn run_task_assertions(assertions: &TaskAssertions, working_dir: &Path) -> A
         match std::fs::read_to_string(&resolved) {
             Ok(content) => {
                 let found = content.contains(expected.as_str());
-                report.record(found, format!(
-                    "file_contains: {} should contain \"{}\" — {}",
-                    path.display(), expected, if found { "OK" } else { "NOT FOUND" }
-                ));
+                report.record(
+                    found,
+                    format!(
+                        "file_contains: {} should contain \"{}\" — {}",
+                        path.display(),
+                        expected,
+                        if found { "OK" } else { "NOT FOUND" }
+                    ),
+                );
             }
             Err(e) => {
-                report.record(false, format!("file_contains: {} — failed to read: {}", path.display(), e));
+                report.record(
+                    false,
+                    format!("file_contains: {} — failed to read: {}", path.display(), e),
+                );
             }
         }
     }
@@ -146,13 +179,25 @@ pub fn run_task_assertions(assertions: &TaskAssertions, working_dir: &Path) -> A
         match std::fs::read_to_string(&resolved) {
             Ok(content) => {
                 let found = content.contains(forbidden.as_str());
-                report.record(!found, format!(
-                    "file_not_contains: {} should NOT contain \"{}\" — {}",
-                    path.display(), forbidden, if !found { "OK" } else { "FOUND (violation)" }
-                ));
+                report.record(
+                    !found,
+                    format!(
+                        "file_not_contains: {} should NOT contain \"{}\" — {}",
+                        path.display(),
+                        forbidden,
+                        if !found { "OK" } else { "FOUND (violation)" }
+                    ),
+                );
             }
             Err(e) => {
-                report.record(false, format!("file_not_contains: {} — failed to read: {}", path.display(), e));
+                report.record(
+                    false,
+                    format!(
+                        "file_not_contains: {} — failed to read: {}",
+                        path.display(),
+                        e
+                    ),
+                );
             }
         }
     }
@@ -164,28 +209,43 @@ pub fn run_task_assertions(assertions: &TaskAssertions, working_dir: &Path) -> A
 
         // Exit code check
         let exit_ok = output.exit_code == Some(cmd.expected_exit_code);
-        report.record(exit_ok, format!(
-            "command exit_code: \"{}\" — expected {}, got {:?} — {}",
-            cmd.command, cmd.expected_exit_code, output.exit_code,
-            if exit_ok { "OK" } else { "MISMATCH" }
-        ));
+        report.record(
+            exit_ok,
+            format!(
+                "command exit_code: \"{}\" — expected {}, got {:?} — {}",
+                cmd.command,
+                cmd.expected_exit_code,
+                output.exit_code,
+                if exit_ok { "OK" } else { "MISMATCH" }
+            ),
+        );
 
         // stdout_contains
         if let Some(ref expected) = cmd.stdout_contains {
             let found = output.stdout.contains(expected.as_str());
-            report.record(found, format!(
-                "command stdout_contains: \"{}\" — \"{}\" — {}",
-                cmd.command, expected, if found { "OK" } else { "NOT FOUND" }
-            ));
+            report.record(
+                found,
+                format!(
+                    "command stdout_contains: \"{}\" — \"{}\" — {}",
+                    cmd.command,
+                    expected,
+                    if found { "OK" } else { "NOT FOUND" }
+                ),
+            );
         }
 
         // stderr_not_contains
         if let Some(ref forbidden) = cmd.stderr_not_contains {
             let found = output.stderr.contains(forbidden.as_str());
-            report.record(!found, format!(
-                "command stderr_not_contains: \"{}\" — \"{}\" — {}",
-                cmd.command, forbidden, if !found { "OK" } else { "FOUND (violation)" }
-            ));
+            report.record(
+                !found,
+                format!(
+                    "command stderr_not_contains: \"{}\" — \"{}\" — {}",
+                    cmd.command,
+                    forbidden,
+                    if !found { "OK" } else { "FOUND (violation)" }
+                ),
+            );
         }
     }
 

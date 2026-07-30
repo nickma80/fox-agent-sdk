@@ -2,10 +2,12 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use uuid::Uuid;
 
 use async_trait::async_trait;
-use fox_agent_core::{PlanningStore, Tool, ToolContext, ToolError, ToolOutput, intent_schema_property};
 pub use fox_agent_core::{
     Goal, GoalCheckpoint, GoalMilestone, GoalScope, GoalStatus, MilestoneStatus, goal_status_label,
     load_goals, load_goals_with_store, save_goals, save_goals_with_store,
+};
+use fox_agent_core::{
+    PlanningStore, Tool, ToolContext, ToolError, ToolOutput, intent_schema_property,
 };
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -13,19 +15,35 @@ use std::sync::Arc;
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub(crate) enum GoalAction { Create, List, Show, Resume, Update, Checkpoint, Focus }
+pub(crate) enum GoalAction {
+    Create,
+    List,
+    Show,
+    Resume,
+    Update,
+    Checkpoint,
+    Focus,
+}
 
 #[derive(Debug, Deserialize)]
 pub(crate) struct GoalToolInput {
     pub action: GoalAction,
-    #[serde(default)] pub scope: Option<GoalScope>,
-    #[serde(default)] pub id: Option<String>,
-    #[serde(default)] pub title: Option<String>,
-    #[serde(default)] pub description: Option<String>,
-    #[serde(default)] pub status: Option<GoalStatus>,
-    #[serde(default)] pub progress: Option<u8>,
-    #[serde(default)] pub milestones: Option<Vec<GoalMilestone>>,
-    #[serde(default)] pub checkpoint_summary: Option<String>,
+    #[serde(default)]
+    pub scope: Option<GoalScope>,
+    #[serde(default)]
+    pub id: Option<String>,
+    #[serde(default)]
+    pub title: Option<String>,
+    #[serde(default)]
+    pub description: Option<String>,
+    #[serde(default)]
+    pub status: Option<GoalStatus>,
+    #[serde(default)]
+    pub progress: Option<u8>,
+    #[serde(default)]
+    pub milestones: Option<Vec<GoalMilestone>>,
+    #[serde(default)]
+    pub checkpoint_summary: Option<String>,
 }
 
 /// Tool that creates, updates, and tracks goals.
@@ -47,8 +65,12 @@ impl Default for GoalTool {
 
 #[async_trait]
 impl Tool for GoalTool {
-    fn name(&self) -> &str { "goal" }
-    fn description(&self) -> &str { "Create, update, and track goals (session or global scope)" }
+    fn name(&self) -> &str {
+        "goal"
+    }
+    fn description(&self) -> &str {
+        "Create, update, and track goals (session or global scope)"
+    }
     fn parameters_schema(&self) -> Value {
         json!({
             "type": "object",
@@ -78,9 +100,10 @@ impl Tool for GoalTool {
     }
 
     async fn execute(&self, input: Value, ctx: ToolContext) -> Result<ToolOutput, ToolError> {
-        let params: GoalToolInput = serde_json::from_value(input).map_err(|err| ToolError::Message {
-            message: format!("invalid goal input: {err}"),
-        })?;
+        let params: GoalToolInput =
+            serde_json::from_value(input).map_err(|err| ToolError::Message {
+                message: format!("invalid goal input: {err}"),
+            })?;
         let scope = params.scope.clone().unwrap_or(GoalScope::Session);
 
         let result = match params.action {
@@ -89,7 +112,9 @@ impl Tool for GoalTool {
             GoalAction::Show => handle_goal_show(self.store.as_ref(), params, &ctx, scope)?,
             GoalAction::Resume => handle_goal_resume(self.store.as_ref(), params, &ctx, scope)?,
             GoalAction::Update => handle_goal_update(self.store.as_ref(), params, &ctx, scope)?,
-            GoalAction::Checkpoint => handle_goal_checkpoint(self.store.as_ref(), params, &ctx, scope)?,
+            GoalAction::Checkpoint => {
+                handle_goal_checkpoint(self.store.as_ref(), params, &ctx, scope)?
+            }
             GoalAction::Focus => handle_goal_focus(self.store.as_ref(), params, &ctx, scope)?,
         };
 
@@ -118,8 +143,15 @@ fn handle_goal_create(
     let progress = params.progress.unwrap_or(0).min(100);
     let milestones = params.milestones.unwrap_or_default();
     let mut created = Goal {
-        id, title, description: params.description, scope: scope.clone(),
-        status: GoalStatus::Active, progress, milestones, checkpoints: Vec::new(), focused: true,
+        id,
+        title,
+        description: params.description,
+        scope: scope.clone(),
+        status: GoalStatus::Active,
+        progress,
+        milestones,
+        checkpoints: Vec::new(),
+        focused: true,
     };
     let mut goals = load_goals_with_store(store, &ctx.session_id, scope.clone());
     for goal in &mut goals {
@@ -131,7 +163,14 @@ fn handle_goal_create(
     } else {
         goals.push(created.clone());
     }
-    let _ = save_goals_with_store(store, &ctx.session_id, scope, goals, false, Some("goal_create"));
+    let _ = save_goals_with_store(
+        store,
+        &ctx.session_id,
+        scope,
+        goals,
+        false,
+        Some("goal_create"),
+    );
     Ok(json!({ "goal": created }))
 }
 
@@ -150,9 +189,12 @@ fn handle_goal_show(
         message: "missing required field `id` for action=show".to_string(),
     })?;
     let goals = load_goals_with_store(store, &ctx.session_id, scope);
-    let goal = goals.into_iter().find(|g| g.id == id).ok_or_else(|| ToolError::Message {
-        message: "goal not found".to_string(),
-    })?;
+    let goal = goals
+        .into_iter()
+        .find(|g| g.id == id)
+        .ok_or_else(|| ToolError::Message {
+            message: "goal not found".to_string(),
+        })?;
     Ok(json!({ "goal": goal }))
 }
 
@@ -166,9 +208,12 @@ fn handle_goal_resume(
         message: "missing required field `id` for action=resume".to_string(),
     })?;
     let mut goals = load_goals_with_store(store, &ctx.session_id, scope.clone());
-    let idx = goals.iter().position(|goal| goal.id == id).ok_or_else(|| ToolError::Message {
-        message: "goal not found".to_string(),
-    })?;
+    let idx = goals
+        .iter()
+        .position(|goal| goal.id == id)
+        .ok_or_else(|| ToolError::Message {
+            message: "goal not found".to_string(),
+        })?;
     let mut updated: Option<Goal> = None;
     for (i, goal) in goals.iter_mut().enumerate() {
         goal.focused = i == idx;
@@ -177,10 +222,19 @@ fn handle_goal_resume(
             updated = Some(goal.clone());
         }
     }
-    let _ = save_goals_with_store(store, &ctx.session_id, scope, goals, false, Some("goal_resume"));
-    updated.ok_or_else(|| ToolError::Message {
-        message: "goal not found".to_string(),
-    }).map(|goal| json!({ "goal": goal }))
+    let _ = save_goals_with_store(
+        store,
+        &ctx.session_id,
+        scope,
+        goals,
+        false,
+        Some("goal_resume"),
+    );
+    updated
+        .ok_or_else(|| ToolError::Message {
+            message: "goal not found".to_string(),
+        })
+        .map(|goal| json!({ "goal": goal }))
 }
 
 fn handle_goal_update(
@@ -195,17 +249,36 @@ fn handle_goal_update(
     let mut goals = load_goals_with_store(store, &ctx.session_id, scope.clone());
     let mut updated: Option<Goal> = None;
     if let Some(goal) = goals.iter_mut().find(|goal| goal.id == id) {
-        if let Some(title) = params.title { goal.title = title; }
-        if params.description.is_some() { goal.description = params.description; }
-        if let Some(status) = params.status { goal.status = status; }
-        if let Some(progress) = params.progress { goal.progress = progress.min(100); }
-        if let Some(milestones) = params.milestones { goal.milestones = milestones; }
+        if let Some(title) = params.title {
+            goal.title = title;
+        }
+        if params.description.is_some() {
+            goal.description = params.description;
+        }
+        if let Some(status) = params.status {
+            goal.status = status;
+        }
+        if let Some(progress) = params.progress {
+            goal.progress = progress.min(100);
+        }
+        if let Some(milestones) = params.milestones {
+            goal.milestones = milestones;
+        }
         updated = Some(goal.clone());
     }
-    let _ = save_goals_with_store(store, &ctx.session_id, scope, goals, false, Some("goal_update"));
-    updated.ok_or_else(|| ToolError::Message {
-        message: "goal not found".to_string(),
-    }).map(|goal| json!({ "goal": goal }))
+    let _ = save_goals_with_store(
+        store,
+        &ctx.session_id,
+        scope,
+        goals,
+        false,
+        Some("goal_update"),
+    );
+    updated
+        .ok_or_else(|| ToolError::Message {
+            message: "goal not found".to_string(),
+        })
+        .map(|goal| json!({ "goal": goal }))
 }
 
 fn handle_goal_checkpoint(
@@ -223,25 +296,43 @@ fn handle_goal_checkpoint(
     }).ok_or_else(|| ToolError::Message {
         message: "missing required field `id` for action=checkpoint (and no focused active goal to default to)".to_string(),
     })?;
-    let summary = params.checkpoint_summary.ok_or_else(|| ToolError::Message {
-        message: "missing required field `checkpoint_summary` for action=checkpoint".to_string(),
-    })?;
-    let now_secs = SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
+    let summary = params
+        .checkpoint_summary
+        .ok_or_else(|| ToolError::Message {
+            message: "missing required field `checkpoint_summary` for action=checkpoint"
+                .to_string(),
+        })?;
+    let now_secs = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
     let mut goals = goals;
     let mut updated: Option<Goal> = None;
     if let Some(goal) = goals.iter_mut().find(|goal| goal.id == id) {
         let checkpoint = GoalCheckpoint {
-            at_secs: now_secs, summary,
+            at_secs: now_secs,
+            summary,
             progress: params.progress.map(|p| p.min(100)),
         };
-        if let Some(progress) = checkpoint.progress { goal.progress = progress; }
+        if let Some(progress) = checkpoint.progress {
+            goal.progress = progress;
+        }
         goal.checkpoints.push(checkpoint);
         updated = Some(goal.clone());
     }
-    let _ = save_goals_with_store(store, &ctx.session_id, scope, goals, false, Some("goal_checkpoint"));
-    updated.ok_or_else(|| ToolError::Message {
-        message: "goal not found".to_string(),
-    }).map(|goal| json!({ "goal": goal }))
+    let _ = save_goals_with_store(
+        store,
+        &ctx.session_id,
+        scope,
+        goals,
+        false,
+        Some("goal_checkpoint"),
+    );
+    updated
+        .ok_or_else(|| ToolError::Message {
+            message: "goal not found".to_string(),
+        })
+        .map(|goal| json!({ "goal": goal }))
 }
 
 fn handle_goal_focus(
@@ -261,8 +352,17 @@ fn handle_goal_focus(
             updated = Some(goal.clone());
         }
     }
-    let _ = save_goals_with_store(store, &ctx.session_id, scope, goals, false, Some("goal_focus"));
-    updated.ok_or_else(|| ToolError::Message {
-        message: "goal not found".to_string(),
-    }).map(|goal| json!({ "goal": goal }))
+    let _ = save_goals_with_store(
+        store,
+        &ctx.session_id,
+        scope,
+        goals,
+        false,
+        Some("goal_focus"),
+    );
+    updated
+        .ok_or_else(|| ToolError::Message {
+            message: "goal not found".to_string(),
+        })
+        .map(|goal| json!({ "goal": goal }))
 }

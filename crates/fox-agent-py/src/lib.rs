@@ -24,7 +24,6 @@ mod types;
 /// The `_core` native module imported by `fox_agent_sdk`.
 #[pymodule]
 fn _core(py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
-
     // Config types
     m.add_class::<config::PyProviderConfig>()?;
     m.add_class::<config::PySafetyConfig>()?;

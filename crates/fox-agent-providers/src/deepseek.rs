@@ -26,15 +26,15 @@ use fox_agent_core::{
     ToolDefinition,
 };
 use futures::stream::StreamExt;
-use reqwest::header::HeaderMap;
 use reqwest::Client;
+use reqwest::header::HeaderMap;
 use serde_json::Value;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::RwLock;
 
-use fox_agent_core::ProviderConfig;
 use crate::util::build_headers;
+use fox_agent_core::ProviderConfig;
 
 const SSE_CHUNK_TIMEOUT: Duration = Duration::from_secs(180);
 const MAX_RETRIES: u32 = 3;
@@ -107,7 +107,10 @@ impl DeepSeekProvider {
     }
 
     fn chat_url(&self) -> String {
-        format!("{}/chat/completions", self.cfg.base_url.trim_end_matches('/'))
+        format!(
+            "{}/chat/completions",
+            self.cfg.base_url.trim_end_matches('/')
+        )
     }
 
     fn is_v4_model(model: &str) -> bool {
@@ -198,7 +201,8 @@ fn build_api_messages(messages: &[Message], system: &str) -> Vec<Value> {
                         content_parts.push(serde_json::json!({ "type": "text", "text": text }));
                     }
                     content_parts.extend(images);
-                    api_messages.push(serde_json::json!({ "role": "user", "content": content_parts }));
+                    api_messages
+                        .push(serde_json::json!({ "role": "user", "content": content_parts }));
                 } else if !text_parts.is_empty() {
                     api_messages.push(serde_json::json!({
                         "role": "user", "content": text_parts.join("\n")
@@ -242,7 +246,10 @@ fn build_api_messages(messages: &[Message], system: &str) -> Vec<Value> {
                     assistant_msg["reasoning_content"] = serde_json::json!(" ");
                 }
 
-                if !text_content.is_empty() || !tool_calls.is_empty() || !reasoning_content.is_empty() {
+                if !text_content.is_empty()
+                    || !tool_calls.is_empty()
+                    || !reasoning_content.is_empty()
+                {
                     api_messages.push(assistant_msg);
                 }
             }
@@ -298,7 +305,14 @@ async fn run_deepseek_stream(
             tokio::time::sleep(Duration::from_millis(delay)).await;
         }
 
-        match stream_response(client.clone(), url.clone(), headers.clone(), request_body.clone()).await {
+        match stream_response(
+            client.clone(),
+            url.clone(),
+            headers.clone(),
+            request_body.clone(),
+        )
+        .await
+        {
             Ok(stream) => return Ok(stream),
             Err(e) => {
                 let error_str = e.to_string().to_lowercase();
@@ -349,7 +363,7 @@ async fn stream_response(
     }
 
     let (tx, rx) = tokio::sync::mpsc::channel::<Result<StreamEvent, ProviderError>>(128);
-    let byte_stream = response.bytes_stream().map(|r| r.map(|b| b.to_vec()).map_err(|e| e));
+    let byte_stream = response.bytes_stream().map(|r| r.map(|b| b.to_vec()));
 
     tokio::spawn(async move {
         parse_sse_stream(byte_stream, tx).await;
@@ -372,7 +386,8 @@ async fn parse_sse_stream(
     let send_ok = |tx: &tokio::sync::mpsc::Sender<Result<StreamEvent, ProviderError>>, event| {
         let _ = tx.try_send(Ok(event));
     };
-    let send_err = |tx: &tokio::sync::mpsc::Sender<Result<StreamEvent, ProviderError>>, msg: String| {
+    let send_err = |tx: &tokio::sync::mpsc::Sender<Result<StreamEvent, ProviderError>>,
+                    msg: String| {
         let _ = tx.try_send(Err(ProviderError::Message { message: msg }));
     };
 
@@ -385,7 +400,13 @@ async fn parse_sse_stream(
             }
             Ok(None) => break,
             Err(_) => {
-                send_err(&tx, format!("DeepSeek stream timeout after {}s", SSE_CHUNK_TIMEOUT.as_secs()));
+                send_err(
+                    &tx,
+                    format!(
+                        "DeepSeek stream timeout after {}s",
+                        SSE_CHUNK_TIMEOUT.as_secs()
+                    ),
+                );
                 return;
             }
         };
@@ -396,9 +417,15 @@ async fn parse_sse_stream(
             let line = buffer[..line_end].trim_end_matches('\r').to_string();
             buffer = buffer[line_end + 1..].to_string();
 
-            let data = if let Some(d) = line.strip_prefix("data: ") { d } else { continue };
+            let data = if let Some(d) = line.strip_prefix("data: ") {
+                d
+            } else {
+                continue;
+            };
 
-            if data == "[DONE]" { break; }
+            if data == "[DONE]" {
+                break;
+            }
 
             let parsed: Value = match serde_json::from_str(data) {
                 Ok(v) => v,
@@ -406,53 +433,75 @@ async fn parse_sse_stream(
             };
 
             if let Some(error) = parsed.get("error") {
-                let msg = error.get("message").and_then(|v| v.as_str()).unwrap_or("unknown error");
+                let msg = error
+                    .get("message")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("unknown error");
                 send_err(&tx, msg.to_string());
                 return;
             }
 
             // ── Usage from stream_options.include_usage ──
-            if let Some(usage) = parsed.get("usage") {
-                if !usage.is_null() {
-                    if let Some(prompt_tokens) = usage.get("prompt_tokens").and_then(|v| v.as_u64()) {
-                        let output_tokens = usage.get("completion_tokens").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
-                        let reasoning_tokens = usage
-                            .get("completion_tokens_details")
-                            .and_then(|d| d.get("reasoning_tokens"))
-                            .and_then(|v| v.as_u64())
-                            .unwrap_or(0) as u32;
-                        let cache_hit = usage
-                            .get("prompt_cache_hit_tokens")
-                            .and_then(|v| v.as_u64());
-                        send_ok(&tx, StreamEvent::Usage {
-                            usage: TokenUsage {
-                                input_tokens: prompt_tokens as u32,
-                                output_tokens,
-                                total_tokens: (prompt_tokens + output_tokens as u64) as u32,
-                                cache_read_input_tokens: cache_hit.map(|h| h as u32),
-                                cache_creation_input_tokens: Some(reasoning_tokens),
-                            }
-                        });
-                        continue;
-                    }
-                }
+            if let Some(usage) = parsed.get("usage")
+                && !usage.is_null()
+                && let Some(prompt_tokens) = usage.get("prompt_tokens").and_then(|v| v.as_u64())
+            {
+                let output_tokens = usage
+                    .get("completion_tokens")
+                    .and_then(|v| v.as_u64())
+                    .unwrap_or(0) as u32;
+                let reasoning_tokens = usage
+                    .get("completion_tokens_details")
+                    .and_then(|d| d.get("reasoning_tokens"))
+                    .and_then(|v| v.as_u64())
+                    .unwrap_or(0) as u32;
+                let cache_hit = usage
+                    .get("prompt_cache_hit_tokens")
+                    .and_then(|v| v.as_u64());
+                send_ok(
+                    &tx,
+                    StreamEvent::Usage {
+                        usage: TokenUsage {
+                            input_tokens: prompt_tokens as u32,
+                            output_tokens,
+                            total_tokens: (prompt_tokens + output_tokens as u64) as u32,
+                            cache_read_input_tokens: cache_hit.map(|h| h as u32),
+                            cache_creation_input_tokens: Some(reasoning_tokens),
+                        },
+                    },
+                );
+                continue;
             }
 
-            let Some(choices) = parsed.get("choices") else { continue };
+            let Some(choices) = parsed.get("choices") else {
+                continue;
+            };
 
             for choice in choices.as_array().iter().flat_map(|a| a.iter()) {
-                let Some(delta) = choice.get("delta") else { continue };
+                let Some(delta) = choice.get("delta") else {
+                    continue;
+                };
 
-                if let Some(content) = delta.get("content").and_then(|v| v.as_str()) {
-                    if !content.is_empty() {
-                        send_ok(&tx, StreamEvent::TextDelta { text: content.to_string() });
-                    }
+                if let Some(content) = delta.get("content").and_then(|v| v.as_str())
+                    && !content.is_empty()
+                {
+                    send_ok(
+                        &tx,
+                        StreamEvent::TextDelta {
+                            text: content.to_string(),
+                        },
+                    );
                 }
 
-                if let Some(reasoning) = delta.get("reasoning_content").and_then(|v| v.as_str()) {
-                    if !reasoning.is_empty() {
-                        send_ok(&tx, StreamEvent::ThinkingDelta { text: reasoning.to_string() });
-                    }
+                if let Some(reasoning) = delta.get("reasoning_content").and_then(|v| v.as_str())
+                    && !reasoning.is_empty()
+                {
+                    send_ok(
+                        &tx,
+                        StreamEvent::ThinkingDelta {
+                            text: reasoning.to_string(),
+                        },
+                    );
                 }
 
                 if let Some(tc_array) = delta.get("tool_calls").and_then(|v| v.as_array()) {
@@ -464,35 +513,45 @@ async fn parse_sse_stream(
                         if let Some(id) = tc.get("id").and_then(|v| v.as_str()) {
                             tool_calls[idx].id = Some(id.to_string());
                         }
-                        if let Some(fn_name) = tc.get("function").and_then(|v| v.get("name")).and_then(|v| v.as_str()) {
+                        if let Some(fn_name) = tc
+                            .get("function")
+                            .and_then(|v| v.get("name"))
+                            .and_then(|v| v.as_str())
+                        {
                             tool_calls[idx].name = Some(fn_name.to_string());
                         }
-                        if let Some(args) = tc.get("function").and_then(|v| v.get("arguments")).and_then(|v| v.as_str()) {
-                            if !args.is_empty() {
-                                tool_calls[idx].arguments.push_str(args);
-                                // Stream the partial input for progress display.
-                                send_ok(&tx, StreamEvent::ToolInputDelta {
+                        if let Some(args) = tc
+                            .get("function")
+                            .and_then(|v| v.get("arguments"))
+                            .and_then(|v| v.as_str())
+                            && !args.is_empty()
+                        {
+                            tool_calls[idx].arguments.push_str(args);
+                            // Stream the partial input for progress display.
+                            send_ok(
+                                &tx,
+                                StreamEvent::ToolInputDelta {
                                     index: idx,
                                     id: tool_calls[idx].id.clone(),
                                     name: tool_calls[idx].name.clone(),
                                     delta: args.to_string(),
-                                });
-                            }
+                                },
+                            );
                         }
                     }
                 }
 
-                if let Some(reason) = choice.get("finish_reason").and_then(|v| v.as_str()) {
-                    if reason == "tool_calls" || reason == "function_call" {
-                        for tc in tool_calls.drain(..) {
-                            if let (Some(id), Some(name)) = (tc.id, tc.name) {
-                                let input = if tc.arguments.trim().is_empty() {
-                                    serde_json::json!({})
-                                } else {
-                                    serde_json::from_str(&tc.arguments).unwrap_or(serde_json::json!({}))
-                                };
-                                send_ok(&tx, StreamEvent::ToolUse { id, name, input });
-                            }
+                if let Some(reason) = choice.get("finish_reason").and_then(|v| v.as_str())
+                    && (reason == "tool_calls" || reason == "function_call")
+                {
+                    for tc in tool_calls.drain(..) {
+                        if let (Some(id), Some(name)) = (tc.id, tc.name) {
+                            let input = if tc.arguments.trim().is_empty() {
+                                serde_json::json!({})
+                            } else {
+                                serde_json::from_str(&tc.arguments).unwrap_or(serde_json::json!({}))
+                            };
+                            send_ok(&tx, StreamEvent::ToolUse { id, name, input });
                         }
                     }
                 }
@@ -555,17 +614,15 @@ impl Provider for DeepSeekProvider {
         // ── Cache: freeze system prompt ──
         {
             let frozen = self.frozen_system.read().await;
-            if let Some(ref frozen_system) = *frozen {
-                if frozen_system != &system {
-                    // Log warning but continue — cache miss is unavoidable
-                }
+            if let Some(ref frozen_system) = *frozen
+                && frozen_system != &system
+            {
+                // Log warning but continue — cache miss is unavoidable
             }
         }
         {
             let mut frozen = self.frozen_system.write().await;
-            if frozen.is_none() {
-                *frozen = Some(system.clone());
-            } else if frozen.as_deref() != Some(&system) {
+            if frozen.is_none() || frozen.as_deref() != Some(&system) {
                 *frozen = Some(system.clone());
             }
         }

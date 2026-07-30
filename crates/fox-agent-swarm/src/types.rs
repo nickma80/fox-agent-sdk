@@ -131,9 +131,18 @@ pub struct SwarmSummaryReport {
 impl SwarmSummaryReport {
     /// Build a summary from a collection of worker reports.
     pub fn from_reports(reports: &[AgentReport]) -> Self {
-        let completed = reports.iter().filter(|r| r.status == WorkerStatus::Completed).count() as u32;
-        let failed = reports.iter().filter(|r| r.status == WorkerStatus::Failed).count() as u32;
-        let timed_out = reports.iter().filter(|r| r.status == WorkerStatus::TimedOut).count() as u32;
+        let completed = reports
+            .iter()
+            .filter(|r| r.status == WorkerStatus::Completed)
+            .count() as u32;
+        let failed = reports
+            .iter()
+            .filter(|r| r.status == WorkerStatus::Failed)
+            .count() as u32;
+        let timed_out = reports
+            .iter()
+            .filter(|r| r.status == WorkerStatus::TimedOut)
+            .count() as u32;
         Self {
             total_workers: reports.len() as u32,
             completed,

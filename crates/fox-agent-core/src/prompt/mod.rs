@@ -164,8 +164,16 @@ impl PromptBuilder {
         static_sections: Vec<S>,
         dynamic_sections: Vec<S>,
     ) -> SplitPrompt {
-        let static_part: Vec<String> = static_sections.into_iter().map(|s| s.into()).filter(|s| !s.is_empty()).collect();
-        let dynamic_part: Vec<String> = dynamic_sections.into_iter().map(|s| s.into()).filter(|s| !s.is_empty()).collect();
+        let static_part: Vec<String> = static_sections
+            .into_iter()
+            .map(|s| s.into())
+            .filter(|s| !s.is_empty())
+            .collect();
+        let dynamic_part: Vec<String> = dynamic_sections
+            .into_iter()
+            .map(|s| s.into())
+            .filter(|s| !s.is_empty())
+            .collect();
         let static_joined = static_part.join("\n\n");
         let cache_anchor_line = if static_joined.is_empty() {
             None
@@ -265,7 +273,10 @@ impl PromptBuilder {
         lines.push("Timezone: UTC".to_string());
         lines.push(format!("OS: {}", std::env::consts::OS));
         lines.push(format!("Architecture: {}", std::env::consts::ARCH));
-        lines.push(format!("Agent version: {} ({})", self.version, self.git_hash));
+        lines.push(format!(
+            "Agent version: {} ({})",
+            self.version, self.git_hash
+        ));
 
         // Hardware context
         if let Some(hw) = Self::hardware_context() {
@@ -300,7 +311,10 @@ impl PromptBuilder {
     /// When `global_path` is `Some`, the file at that path is loaded as the
     /// global/domain-level AGENTS.md.  When `None`, falls back to the default
     /// global location (`$FOX_AGENT_DIR/AGENTS.md` or `~/.fox-agent/AGENTS.md`).
-    pub fn load_agents_md(working_dir: Option<&Path>, global_path: Option<&Path>) -> (Option<String>, ContextInfo) {
+    pub fn load_agents_md(
+        working_dir: Option<&Path>,
+        global_path: Option<&Path>,
+    ) -> (Option<String>, ContextInfo) {
         let mut contents = vec![];
         let mut info = ContextInfo::default();
 
@@ -317,7 +331,10 @@ impl PromptBuilder {
         };
 
         let project = working_dir.unwrap_or(Path::new("."));
-        if let Some((content, size)) = load(&project.join("AGENTS.md"), "Project Instructions (AGENTS.md)") {
+        if let Some((content, size)) = load(
+            &project.join("AGENTS.md"),
+            "Project Instructions (AGENTS.md)",
+        ) {
             info.has_project_agents_md = true;
             info.project_agents_md_chars = size;
             contents.push(content);
@@ -360,13 +377,19 @@ impl PromptBuilder {
         };
 
         let project = working_dir.unwrap_or(Path::new("."));
-        if let Some((content, size)) = load(&project.join(".fox").join("prompt-overlay.md"), "Project Prompt Overlay (.fox/prompt-overlay.md)") {
+        if let Some((content, size)) = load(
+            &project.join(".fox").join("prompt-overlay.md"),
+            "Project Prompt Overlay (.fox/prompt-overlay.md)",
+        ) {
             total += size;
             contents.push(content);
         }
 
         if let Some(global_path) = global_config_path("prompt-overlay.md")
-            && let Some((content, size)) = load(&global_path, "Global Prompt Overlay (~/.fox/prompt-overlay.md)")
+            && let Some((content, size)) = load(
+                &global_path,
+                "Global Prompt Overlay (~/.fox/prompt-overlay.md)",
+            )
         {
             total += size;
             contents.push(content);
@@ -417,7 +440,10 @@ impl PromptBuilder {
 
     #[expect(dead_code)]
     fn read_trimmed(file_path: impl Into<PathBuf>) -> Option<String> {
-        std::fs::read_to_string(file_path.into()).ok().map(|s| s.trim().to_string()).filter(|s| !s.is_empty())
+        std::fs::read_to_string(file_path.into())
+            .ok()
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
     }
 
     fn cpu_model() -> Option<String> {
@@ -465,8 +491,11 @@ impl PromptBuilder {
             let output = Command::new("git")
                 .args(["rev-parse", "--is-inside-work-tree"])
                 .current_dir(dir)
-                .output().ok()?;
-            if !output.status.success() { return None; }
+                .output()
+                .ok()?;
+            if !output.status.success() {
+                return None;
+            }
 
             let mut info = vec!["Git:".to_string()];
 
@@ -497,11 +526,17 @@ impl PromptBuilder {
                     for file in status.lines().take(5) {
                         info.push(format!("    {}", file));
                     }
-                    if count > 5 { info.push("    ...".to_string()); }
+                    if count > 5 {
+                        info.push("    ...".to_string());
+                    }
                 }
             }
 
-            if info.len() > 1 { Some(info.join("\n")) } else { None }
+            if info.len() > 1 {
+                Some(info.join("\n"))
+            } else {
+                None
+            }
         };
         check()
     }
@@ -512,9 +547,7 @@ fn global_config_path(filename: &str) -> Option<PathBuf> {
     let dir = std::env::var("FOX_AGENT_DIR")
         .map(PathBuf::from)
         .ok()
-        .or_else(|| {
-            dirs::data_dir().map(|d| d.join("fox-agent"))
-        })
+        .or_else(|| dirs::data_dir().map(|d| d.join("fox-agent")))
         .or_else(|| {
             let home = std::env::var("HOME").ok()?;
             Some(PathBuf::from(home).join(".fox-agent"))
@@ -560,10 +593,11 @@ mod tests {
     #[test]
     fn test_build_full_basic() {
         let builder = PromptBuilder::new("1.0.0", "abc123");
-        let skills = vec![SkillInfo { name: "test".into(), description: "A test skill".into() }];
-        let (prompt, info) = builder.build_full(
-            None, None, None, &skills, None, None, None,
-        );
+        let skills = vec![SkillInfo {
+            name: "test".into(),
+            description: "A test skill".into(),
+        }];
+        let (prompt, info) = builder.build_full(None, None, None, &skills, None, None, None);
         assert!(prompt.contains("## Identity"));
         assert!(prompt.contains("test"));
         assert!(info.skills_chars > 0);
@@ -585,14 +619,16 @@ mod tests {
 
     #[test]
     fn test_agents_md_nonexistent() {
-        let (content, info) = PromptBuilder::load_agents_md(Some(Path::new("/nonexistent/path")), None);
+        let (content, info) =
+            PromptBuilder::load_agents_md(Some(Path::new("/nonexistent/path")), None);
         assert!(content.is_none());
         assert!(!info.has_project_agents_md);
     }
 
     #[test]
     fn test_prompt_overlay_nonexistent() {
-        let (content, size) = PromptBuilder::load_prompt_overlay(Some(Path::new("/nonexistent/path")));
+        let (content, size) =
+            PromptBuilder::load_prompt_overlay(Some(Path::new("/nonexistent/path")));
         assert!(content.is_none());
         assert_eq!(size, 0);
     }
@@ -608,10 +644,7 @@ mod tests {
     #[test]
     fn test_build_split_content() {
         let builder = PromptBuilder::new("1.0", "abc");
-        let sp = builder.build_split(
-            vec!["static1", "static2"],
-            vec!["dynamic1"],
-        );
+        let sp = builder.build_split(vec!["static1", "static2"], vec!["dynamic1"]);
         assert_eq!(sp.static_part, "static1\n\nstatic2");
         assert_eq!(sp.dynamic_part, "dynamic1");
     }
@@ -619,10 +652,7 @@ mod tests {
     #[test]
     fn test_cache_anchor_line_with_static_content() {
         let builder = PromptBuilder::new("1.0", "abc");
-        let sp = builder.build_split(
-            vec!["line1\nline2\nline3", "line4"],
-            vec!["dynamic"],
-        );
+        let sp = builder.build_split(vec!["line1\nline2\nline3", "line4"], vec!["dynamic"]);
         // "line1\nline2\nline3\n\nline4" = 5 lines total
         assert_eq!(sp.cache_anchor_line, Some(5));
     }

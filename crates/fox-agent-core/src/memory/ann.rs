@@ -136,15 +136,16 @@ pub fn ann_search_candidates(
 }
 
 fn load_snapshot_cached(path: &Path) -> Result<Option<AnnSnapshot>, String> {
-    if let Ok(cache) = ann_cache().lock() {
-        if let Some(snapshot) = cache.get(path).cloned() {
-            return Ok(Some(snapshot));
-        }
+    if let Ok(cache) = ann_cache().lock()
+        && let Some(snapshot) = cache.get(path).cloned()
+    {
+        return Ok(Some(snapshot));
     }
     if !path.exists() {
         return Ok(None);
     }
-    let bytes = std::fs::read(path).map_err(|e| format!("failed to read `{}`: {e}", path.display()))?;
+    let bytes =
+        std::fs::read(path).map_err(|e| format!("failed to read `{}`: {e}", path.display()))?;
     let snapshot: AnnSnapshot = bincode::deserialize(&bytes)
         .map_err(|e| format!("failed to decode ANN index `{}`: {e}", path.display()))?;
     if let Ok(mut cache) = ann_cache().lock() {
@@ -155,12 +156,16 @@ fn load_snapshot_cached(path: &Path) -> Result<Option<AnnSnapshot>, String> {
 
 fn persist_snapshot(path: &Path, snapshot: &AnnSnapshot) -> Result<(), String> {
     if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent).map_err(|e| format!("failed to create dir `{}`: {e}", parent.display()))?;
+        std::fs::create_dir_all(parent)
+            .map_err(|e| format!("failed to create dir `{}`: {e}", parent.display()))?;
     }
     let tmp = tmp_path(path);
-    let bytes = bincode::serialize(snapshot).map_err(|e| format!("failed to encode ANN index: {e}"))?;
-    std::fs::write(&tmp, &bytes).map_err(|e| format!("failed to write `{}`: {e}", tmp.display()))?;
-    std::fs::rename(&tmp, path).map_err(|e| format!("failed to rename `{}`: {e}", path.display()))?;
+    let bytes =
+        bincode::serialize(snapshot).map_err(|e| format!("failed to encode ANN index: {e}"))?;
+    std::fs::write(&tmp, &bytes)
+        .map_err(|e| format!("failed to write `{}`: {e}", tmp.display()))?;
+    std::fs::rename(&tmp, path)
+        .map_err(|e| format!("failed to rename `{}`: {e}", path.display()))?;
     Ok(())
 }
 
@@ -185,15 +190,15 @@ fn build_snapshot(
         let Some(embedding) = entry.embedding.as_ref() else {
             continue;
         };
-        if let Some(model) = expected_embedding_model {
-            if entry.embedding_model.as_deref() != Some(model) {
-                continue;
-            }
+        if let Some(model) = expected_embedding_model
+            && entry.embedding_model.as_deref() != Some(model)
+        {
+            continue;
         }
-        if let Some(version) = expected_embedding_version {
-            if entry.embedding_version.as_deref() != Some(version) {
-                continue;
-            }
+        if let Some(version) = expected_embedding_version
+            && entry.embedding_version.as_deref() != Some(version)
+        {
+            continue;
         }
         let values: Vec<f64> = embedding.iter().map(|v| *v as f64).collect();
         vectors.push((entry, values));
@@ -207,14 +212,16 @@ fn build_snapshot(
 
     let mut index = HNSWIndex::new(dim);
     let mut id_to_memory_id = HashMap::new();
-    let mut next_id: u64 = 1;
-    for (entry, values) in vectors {
-        let id = next_id;
-        next_id += 1;
+    for (next_id, (entry, values)) in (1_u64..).zip(vectors) {
         index
-            .add(Vector { id, values, text: String::new(), metadata: None })
+            .add(Vector {
+                id: next_id,
+                values,
+                text: String::new(),
+                metadata: None,
+            })
             .map_err(|e| format!("failed to add ANN vector: {e}"))?;
-        id_to_memory_id.insert(id, entry.id.clone());
+        id_to_memory_id.insert(next_id, entry.id.clone());
     }
 
     Ok(AnnSnapshot {

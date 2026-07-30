@@ -40,10 +40,7 @@ async fn main() {
 
     // ── Run with initial model ──
     let (tx, _rx) = tokio::sync::mpsc::channel::<AgentEvent>(16);
-    let outcome = agent
-        .run_once_streaming("which model?", &tx)
-        .await
-        .unwrap();
+    let outcome = agent.run_once_streaming("which model?", &tx).await.unwrap();
     match outcome {
         TurnOutcome::Completed { text } => {
             println!("[openai] {text}");
@@ -53,9 +50,7 @@ async fn main() {
     }
 
     // ── Switch model at runtime ──
-    agent
-        .set_model("claude-sonnet-4-20250514")
-        .unwrap();
+    agent.set_model("claude-sonnet-4-20250514").unwrap();
     println!("[agent] switched to claude-sonnet-4-20250514");
     println!("\n=== PASSED ===");
 }

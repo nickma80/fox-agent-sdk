@@ -52,7 +52,10 @@ pub struct Edge {
 
 impl Edge {
     pub fn new(target: impl Into<String>, kind: EdgeKind) -> Self {
-        Self { target: target.into(), kind }
+        Self {
+            target: target.into(),
+            kind,
+        }
     }
 }
 
@@ -165,9 +168,15 @@ impl MemoryGraph {
 
     // ── Counts ──
 
-    pub fn memory_count(&self) -> usize { self.memories.len() }
-    pub fn node_count(&self) -> usize { self.memories.len() + self.tags.len() + self.clusters.len() }
-    pub fn edge_count(&self) -> usize { self.edges.values().map(|v| v.len()).sum() }
+    pub fn memory_count(&self) -> usize {
+        self.memories.len()
+    }
+    pub fn node_count(&self) -> usize {
+        self.memories.len() + self.tags.len() + self.clusters.len()
+    }
+    pub fn edge_count(&self) -> usize {
+        self.edges.values().map(|v| v.len()).sum()
+    }
 
     // ── Memory CRUD ──
 
@@ -243,7 +252,9 @@ impl MemoryGraph {
         self.ensure_tag(tag_name);
         let tid = format!("tag:{tag_name}");
         if let Some(edges) = self.edges.get(memory_id)
-            && edges.iter().any(|e| e.target == tid && matches!(e.kind, EdgeKind::HasTag))
+            && edges
+                .iter()
+                .any(|e| e.target == tid && matches!(e.kind, EdgeKind::HasTag))
         {
             return;
         }
@@ -278,18 +289,32 @@ impl MemoryGraph {
 
     pub fn get_memories_by_tag(&self, tag_name: &str) -> Vec<&MemoryEntry> {
         let tid = format!("tag:{tag_name}");
-        self.reverse_edges.get(&tid).map(|sources| {
-            sources.iter().filter_map(|id| self.memories.get(id)).collect()
-        }).unwrap_or_default()
+        self.reverse_edges
+            .get(&tid)
+            .map(|sources| {
+                sources
+                    .iter()
+                    .filter_map(|id| self.memories.get(id))
+                    .collect()
+            })
+            .unwrap_or_default()
     }
 
-    pub fn all_tags(&self) -> impl Iterator<Item = &TagEntry> { self.tags.values() }
+    pub fn all_tags(&self) -> impl Iterator<Item = &TagEntry> {
+        self.tags.values()
+    }
 
     // ── Edges ──
 
     fn add_edge_internal(&mut self, from: &str, to: &str, kind: EdgeKind) {
-        self.edges.entry(from.into()).or_default().push(Edge::new(to, kind));
-        self.reverse_edges.entry(to.into()).or_default().push(from.into());
+        self.edges
+            .entry(from.into())
+            .or_default()
+            .push(Edge::new(to, kind));
+        self.reverse_edges
+            .entry(to.into())
+            .or_default()
+            .push(from.into());
     }
 
     pub fn add_edge(&mut self, from: &str, to: &str, kind: EdgeKind) {
@@ -315,7 +340,10 @@ impl MemoryGraph {
     }
 
     pub fn get_incoming(&self, id: &str) -> Vec<&str> {
-        self.reverse_edges.get(id).map(|v| v.iter().map(|s| s.as_str()).collect()).unwrap_or_default()
+        self.reverse_edges
+            .get(id)
+            .map(|v| v.iter().map(|s| s.as_str()).collect())
+            .unwrap_or_default()
     }
 
     pub fn link_memories(&mut self, from: &str, to: &str, weight: f32) {
@@ -336,11 +364,7 @@ impl MemoryGraph {
         self.add_edge(id_b, id_a, EdgeKind::Contradicts);
     }
 
-    pub fn refresh_clusters(
-        &mut self,
-        similarity_threshold: f32,
-        min_members: usize,
-    ) -> usize {
+    pub fn refresh_clusters(&mut self, similarity_threshold: f32, min_members: usize) -> usize {
         self.clear_clusters();
 
         let mut candidates: Vec<(String, Vec<f32>)> = self

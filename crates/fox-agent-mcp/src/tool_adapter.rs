@@ -13,10 +13,7 @@ pub struct McpToolDefinition {
 }
 
 /// Convert an MCP `McpToolDef` to a local `McpToolDefinition`.
-pub fn mcp_tool_to_definition(
-    server_name: &str,
-    tool: &McpToolDef,
-) -> McpToolDefinition {
+pub fn mcp_tool_to_definition(server_name: &str, tool: &McpToolDef) -> McpToolDefinition {
     let name = format!("mcp://{}/{}", server_name, tool.name);
     let description = tool
         .description

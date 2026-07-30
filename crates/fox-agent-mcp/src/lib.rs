@@ -13,5 +13,8 @@ pub mod types;
 
 pub use client::{McpClient, McpClientError, McpServerHandle};
 pub use tool_adapter::{McpToolDefinition, mcp_tool_to_definition};
-pub use transport::{McpTransport, SseTransport, SseTransportConfig, StdioTransport, StdioTransportConfig, TransportError};
+pub use transport::{
+    McpTransport, SseTransport, SseTransportConfig, StdioTransport, StdioTransportConfig,
+    TransportError,
+};
 pub use types::*;

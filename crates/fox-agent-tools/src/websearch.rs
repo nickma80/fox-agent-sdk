@@ -23,6 +23,12 @@ impl WebSearchTool {
     }
 }
 
+impl Default for WebSearchTool {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 #[derive(Deserialize)]
 struct WebSearchInput {
     query: String,
@@ -82,9 +88,10 @@ impl Tool for WebSearchTool {
     }
 
     async fn execute(&self, input: Value, _ctx: ToolContext) -> Result<ToolOutput, ToolError> {
-        let params: WebSearchInput = serde_json::from_value(input).map_err(|e| ToolError::Message {
-            message: format!("invalid websearch input: {e}"),
-        })?;
+        let params: WebSearchInput =
+            serde_json::from_value(input).map_err(|e| ToolError::Message {
+                message: format!("invalid websearch input: {e}"),
+            })?;
         let num_results = params.num_results.unwrap_or(8).min(20);
 
         let engine = params.engine.as_deref().unwrap_or("duckduckgo");
@@ -93,9 +100,11 @@ impl Tool for WebSearchTool {
         let results = match engine {
             "duckduckgo" => self.search_duckduckgo(&params.query, num_results).await?,
             "bing" => self.search_bing(&params.query, num_results, market).await?,
-            _ => return Err(ToolError::Message {
-                message: format!("Unknown engine: {engine}. Use duckduckgo or bing."),
-            }),
+            _ => {
+                return Err(ToolError::Message {
+                    message: format!("Unknown engine: {engine}. Use duckduckgo or bing."),
+                });
+            }
         };
 
         if results.is_empty() {
@@ -151,13 +160,19 @@ impl WebSearchTool {
 
         if !response.status().is_success() {
             return Err(ToolError::Message {
-                message: format!("DuckDuckGo search failed with status: {}", response.status()),
+                message: format!(
+                    "DuckDuckGo search failed with status: {}",
+                    response.status()
+                ),
             });
         }
 
-        Ok(parse_ddg_results(&response.text().await.map_err(|e| ToolError::Message {
-            message: format!("failed to read response: {e}"),
-        })?, num_results))
+        Ok(parse_ddg_results(
+            &response.text().await.map_err(|e| ToolError::Message {
+                message: format!("failed to read response: {e}"),
+            })?,
+            num_results,
+        ))
     }
 
     async fn search_bing(
@@ -167,10 +182,12 @@ impl WebSearchTool {
         market: &str,
     ) -> Result<Vec<SearchResult>, ToolError> {
         // Try Bing API first if API key is available
-        if let Ok(api_key) = std::env::var("FOX_BING_API_KEY") {
-            if !api_key.trim().is_empty() {
-                return self.search_bing_api(query, num_results, market, &api_key).await;
-            }
+        if let Ok(api_key) = std::env::var("FOX_BING_API_KEY")
+            && !api_key.trim().is_empty()
+        {
+            return self
+                .search_bing_api(query, num_results, market, &api_key)
+                .await;
         }
 
         // Fall back to HTML scraping
@@ -205,9 +222,12 @@ impl WebSearchTool {
             });
         }
 
-        Ok(parse_bing_api_results(response.json().await.map_err(|e| ToolError::Message {
-            message: format!("failed to parse Bing API response: {e}"),
-        })?, num_results))
+        Ok(parse_bing_api_results(
+            response.json().await.map_err(|e| ToolError::Message {
+                message: format!("failed to parse Bing API response: {e}"),
+            })?,
+            num_results,
+        ))
     }
 
     async fn search_bing_html(
@@ -252,26 +272,44 @@ mod search_regex {
     use super::*;
 
     fn compile_regex(pattern: &str, label: &str) -> Option<Regex> {
-        Regex::new(pattern).map_err(|err| {
-            eprintln!("websearch: failed to compile regex {label}: {err}");
-        }).ok()
+        Regex::new(pattern)
+            .map_err(|err| {
+                eprintln!("websearch: failed to compile regex {label}: {err}");
+            })
+            .ok()
     }
 
     macro_rules! static_regex {
         ($name:ident, $pat:expr) => {
             pub fn $name() -> Option<&'static Regex> {
                 static RE: OnceLock<Option<Regex>> = OnceLock::new();
-                RE.get_or_init(|| compile_regex($pat, stringify!($name))).as_ref()
+                RE.get_or_init(|| compile_regex($pat, stringify!($name)))
+                    .as_ref()
             }
         };
     }
 
-    static_regex!(result_link, r#"<a[^>]*class="result__a"[^>]*href="([^"]*)"[^>]*>([^<]*)</a>"#);
-    static_regex!(result_snippet, r#"<a[^>]*class="result__snippet"[^>]*>([^<]*(?:<[^>]*>[^<]*)*)</a>"#);
+    static_regex!(
+        result_link,
+        r#"<a[^>]*class="result__a"[^>]*href="([^"]*)"[^>]*>([^<]*)</a>"#
+    );
+    static_regex!(
+        result_snippet,
+        r#"<a[^>]*class="result__snippet"[^>]*>([^<]*(?:<[^>]*>[^<]*)*)</a>"#
+    );
     static_regex!(tag, r"<[^>]+>");
-    static_regex!(bing_result_block, r#"(?s)<li[^>]*class="[^"]*\bb_algo\b[^"]*"[^>]*>(.*?)</li>"#);
-    static_regex!(bing_link, r#"(?s)<h2[^>]*>\s*<a[^>]*href="([^"]+)"[^>]*>(.*?)</a>\s*</h2>"#);
-    static_regex!(bing_caption, r#"(?s)<div[^>]*class="[^"]*\bb_caption\b[^"]*"[^>]*>.*?<p[^>]*>(.*?)</p>"#);
+    static_regex!(
+        bing_result_block,
+        r#"(?s)<li[^>]*class="[^"]*\bb_algo\b[^"]*"[^>]*>(.*?)</li>"#
+    );
+    static_regex!(
+        bing_link,
+        r#"(?s)<h2[^>]*>\s*<a[^>]*href="([^"]+)"[^>]*>(.*?)</a>\s*</h2>"#
+    );
+    static_regex!(
+        bing_caption,
+        r#"(?s)<div[^>]*class="[^"]*\bb_caption\b[^"]*"[^>]*>.*?<p[^>]*>(.*?)</p>"#
+    );
 }
 
 #[derive(Deserialize)]
@@ -326,7 +364,9 @@ fn parse_bing_html_results(html: &str, max_results: usize) -> Vec<SearchResult> 
         if results.len() >= max_results {
             break;
         }
-        let Some(link) = link_re.captures(&block[1]) else { continue };
+        let Some(link) = link_re.captures(&block[1]) else {
+            continue;
+        };
         let url = html_decode(&link[1]);
         if !url.starts_with("http") || url.contains("bing.com") {
             continue;
@@ -336,7 +376,11 @@ fn parse_bing_html_results(html: &str, max_results: usize) -> Vec<SearchResult> 
             .captures(&block[1])
             .map(|cap| html_decode(&tag_re.replace_all(&cap[1], "")))
             .unwrap_or_default();
-        results.push(SearchResult { title, url, snippet });
+        results.push(SearchResult {
+            title,
+            url,
+            snippet,
+        });
     }
 
     results
@@ -375,7 +419,11 @@ fn parse_ddg_results(html: &str, max_results: usize) -> Vec<SearchResult> {
             String::new()
         };
 
-        results.push(SearchResult { title, url, snippet });
+        results.push(SearchResult {
+            title,
+            url,
+            snippet,
+        });
     }
 
     results

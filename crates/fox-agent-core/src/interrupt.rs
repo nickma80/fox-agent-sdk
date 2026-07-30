@@ -89,11 +89,15 @@ impl InterruptManager {
 
     pub fn take_pending_interrupts(&mut self) -> Vec<InjectedInterrupt> {
         let mut events = self.soft_interrupts.drain(..).collect::<Vec<_>>();
-        events.extend(self.pending_alerts.drain(..).map(|content| InjectedInterrupt {
-            content,
-            urgent: false,
-            kind: InterruptKind::Alert,
-        }));
+        events.extend(
+            self.pending_alerts
+                .drain(..)
+                .map(|content| InjectedInterrupt {
+                    content,
+                    urgent: false,
+                    kind: InterruptKind::Alert,
+                }),
+        );
         events
     }
 }

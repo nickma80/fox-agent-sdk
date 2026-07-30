@@ -1,5 +1,5 @@
-use crate::memory::{RecallHit, RetrievalSource};
 use crate::memory::types::{MemoryCategory, MemoryEntry};
+use crate::memory::{RecallHit, RetrievalSource};
 
 /// Format relevant memories as a prompt section.
 pub fn format_entries_for_prompt(entries: &[MemoryEntry], limit: usize) -> Option<String> {
@@ -8,8 +8,7 @@ pub fn format_entries_for_prompt(entries: &[MemoryEntry], limit: usize) -> Optio
 
 /// Format with a `# Memory` header.
 pub fn format_relevant_prompt(entries: &[MemoryEntry], limit: usize) -> Option<String> {
-    format_entries_for_prompt(entries, limit)
-        .map(|formatted| format!("# Memory\n\n{formatted}"))
+    format_entries_for_prompt(entries, limit).map(|formatted| format!("# Memory\n\n{formatted}"))
 }
 
 /// Format with header and `updated_at` comments (for display/debug).
@@ -55,7 +54,8 @@ pub(super) fn format_entries_for_prompt_with_header(
         return None;
     }
 
-    let mut sections: std::collections::BTreeMap<String, Vec<&MemoryEntry>> = std::collections::BTreeMap::new();
+    let mut sections: std::collections::BTreeMap<String, Vec<&MemoryEntry>> =
+        std::collections::BTreeMap::new();
     let order = ["corrections", "facts", "preferences", "entities"];
 
     for entry in &selected {
@@ -77,7 +77,9 @@ pub(super) fn format_entries_for_prompt_with_header(
     let mut first = true;
     for key in order {
         if let Some(items) = sections.remove(key) {
-            if !first { output.push('\n'); }
+            if !first {
+                output.push('\n');
+            }
             first = false;
             let title = match key {
                 "corrections" => "Corrections",
@@ -90,20 +92,28 @@ pub(super) fn format_entries_for_prompt_with_header(
             for (idx, item) in items.iter().enumerate() {
                 output.push_str(&format!("{}. {}\n", idx + 1, item.content.trim()));
                 if include_updated_at {
-                    output.push_str(&format!("<!-- updated_at: {} -->\n", item.updated_at.to_rfc3339()));
+                    output.push_str(&format!(
+                        "<!-- updated_at: {} -->\n",
+                        item.updated_at.to_rfc3339()
+                    ));
                 }
             }
         }
     }
     // Remaining custom sections
     for (name, items) in sections {
-        if !first { output.push('\n'); }
+        if !first {
+            output.push('\n');
+        }
         first = false;
         output.push_str(&format!("## {name}\n"));
         for (idx, item) in items.iter().enumerate() {
             output.push_str(&format!("{}. {}\n", idx + 1, item.content.trim()));
             if include_updated_at {
-                output.push_str(&format!("<!-- updated_at: {} -->\n", item.updated_at.to_rfc3339()));
+                output.push_str(&format!(
+                    "<!-- updated_at: {} -->\n",
+                    item.updated_at.to_rfc3339()
+                ));
             }
         }
     }
@@ -117,11 +127,13 @@ pub(super) fn format_entries_for_prompt_with_header(
     }
 }
 
-fn select_entries<'a>(entries: &'a [MemoryEntry], limit: usize) -> Vec<&'a MemoryEntry> {
+fn select_entries(entries: &[MemoryEntry], limit: usize) -> Vec<&MemoryEntry> {
     use crate::memory::ranking::top_k_by_ord;
     let deduped: Vec<&MemoryEntry> = entries.iter().filter(|e| e.active).collect();
     top_k_by_ord(
-        deduped.into_iter().map(|e| (e, e.updated_at.timestamp_millis())),
+        deduped
+            .into_iter()
+            .map(|e| (e, e.updated_at.timestamp_millis())),
         limit,
     )
     .into_iter()
@@ -140,7 +152,8 @@ fn format_recall_hits(
         return None;
     }
 
-    let mut sections: std::collections::BTreeMap<String, Vec<&RecallHit>> = std::collections::BTreeMap::new();
+    let mut sections: std::collections::BTreeMap<String, Vec<&RecallHit>> =
+        std::collections::BTreeMap::new();
     let order = ["corrections", "facts", "preferences", "entities"];
     for hit in &selected {
         let section = match hit.entry.category {
@@ -197,13 +210,18 @@ fn format_recall_hits(
     Some(output.trim().to_string())
 }
 
-fn select_hits<'a>(hits: &'a [RecallHit], max_chars: usize, max_per_category: usize) -> Vec<&'a RecallHit> {
+fn select_hits(hits: &[RecallHit], max_chars: usize, max_per_category: usize) -> Vec<&RecallHit> {
     let mut ordered: Vec<&RecallHit> = hits.iter().filter(|hit| hit.entry.active).collect();
-    ordered.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap_or(std::cmp::Ordering::Equal));
+    ordered.sort_by(|a, b| {
+        b.score
+            .partial_cmp(&a.score)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
 
     let mut selected = Vec::new();
     let mut used_chars = 0usize;
-    let mut per_category: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
+    let mut per_category: std::collections::HashMap<String, usize> =
+        std::collections::HashMap::new();
 
     for hit in ordered {
         let category_key = category_key(&hit.entry.category);

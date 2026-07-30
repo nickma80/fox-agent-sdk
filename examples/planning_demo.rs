@@ -1,3 +1,4 @@
+use fox_agent_core::{GoalScope, MilestoneStatus, PlanStatus, TodoStatus};
 /// planning_demo: Goal + Plan + Todo — Agent-driven orchestration.
 ///
 /// This demo shows how a Fox Agent autonomously manages the three-tier
@@ -15,11 +16,9 @@
 ///
 /// Run: cargo run --example planning_demo
 use fox_agent_sdk::{
-    AgentBuilder, AgentEvent, FoxAgentSdkConfig, MockProvider, StreamEvent,
-    InMemoryPlanningStore, PlanningStore,
-    load_goals_with_store, load_plan_with_store, load_todos_with_store,
+    AgentBuilder, AgentEvent, FoxAgentSdkConfig, InMemoryPlanningStore, MockProvider,
+    PlanningStore, StreamEvent, load_goals_with_store, load_plan_with_store, load_todos_with_store,
 };
-use fox_agent_core::{MilestoneStatus, PlanStatus, TodoStatus, GoalScope};
 use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::sync::mpsc;
@@ -42,7 +41,7 @@ async fn main() {
     let cfg = FoxAgentSdkConfig::load_from_file(project_root.join("agent.toml"))
         .unwrap_or_else(|_| FoxAgentSdkConfig::default());
 
-    let mut agent = AgentBuilder::new()
+    let agent = AgentBuilder::new()
         .working_dir(&project_root)
         .sdk_config(cfg)
         .with_global_agents_md_path(project_root.join("AGENTS.md"))
@@ -89,19 +88,23 @@ async fn main() {
     provider.push_script(vec![
         StreamEvent::TextDelta {
             text: "I've created a focused goal: 'Develop a file deduplication CLI tool' \
-                   with 4 milestones. Let me now break this down into an execution plan.".into(),
+                   with 4 milestones. Let me now break this down into an execution plan."
+                .into(),
         },
         StreamEvent::MessageStop { stop_reason: None },
     ]);
 
     let (tx, mut rx) = mpsc::channel::<AgentEvent>(64);
     let handle = tokio::spawn(async move { while let Some(_) = rx.recv().await {} });
-    let _ = agent.run_once_streaming(
-        "I want to build a CLI tool called `dedup` that finds and removes \
+    let _ = agent
+        .run_once_streaming(
+            "I want to build a CLI tool called `dedup` that finds and removes \
          duplicate files by content hash.",
-        &tx,
-    ).await;
-    drop(tx); handle.await.ok();
+            &tx,
+        )
+        .await;
+    drop(tx);
+    handle.await.ok();
 
     // ── Verify: goal was actually created ──
     let goals = load_goals_with_store(store.as_ref(), &session_id, GoalScope::Session);
@@ -110,13 +113,18 @@ async fn main() {
     println!("[verify] Goal created by Agent:");
     println!("  id      : {}", g.id);
     println!("  title   : {}", g.title);
-    println!("  focused : {}  |  progress: {}%  |  status: {:?}", g.focused, g.progress, g.status);
+    println!(
+        "  focused : {}  |  progress: {}%  |  status: {:?}",
+        g.focused, g.progress, g.status
+    );
     println!("  milestones ({}):", g.milestones.len());
     for m in &g.milestones {
         println!("    [{:>10}] {}", format!("{:?}", m.status), m.content);
     }
     println!("  checkpoints ({}):", g.checkpoints.len());
-    for c in &g.checkpoints { println!("    · {}", c.summary); }
+    for c in &g.checkpoints {
+        println!("    · {}", c.summary);
+    }
     println!();
 
     // ═══════════════════════════════════════════════════════════════════════
@@ -143,25 +151,42 @@ async fn main() {
     provider.push_script(vec![
         StreamEvent::TextDelta {
             text: "Plan created with 5 items. Dependency chain: p1→p2→p3→p4, \
-                   with p5 running in parallel after p1. Let me create the todo list.".into(),
+                   with p5 running in parallel after p1. Let me create the todo list."
+                .into(),
         },
         StreamEvent::MessageStop { stop_reason: None },
     ]);
 
     let (tx, mut rx) = mpsc::channel::<AgentEvent>(64);
     let handle = tokio::spawn(async move { while let Some(_) = rx.recv().await {} });
-    let _ = agent.run_once_streaming("Create an execution plan with dependencies.", &tx).await;
-    drop(tx); handle.await.ok();
+    let _ = agent
+        .run_once_streaming("Create an execution plan with dependencies.", &tx)
+        .await;
+    drop(tx);
+    handle.await.ok();
 
     let plan = load_plan_with_store(store.as_ref(), &session_id);
-    assert_eq!(plan.items.len(), 5, "Agent should have created 5 plan items");
+    assert_eq!(
+        plan.items.len(),
+        5,
+        "Agent should have created 5 plan items"
+    );
     println!("[verify] Plan created by Agent (v{}):", plan.version);
     println!("  Dependency graph: p1 ─┬─ p2 ── p3 ── p4");
     println!("                      └─ p5 (parallel)");
     for item in &plan.items {
-        let deps = if item.blocked_by.is_empty() { "─".into() } else { item.blocked_by.join(", ") };
-        println!("  [{:>7}|{:>6}] {}  ← {}", format!("{:?}", item.status),
-            format!("{:?}", item.priority), item.content, deps);
+        let deps = if item.blocked_by.is_empty() {
+            "─".into()
+        } else {
+            item.blocked_by.join(", ")
+        };
+        println!(
+            "  [{:>7}|{:>6}] {}  ← {}",
+            format!("{:?}", item.status),
+            format!("{:?}", item.priority),
+            item.content,
+            deps
+        );
     }
     println!();
 
@@ -188,22 +213,30 @@ async fn main() {
     provider.push_script(vec![
         StreamEvent::TextDelta {
             text: "Todo list ready with 4 immediate tasks. I'll start working on t1: \
-                   Research clap derive API.".into(),
+                   Research clap derive API."
+                .into(),
         },
         StreamEvent::MessageStop { stop_reason: None },
     ]);
 
     let (tx, mut rx) = mpsc::channel::<AgentEvent>(64);
     let handle = tokio::spawn(async move { while let Some(_) = rx.recv().await {} });
-    let _ = agent.run_once_streaming("Create a todo list for the first tasks.", &tx).await;
-    drop(tx); handle.await.ok();
+    let _ = agent
+        .run_once_streaming("Create a todo list for the first tasks.", &tx)
+        .await;
+    drop(tx);
+    handle.await.ok();
 
     let todos = load_todos_with_store(store.as_ref(), &session_id);
     assert_eq!(todos.len(), 4, "Agent should have created 4 todos");
     println!("[verify] Todos created by Agent:");
     for t in &todos {
-        println!("  [{:>11}|{:>6}] {}", format!("{:?}", t.status),
-            format!("{:?}", t.priority), t.content);
+        println!(
+            "  [{:>11}|{:>6}] {}",
+            format!("{:?}", t.status),
+            format!("{:?}", t.priority),
+            t.content
+        );
     }
     println!();
 
@@ -243,23 +276,30 @@ async fn main() {
         StreamEvent::TextDelta {
             text: "Research complete. Chose clap with derive macros for subcommand support. \
                    BLAKE3 confirmed — 6x faster than SHA-256 on 1GB files. \
-                   p1 (scaffold) is done.".into(),
+                   p1 (scaffold) is done."
+                .into(),
         },
         StreamEvent::MessageStop { stop_reason: None },
     ]);
 
     let (tx, mut rx) = mpsc::channel::<AgentEvent>(64);
     let handle = tokio::spawn(async move { while let Some(_) = rx.recv().await {} });
-    let _ = agent.run_once_streaming(
-        "I finished the research. clap and BLAKE3 are the right choices. \
+    let _ = agent
+        .run_once_streaming(
+            "I finished the research. clap and BLAKE3 are the right choices. \
          Project scaffold is complete too. Update the plan and todos.",
-        &tx,
-    ).await;
-    drop(tx); handle.await.ok();
+            &tx,
+        )
+        .await;
+    drop(tx);
+    handle.await.ok();
 
     // Verify todos updated
     let todos = load_todos_with_store(store.as_ref(), &session_id);
-    let done = todos.iter().filter(|t| t.status == TodoStatus::Completed).count();
+    let done = todos
+        .iter()
+        .filter(|t| t.status == TodoStatus::Completed)
+        .count();
     println!("  [verify] todos: {done}/4 done");
     for t in &todos {
         println!("    [{:>11}] {}", format!("{:?}", t.status), t.content);
@@ -268,7 +308,10 @@ async fn main() {
     // Verify plan updated
     let plan = load_plan_with_store(store.as_ref(), &session_id);
     let p1 = plan.items.iter().find(|i| i.id == "p1").unwrap();
-    println!("  [verify] plan: p1 status = {:?} (version {})", p1.status, plan.version);
+    println!(
+        "  [verify] plan: p1 status = {:?} (version {})",
+        p1.status, plan.version
+    );
     println!();
 
     // Turn 4b: Agent updates goal progress → triggers auto-checkpoint
@@ -297,31 +340,46 @@ async fn main() {
         StreamEvent::TextDelta {
             text: "Goal progress updated to 30%. Milestone 1 is done, \
                    milestone 2 is in progress. The auto-checkpoint system \
-                   will track this progress point.".into(),
+                   will track this progress point."
+                .into(),
         },
         StreamEvent::MessageStop { stop_reason: None },
     ]);
 
     let (tx, mut rx) = mpsc::channel::<AgentEvent>(64);
     let handle = tokio::spawn(async move { while let Some(_) = rx.recv().await {} });
-    let _ = agent.run_once_streaming(
-        "Great progress! Update the goal: m1 is complete, m2 is started, \
+    let _ = agent
+        .run_once_streaming(
+            "Great progress! Update the goal: m1 is complete, m2 is started, \
          overall progress is 30%.",
-        &tx,
-    ).await;
-    drop(tx); handle.await.ok();
+            &tx,
+        )
+        .await;
+    drop(tx);
+    handle.await.ok();
 
     // Verify goal updated + auto-checkpoint fired
     let goals = load_goals_with_store(store.as_ref(), &session_id, GoalScope::Session);
     let g = &goals[0];
     println!("  [verify] goal progress: {}%", g.progress);
     for m in &g.milestones {
-        println!("    milestone [{:>11}]: {}", format!("{:?}", m.status), m.content);
+        println!(
+            "    milestone [{:>11}]: {}",
+            format!("{:?}", m.status),
+            m.content
+        );
     }
-    println!("    checkpoints: {} (includes auto-checkpoint from turn end)", g.checkpoints.len());
+    println!(
+        "    checkpoints: {} (includes auto-checkpoint from turn end)",
+        g.checkpoints.len()
+    );
     for c in &g.checkpoints {
-        println!("      · t={} | {} (progress: {}%)",
-            c.at_secs, c.summary, c.progress.unwrap_or(0));
+        println!(
+            "      · t={} | {} (progress: {}%)",
+            c.at_secs,
+            c.summary,
+            c.progress.unwrap_or(0)
+        );
     }
     println!();
 
@@ -334,36 +392,75 @@ async fn main() {
     let plan = load_plan_with_store(store.as_ref(), &session_id);
     let todos = load_todos_with_store(store.as_ref(), &session_id);
 
-    let plan_done = plan.items.iter().filter(|i| i.status == PlanStatus::Completed).count();
-    let todo_done = todos.iter().filter(|t| t.status == TodoStatus::Completed).count();
+    let plan_done = plan
+        .items
+        .iter()
+        .filter(|i| i.status == PlanStatus::Completed)
+        .count();
+    let todo_done = todos
+        .iter()
+        .filter(|t| t.status == TodoStatus::Completed)
+        .count();
 
     println!("┌─────────────── GOAL ────────────────┐");
     for g in &goals {
         println!("│ ★ {:<31} │", g.title);
         println!("│ progress: {}%  status: {:?}", g.progress, g.status);
-        println!("│ milestones: {}                         │", g.milestones.len());
+        println!(
+            "│ milestones: {}                         │",
+            g.milestones.len()
+        );
         for m in &g.milestones {
-            let icon = match m.status { MilestoneStatus::Completed => "✓", MilestoneStatus::InProgress => "→", MilestoneStatus::Pending => "○" };
+            let icon = match m.status {
+                MilestoneStatus::Completed => "✓",
+                MilestoneStatus::InProgress => "→",
+                MilestoneStatus::Pending => "○",
+            };
             println!("│   {icon} {:<29} │", m.content);
         }
-        println!("│ checkpoints: {}                        │", g.checkpoints.len());
+        println!(
+            "│ checkpoints: {}                        │",
+            g.checkpoints.len()
+        );
     }
     println!("└─────────────────────────────────────┘\n");
 
     println!("┌─────────────── PLAN v{} ────────────────┐", plan.version);
     for item in &plan.items {
-        let icon = match item.status { PlanStatus::Completed => "✓", PlanStatus::InProgress => "→", PlanStatus::Pending => "○" };
-        println!("│ {icon} [{:>5}] {:<22} │", format!("{:?}", item.priority), item.content);
+        let icon = match item.status {
+            PlanStatus::Completed => "✓",
+            PlanStatus::InProgress => "→",
+            PlanStatus::Pending => "○",
+        };
+        println!(
+            "│ {icon} [{:>5}] {:<22} │",
+            format!("{:?}", item.priority),
+            item.content
+        );
     }
-    println!("│ {plan_done}/{} completed                    │", plan.items.len());
+    println!(
+        "│ {plan_done}/{} completed                    │",
+        plan.items.len()
+    );
     println!("└─────────────────────────────────────┘\n");
 
     println!("┌─────────────── TODO ────────────────┐");
     for t in &todos {
-        let icon = match t.status { TodoStatus::Completed => "✓", TodoStatus::InProgress => "→", TodoStatus::Pending => "○" };
-        println!("│ {icon} [{:>5}] {:<22} │", format!("{:?}", t.priority), t.content);
+        let icon = match t.status {
+            TodoStatus::Completed => "✓",
+            TodoStatus::InProgress => "→",
+            TodoStatus::Pending => "○",
+        };
+        println!(
+            "│ {icon} [{:>5}] {:<22} │",
+            format!("{:?}", t.priority),
+            t.content
+        );
     }
-    println!("│ {todo_done}/{} done                           │", todos.len());
+    println!(
+        "│ {todo_done}/{} done                           │",
+        todos.len()
+    );
     println!("└─────────────────────────────────────┘");
 
     println!("\n══════ Summary ══════");

@@ -28,6 +28,12 @@ impl LsTool {
     }
 }
 
+impl Default for LsTool {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 #[derive(Deserialize)]
 struct LsInput {
     #[serde(default)]
@@ -109,9 +115,7 @@ impl Tool for LsTool {
         .map_err(|e| ToolError::Message {
             message: format!("ls task failed: {e}"),
         })?
-        .map_err(|e| ToolError::Message {
-            message: e,
-        })?;
+        .map_err(|e| ToolError::Message { message: e })?;
 
         let truncated = entries.len() >= MAX_ENTRIES;
 
@@ -130,7 +134,10 @@ impl Tool for LsTool {
 
         let file_count = entries.iter().filter(|e| !e.is_dir).count();
         let dir_count = entries.iter().filter(|e| e.is_dir).count();
-        output.push_str(&format!("\n{} files, {} directories", file_count, dir_count));
+        output.push_str(&format!(
+            "\n{} files, {} directories",
+            file_count, dir_count
+        ));
 
         Ok(ToolOutput {
             text: output,

@@ -9,8 +9,8 @@ use fox_agent_core::{
     ToolContext, ToolError, ToolOutput,
 };
 use fox_agent_mcp::{
-    McpClient, McpClientError, StdioTransport, StdioTransportConfig,
-    SseTransport, SseTransportConfig,
+    McpClient, McpClientError, SseTransport, SseTransportConfig, StdioTransport,
+    StdioTransportConfig,
 };
 use serde_json::Value;
 use std::sync::Arc;
@@ -176,7 +176,13 @@ impl Tool for McpTool {
 
 fn build_transport(cfg: &McpServerConfig) -> Box<dyn fox_agent_mcp::McpTransport> {
     match &cfg.transport {
-        McpTransportMode::Stdio { command, args, env, cwd, startup_grace_ms } => {
+        McpTransportMode::Stdio {
+            command,
+            args,
+            env,
+            cwd,
+            startup_grace_ms,
+        } => {
             let timeout = cfg.request_timeout_ms.unwrap_or(30_000);
             let env_map = env.as_ref().map(|pairs| {
                 pairs
@@ -194,13 +200,19 @@ fn build_transport(cfg: &McpServerConfig) -> Box<dyn fox_agent_mcp::McpTransport
                 startup_grace_ms: startup_grace_ms.unwrap_or(5_000),
             }))
         }
-        McpTransportMode::Sse { url, headers, connect_timeout_secs } => {
+        McpTransportMode::Sse {
+            url,
+            headers,
+            connect_timeout_secs,
+        } => {
             let timeout = cfg.request_timeout_ms.unwrap_or(30_000);
             Box::new(SseTransport::new(SseTransportConfig {
                 url: url.clone(),
                 headers: headers.clone(),
                 connect_timeout_secs: connect_timeout_secs.unwrap_or(30),
-                request_timeout_secs: std::time::Duration::from_millis(timeout).as_secs_f64().ceil() as u64,
+                request_timeout_secs: std::time::Duration::from_millis(timeout)
+                    .as_secs_f64()
+                    .ceil() as u64,
             }))
         }
     }
@@ -217,7 +229,14 @@ fn build_transport(cfg: &McpServerConfig) -> Box<dyn fox_agent_mcp::McpTransport
 /// Returns `McpClientError` if a mandatory server fails to connect.
 pub async fn connect_and_discover_tools(
     servers: &[McpServerConfig],
-) -> Result<(Vec<Arc<dyn Tool>>, McpClient, Vec<McpToolDescriptorSnapshot>), McpClientError> {
+) -> Result<
+    (
+        Vec<Arc<dyn Tool>>,
+        McpClient,
+        Vec<McpToolDescriptorSnapshot>,
+    ),
+    McpClientError,
+> {
     let client = McpClient::new();
 
     // Phase 1: connect all servers
@@ -279,18 +298,16 @@ pub async fn build_mcp_context_summary(client: &McpClient) -> String {
 
     // Resources
     if let Ok(resources) = client.list_resources().await {
-        let filtered = resources.iter()
+        let filtered = resources
+            .iter()
             .take(5) // max 5 resources shown in prompt
             .collect::<Vec<_>>();
         if !filtered.is_empty() {
             sections.push_str("# MCP Resources\n\n");
-            sections.push_str("The following resources are available from connected MCP servers:\n\n");
+            sections
+                .push_str("The following resources are available from connected MCP servers:\n\n");
             for res in &filtered {
-                sections.push_str(&format!(
-                    "- **{}** (`{}`)\n",
-                    res.name,
-                    res.uri
-                ));
+                sections.push_str(&format!("- **{}** (`{}`)\n", res.name, res.uri));
             }
             if resources.len() > 5 {
                 sections.push_str(&format!(
@@ -304,12 +321,12 @@ pub async fn build_mcp_context_summary(client: &McpClient) -> String {
 
     // Prompts
     if let Ok(prompts) = client.list_prompts().await {
-        let filtered = prompts.iter()
-            .take(5)
-            .collect::<Vec<_>>();
+        let filtered = prompts.iter().take(5).collect::<Vec<_>>();
         if !filtered.is_empty() {
             sections.push_str("# MCP Prompts\n\n");
-            sections.push_str("The following prompt templates are available from connected MCP servers:\n\n");
+            sections.push_str(
+                "The following prompt templates are available from connected MCP servers:\n\n",
+            );
             for p in &filtered {
                 sections.push_str(&format!(
                     "- **{}**: {}\n",

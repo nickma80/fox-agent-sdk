@@ -12,8 +12,8 @@ use fox_agent_core::{
     ArtifactStoreConfig, McpServerKind, McpServerProfile, McpToolDescriptorSnapshot,
     RoutingPolicyConfig, ToolResultRouting,
 };
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use tracing::{debug, trace};
 
 // ── Routing Policy Engine ──
@@ -58,7 +58,11 @@ impl RoutingPolicyEngine {
     }
 
     /// Determine how a tool result should be handled.
-    pub fn decide(&self, input: &RoutingInput<'_>, artifact_cfg: &ArtifactStoreConfig) -> ToolResultRouting {
+    pub fn decide(
+        &self,
+        input: &RoutingInput<'_>,
+        artifact_cfg: &ArtifactStoreConfig,
+    ) -> ToolResultRouting {
         // Fast-path: context guard already truncated — always externalize
         if input.truncated_by_context_guard {
             debug!(
@@ -71,10 +75,7 @@ impl RoutingPolicyEngine {
 
         // Delegate to the existing externalize decision for MCP-specific logic,
         // then decide full routing.
-        let externalize: bool = should_externalize(
-            artifact_cfg,
-            input,
-        );
+        let externalize: bool = should_externalize(artifact_cfg, input);
 
         // Context pressure escalates the decision
         let pressure = input.context_pressure;
@@ -176,10 +177,7 @@ impl RoutingPolicyEngine {
 
 // ── Externalize decision helper (consolidated from agent.rs) ──
 
-fn should_externalize(
-    artifact_cfg: &ArtifactStoreConfig,
-    input: &RoutingInput<'_>,
-) -> bool {
+fn should_externalize(artifact_cfg: &ArtifactStoreConfig, input: &RoutingInput<'_>) -> bool {
     let tool_name = input.tool_name;
     let raw_output_text = input.raw_output_text;
 
@@ -200,15 +198,26 @@ fn should_externalize(
             })
             .unwrap_or_default();
         let noisy_keywords = [
-            "search", "read", "find", "list", "grep", "glob", "ls", "fetch",
-            "html", "navigate", "screenshot", "browse",
+            "search",
+            "read",
+            "find",
+            "list",
+            "grep",
+            "glob",
+            "ls",
+            "fetch",
+            "html",
+            "navigate",
+            "screenshot",
+            "browse",
         ];
-        let noisy_descriptor = noisy_keywords
-            .iter()
-            .any(|kw| descriptor_text.contains(kw));
+        let noisy_descriptor = noisy_keywords.iter().any(|kw| descriptor_text.contains(kw));
 
         // SSE remote: externalize medium+ outputs
-        if matches!(profile.map(|p| p.transport), Some(fox_agent_core::McpTransportKind::Sse)) {
+        if matches!(
+            profile.map(|p| p.transport),
+            Some(fox_agent_core::McpTransportKind::Sse)
+        ) {
             if raw_output_text.len() > 5_000 && noisy_descriptor {
                 return true;
             }
@@ -327,45 +336,79 @@ impl GovernanceMetrics {
     // ── Atomic updates ──
 
     pub fn record_artifact_write(&self, bytes: u64) {
-        self.inner.artifact_write_count.fetch_add(1, Ordering::Relaxed);
-        self.inner.artifact_write_bytes.fetch_add(bytes, Ordering::Relaxed);
+        self.inner
+            .artifact_write_count
+            .fetch_add(1, Ordering::Relaxed);
+        self.inner
+            .artifact_write_bytes
+            .fetch_add(bytes, Ordering::Relaxed);
     }
 
     pub fn record_artifact_read(&self) {
-        self.inner.artifact_read_count.fetch_add(1, Ordering::Relaxed);
+        self.inner
+            .artifact_read_count
+            .fetch_add(1, Ordering::Relaxed);
     }
 
     pub fn record_artifact_gc(&self, deleted: u64, bytes_freed: u64) {
-        self.inner.artifact_gc_deleted.fetch_add(deleted, Ordering::Relaxed);
-        self.inner.artifact_gc_bytes_freed.fetch_add(bytes_freed, Ordering::Relaxed);
+        self.inner
+            .artifact_gc_deleted
+            .fetch_add(deleted, Ordering::Relaxed);
+        self.inner
+            .artifact_gc_bytes_freed
+            .fetch_add(bytes_freed, Ordering::Relaxed);
     }
 
     pub fn record_routing(&self, routing: ToolResultRouting) {
         match routing {
-            ToolResultRouting::Inline => { self.inner.inline_count.fetch_add(1, Ordering::Relaxed); }
-            ToolResultRouting::SummarizeOnly => { self.inner.summarize_only_count.fetch_add(1, Ordering::Relaxed); }
-            ToolResultRouting::Externalize => { self.inner.externalize_count.fetch_add(1, Ordering::Relaxed); }
-            ToolResultRouting::DelegateToSubagent => { self.inner.delegate_count.fetch_add(1, Ordering::Relaxed); }
+            ToolResultRouting::Inline => {
+                self.inner.inline_count.fetch_add(1, Ordering::Relaxed);
+            }
+            ToolResultRouting::SummarizeOnly => {
+                self.inner
+                    .summarize_only_count
+                    .fetch_add(1, Ordering::Relaxed);
+            }
+            ToolResultRouting::Externalize => {
+                self.inner.externalize_count.fetch_add(1, Ordering::Relaxed);
+            }
+            ToolResultRouting::DelegateToSubagent => {
+                self.inner.delegate_count.fetch_add(1, Ordering::Relaxed);
+            }
         }
     }
 
     pub fn record_subagent_success(&self) {
-        self.inner.subagent_task_count.fetch_add(1, Ordering::Relaxed);
-        self.inner.subagent_success_count.fetch_add(1, Ordering::Relaxed);
+        self.inner
+            .subagent_task_count
+            .fetch_add(1, Ordering::Relaxed);
+        self.inner
+            .subagent_success_count
+            .fetch_add(1, Ordering::Relaxed);
     }
 
     pub fn record_subagent_timeout(&self) {
-        self.inner.subagent_task_count.fetch_add(1, Ordering::Relaxed);
-        self.inner.subagent_timeout_count.fetch_add(1, Ordering::Relaxed);
+        self.inner
+            .subagent_task_count
+            .fetch_add(1, Ordering::Relaxed);
+        self.inner
+            .subagent_timeout_count
+            .fetch_add(1, Ordering::Relaxed);
     }
 
     pub fn record_subagent_error(&self) {
-        self.inner.subagent_task_count.fetch_add(1, Ordering::Relaxed);
-        self.inner.subagent_error_count.fetch_add(1, Ordering::Relaxed);
+        self.inner
+            .subagent_task_count
+            .fetch_add(1, Ordering::Relaxed);
+        self.inner
+            .subagent_error_count
+            .fetch_add(1, Ordering::Relaxed);
     }
 
     pub fn record_compaction(&self) {
-        self.inner.compaction_trigger_count.fetch_add(1, Ordering::Relaxed);
+        self.inner
+            .compaction_trigger_count
+            .fetch_add(1, Ordering::Relaxed);
     }
 
     pub fn record_mcp_call(&self) {
@@ -429,7 +472,11 @@ impl MetricsSnapshot {
             + self.externalize_count
             + self.delegate_count;
         let pct = |n: u64| -> f64 {
-            if total_routing == 0 { 0.0 } else { (n as f64) / (total_routing as f64) * 100.0 }
+            if total_routing == 0 {
+                0.0
+            } else {
+                (n as f64) / (total_routing as f64) * 100.0
+            }
         };
         format!(
             "Governance Metrics:\n\
@@ -439,16 +486,25 @@ impl MetricsSnapshot {
              Sub-agents: {st} tasks — {ss} success, {sto} timeout, {se} error\n\
              Compaction: {comp} triggers, MCP: {mcp} calls",
             total = total_routing,
-            i = self.inline_count, ip = pct(self.inline_count),
-            s = self.summarize_only_count, sp = pct(self.summarize_only_count),
-            e = self.externalize_count, ep = pct(self.externalize_count),
-            d = self.delegate_count, dp = pct(self.delegate_count),
-            aw = self.artifact_write_count, ab = self.artifact_write_bytes,
+            i = self.inline_count,
+            ip = pct(self.inline_count),
+            s = self.summarize_only_count,
+            sp = pct(self.summarize_only_count),
+            e = self.externalize_count,
+            ep = pct(self.externalize_count),
+            d = self.delegate_count,
+            dp = pct(self.delegate_count),
+            aw = self.artifact_write_count,
+            ab = self.artifact_write_bytes,
             ar = self.artifact_read_count,
-            gd = self.artifact_gc_deleted, gf = self.artifact_gc_bytes_freed,
-            st = self.subagent_task_count, ss = self.subagent_success_count,
-            sto = self.subagent_timeout_count, se = self.subagent_error_count,
-            comp = self.compaction_trigger_count, mcp = self.mcp_call_count,
+            gd = self.artifact_gc_deleted,
+            gf = self.artifact_gc_bytes_freed,
+            st = self.subagent_task_count,
+            ss = self.subagent_success_count,
+            sto = self.subagent_timeout_count,
+            se = self.subagent_error_count,
+            comp = self.compaction_trigger_count,
+            mcp = self.mcp_call_count,
         )
     }
 }

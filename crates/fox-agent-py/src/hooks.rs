@@ -82,12 +82,7 @@ pub struct PyHooksConfig {
 impl PyHooksConfig {
     #[new]
     #[pyo3(signature = (enabled=true, timeout_secs=30, max_concurrent=5, load_global=true))]
-    fn new(
-        enabled: bool,
-        timeout_secs: u64,
-        max_concurrent: usize,
-        load_global: bool,
-    ) -> Self {
+    fn new(enabled: bool, timeout_secs: u64, max_concurrent: usize, load_global: bool) -> Self {
         Self {
             inner: HooksConfig {
                 enabled,

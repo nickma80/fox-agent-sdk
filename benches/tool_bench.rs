@@ -23,10 +23,10 @@ fn bench_tool_execute(c: &mut Criterion) {
         let tool = Arc::new(EchoTool);
         let ctx = empty_ctx();
         b.to_async(&rt).iter(|| async {
-            let _ = tool.execute(
-                serde_json::json!({"text":"hello"}),
-                ctx.clone(),
-            ).await.unwrap();
+            let _ = tool
+                .execute(serde_json::json!({"text":"hello"}), ctx.clone())
+                .await
+                .unwrap();
         });
     });
 
@@ -35,10 +35,13 @@ fn bench_tool_execute(c: &mut Criterion) {
         let tool = Arc::new(BashTool::new());
         let ctx = empty_ctx();
         b.to_async(&rt).iter(|| async {
-            let _ = tool.execute(
-                serde_json::json!({"command":"echo hello","timeout":5000}),
-                ctx.clone(),
-            ).await.unwrap();
+            let _ = tool
+                .execute(
+                    serde_json::json!({"command":"echo hello","timeout":5000}),
+                    ctx.clone(),
+                )
+                .await
+                .unwrap();
         });
     });
 

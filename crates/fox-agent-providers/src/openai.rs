@@ -3,15 +3,15 @@ use async_trait::async_trait;
 use fox_agent_core::{
     EventStream, Message, Provider, ProviderError, StreamEvent, TokenUsage, ToolDefinition,
 };
-use futures::{stream, StreamExt};
-use reqwest::header::HeaderMap;
+use futures::{StreamExt, stream};
 use reqwest::Client;
+use reqwest::header::HeaderMap;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::time::Duration;
 
-use fox_agent_core::ProviderConfig;
 use crate::util::build_headers;
+use fox_agent_core::ProviderConfig;
 
 // ── Provider ──
 
@@ -33,7 +33,10 @@ impl OpenAiCompatibleProvider {
     }
 
     fn endpoint(&self) -> String {
-        format!("{}/chat/completions", self.cfg.base_url.trim_end_matches('/'))
+        format!(
+            "{}/chat/completions",
+            self.cfg.base_url.trim_end_matches('/')
+        )
     }
 
     fn build_headers(&self) -> Result<HeaderMap, ProviderError> {
@@ -117,10 +120,10 @@ impl OpenAiCompatibleProvider {
             }
         }
 
-        if let Some(content) = choice.message.content {
-            if !content.is_empty() {
-                events.push(StreamEvent::TextDelta { text: content });
-            }
+        if let Some(content) = choice.message.content
+            && !content.is_empty()
+        {
+            events.push(StreamEvent::TextDelta { text: content });
         }
 
         if let Some(usage) = response.usage.map(TokenUsage::from) {
@@ -370,16 +373,16 @@ impl ToolCallAccumulator {
                 if let Some(name) = function.name {
                     state.name = Some(name);
                 }
-                if let Some(arguments) = function.arguments {
-                    if !arguments.is_empty() {
-                        state.arguments.push_str(&arguments);
-                        deltas.push(StreamEvent::ToolInputDelta {
-                            index,
-                            id: state.id.clone(),
-                            name: state.name.clone(),
-                            delta: arguments,
-                        });
-                    }
+                if let Some(arguments) = function.arguments
+                    && !arguments.is_empty()
+                {
+                    state.arguments.push_str(&arguments);
+                    deltas.push(StreamEvent::ToolInputDelta {
+                        index,
+                        id: state.id.clone(),
+                        name: state.name.clone(),
+                        delta: arguments,
+                    });
                 }
             }
         }
@@ -451,10 +454,9 @@ fn parse_openai_stream(response: reqwest::Response) -> EventStream {
 
                 let Some(choice) = event.choices.into_iter().next() else { continue };
 
-                if let Some(text) = choice.delta.content {
-                    if !text.is_empty() {
+                if let Some(text) = choice.delta.content
+                    && !text.is_empty() {
                         yield StreamEvent::TextDelta { text };
-                    }
                 }
 
                 if let Some(chunks) = choice.delta.tool_calls {

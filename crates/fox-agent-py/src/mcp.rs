@@ -38,11 +38,7 @@ impl PyMcpTransportMode {
     /// Create an SSE transport mode.
     #[staticmethod]
     #[pyo3(signature = (url, headers, *, connect_timeout_secs = None))]
-    fn sse(
-        url: String,
-        headers: Vec<(String, String)>,
-        connect_timeout_secs: Option<u64>,
-    ) -> Self {
+    fn sse(url: String, headers: Vec<(String, String)>, connect_timeout_secs: Option<u64>) -> Self {
         Self {
             inner: fox_agent_sdk::McpTransportMode::Sse {
                 url,

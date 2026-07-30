@@ -1,4 +1,7 @@
-use fox_agent_core::{ContextInfo, PlanningStore, PromptBuilder as CorePromptBuilder, SkillInfo, SplitPrompt, render_planning_context_with_store};
+use fox_agent_core::{
+    ContextInfo, PlanningStore, PromptBuilder as CorePromptBuilder, SkillInfo, SplitPrompt,
+    render_planning_context_with_store,
+};
 use std::path::Path;
 use std::sync::Arc;
 
@@ -57,6 +60,7 @@ impl PromptBuilder {
     /// - planning context (todos, plan, goals)
     /// - memory injection
     /// - active skill prompt
+    #[allow(clippy::too_many_arguments)]
     pub fn build_split(
         &self,
         session_id: &str,
@@ -93,7 +97,8 @@ impl PromptBuilder {
         }
 
         // 3. Planning context (中频变) — todo items, plan state, goals.
-        let planning_context = render_planning_context_with_store(planning_store.as_ref(), session_id);
+        let planning_context =
+            render_planning_context_with_store(planning_store.as_ref(), session_id);
         let has_planning_state = !planning_context.is_empty();
 
         if has_planning_state {
@@ -128,7 +133,9 @@ impl PromptBuilder {
         static_sections.push(session_ctx);
 
         // AGENTS.md (project + optional global/domain)
-        if let (Some(content), _info) = CorePromptBuilder::load_agents_md(working_dir, self.global_agents_md_path.as_deref()) {
+        if let (Some(content), _info) =
+            CorePromptBuilder::load_agents_md(working_dir, self.global_agents_md_path.as_deref())
+        {
             static_sections.push(content);
         }
 

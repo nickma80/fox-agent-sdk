@@ -7,8 +7,8 @@
 //! (a few hundred tokens). Raw intermediate results are stored as artifacts.
 
 use fox_agent_core::{
-    AgentError, AgentEvent, Message, Model, Role, SubagentOutcome,
-    SubagentSummary, SubagentTask, ToolDefinition, TokenUsage,
+    AgentError, AgentEvent, Message, Model, Role, SubagentOutcome, SubagentSummary, SubagentTask,
+    TokenUsage, ToolDefinition,
 };
 use std::sync::Arc;
 use std::time::Instant;
@@ -83,7 +83,7 @@ impl SubagentRuntime {
         let system_prompt = build_subagent_system_prompt(&task);
 
         // Run turns
-        let max_turns = task.max_turns.max(1).min(50);
+        let max_turns = task.max_turns.clamp(1, 50);
         let mut turns_used: u32 = 0;
         let mut total_token_usage: Option<TokenUsage> = None;
         let mut last_error: Option<String> = None;
@@ -99,9 +99,8 @@ impl SubagentRuntime {
                     break;
                 }
 
-                let (split_prompt, _ctx_info) = harness
-                    .build_system_prompt_split(None, None, None)
-                    .await;
+                let (split_prompt, _ctx_info) =
+                    harness.build_system_prompt_split(None, None, None).await;
                 let dynamic_str = &split_prompt.static_part;
 
                 let stream = match model
@@ -109,7 +108,7 @@ impl SubagentRuntime {
                         &session_messages,
                         &tool_defs,
                         &system_prompt,
-                        &dynamic_str,
+                        dynamic_str,
                         None,
                     )
                     .await
@@ -133,11 +132,7 @@ impl SubagentRuntime {
                         Ok(fox_agent_core::StreamEvent::TextDelta { text }) => {
                             full_text.push_str(&text);
                         }
-                        Ok(fox_agent_core::StreamEvent::ToolUse {
-                            id,
-                            name,
-                            input,
-                        }) => {
+                        Ok(fox_agent_core::StreamEvent::ToolUse { id, name, input }) => {
                             tool_uses.push((id.clone(), name.clone(), input.clone()));
                         }
                         Ok(fox_agent_core::StreamEvent::Usage { usage }) => {
@@ -169,10 +164,16 @@ impl SubagentRuntime {
                     use fox_agent_core::ContentBlock;
                     let mut blocks = Vec::new();
                     if !full_text.is_empty() {
-                        blocks.push(ContentBlock::Text { text: full_text.clone() });
+                        blocks.push(ContentBlock::Text {
+                            text: full_text.clone(),
+                        });
                     }
                     for (id, name, input) in &tool_uses {
-                        blocks.push(ContentBlock::ToolUse { id: id.clone(), name: name.clone(), input: input.clone() });
+                        blocks.push(ContentBlock::ToolUse {
+                            id: id.clone(),
+                            name: name.clone(),
+                            input: input.clone(),
+                        });
                     }
                     Message {
                         role: Role::Assistant,
@@ -195,7 +196,9 @@ impl SubagentRuntime {
                         progress_tx: None,
                     };
 
-                    let result = harness.execute_tool_with_cache(&name, input.clone(), ctx).await;
+                    let result = harness
+                        .execute_tool_with_cache(&name, input.clone(), ctx)
+                        .await;
                     match result {
                         Ok(output) => {
                             let text = output.text.clone();
@@ -206,7 +209,9 @@ impl SubagentRuntime {
                                     &task_id,
                                     &name,
                                     &text,
-                                ).await.ok()
+                                )
+                                .await
+                                .ok()
                             } else {
                                 None
                             };
@@ -222,19 +227,19 @@ impl SubagentRuntime {
                                 text
                             };
 
-                            harness.push_message(Message::tool_result(
-                                &call_id,
-                                &result_text,
-                                output.is_error,
-                            )).await;
+                            harness
+                                .push_message(Message::tool_result(
+                                    &call_id,
+                                    &result_text,
+                                    output.is_error,
+                                ))
+                                .await;
                         }
                         Err(e) => {
                             let err_text = format!("tool error: {e}");
-                            harness.push_message(Message::tool_result(
-                                &call_id,
-                                &err_text,
-                                true,
-                            )).await;
+                            harness
+                                .push_message(Message::tool_result(&call_id, &err_text, true))
+                                .await;
                         }
                     }
                 }
@@ -252,9 +257,7 @@ impl SubagentRuntime {
                 findings: Vec::new(),
                 evidence_refs: Vec::new(),
                 recommendations: Vec::new(),
-                uncertainties: last_error
-                    .map(|e| vec![e])
-                    .unwrap_or_default(),
+                uncertainties: last_error.map(|e| vec![e]).unwrap_or_default(),
                 next_queries: Vec::new(),
                 token_usage: total_token_usage.map(|u| {
                     serde_json::json!({
@@ -321,7 +324,7 @@ fn build_task_prompt(task: &SubagentTask) -> String {
            3. Recommendations for the main agent\n\
            4. Anything you are uncertain about\n\
            5. Suggested next steps\n\n\
-         Begin your exploration now."
+         Begin your exploration now.",
     );
     prompt
 }
@@ -429,7 +432,14 @@ impl fox_agent_core::Tool for SubagentTool {
             .unwrap_or("summary")
             .to_string();
 
-        let task_id = format!("subagent_{}", uuid::Uuid::new_v4().to_string().split('-').next().unwrap_or("task"));
+        let task_id = format!(
+            "subagent_{}",
+            uuid::Uuid::new_v4()
+                .to_string()
+                .split('-')
+                .next()
+                .unwrap_or("task")
+        );
 
         let task = SubagentTask {
             task_id: task_id.clone(),
@@ -500,7 +510,10 @@ impl fox_agent_core::Tool for SubagentTool {
 
         Ok(fox_agent_core::ToolOutput {
             text: summary_text,
-            is_error: matches!(summary.outcome, SubagentOutcome::Error(_) | SubagentOutcome::TimeoutReached),
+            is_error: matches!(
+                summary.outcome,
+                SubagentOutcome::Error(_) | SubagentOutcome::TimeoutReached
+            ),
             json: Some(serde_json::json!({
                 "task_id": summary.task_id,
                 "outcome": format!("{:?}", summary.outcome),

@@ -5,7 +5,7 @@ use std::path::PathBuf;
 use std::sync::{Arc, OnceLock, RwLock};
 
 use crate::{
-    interrupt::InterruptSnapshot, message::Message, model::ModelRuntimeState, PermissionRequest,
+    PermissionRequest, interrupt::InterruptSnapshot, message::Message, model::ModelRuntimeState,
 };
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -166,8 +166,9 @@ impl SessionStore for FileSessionStore {
     fn delete_session(&self, session_id: &str) -> Result<(), String> {
         let path = self.session_path(session_id);
         if path.exists() {
-            fs::remove_file(&path)
-                .map_err(|e| format!("failed to delete session snapshot {}: {e}", path.display()))?;
+            fs::remove_file(&path).map_err(|e| {
+                format!("failed to delete session snapshot {}: {e}", path.display())
+            })?;
         }
         Ok(())
     }

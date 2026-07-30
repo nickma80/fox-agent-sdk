@@ -47,7 +47,10 @@ impl JudgeScores {
 
     /// Total raw score out of max possible.
     pub fn total(&self) -> u8 {
-        self.completeness + self.solution_quality + self.error_recovery.unwrap_or(5) + self.redundancy
+        self.completeness
+            + self.solution_quality
+            + self.error_recovery.unwrap_or(5)
+            + self.redundancy
     }
 }
 
@@ -88,14 +91,15 @@ impl EvalReport {
         events: &[AgentEvent],
         assertions_passed: bool,
     ) -> Self {
-        let mut tool_counts: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
+        let mut tool_counts: std::collections::HashMap<String, usize> =
+            std::collections::HashMap::new();
         for ev in events {
             if let AgentEvent::ToolCallStart { name, .. } = ev {
                 *tool_counts.entry(name.clone()).or_insert(0) += 1;
             }
         }
         let mut tool_summary: Vec<_> = tool_counts.into_iter().collect();
-        tool_summary.sort_by(|a, b| b.1.cmp(&a.1)); // most used first
+        tool_summary.sort_by_key(|b| std::cmp::Reverse(b.1)); // most used first
 
         // Truncate agent response
         let truncated: String = agent_response.chars().take(2000).collect();
@@ -160,8 +164,16 @@ Please output a JSON object with these fields:
 Output ONLY the JSON object, no other text."#,
         task = report.user_prompt,
         response = report.agent_response,
-        tools = if tool_list.is_empty() { "(none)" } else { &tool_list },
-        assertions = if report.assertions_passed { "PASSED" } else { "FAILED" },
+        tools = if tool_list.is_empty() {
+            "(none)"
+        } else {
+            &tool_list
+        },
+        assertions = if report.assertions_passed {
+            "PASSED"
+        } else {
+            "FAILED"
+        },
     )
 }
 
@@ -183,12 +195,14 @@ pub fn parse_judge_response(raw: &str) -> Option<JudgeScores> {
         redundancy: i32,
     }
 
-    serde_json::from_str::<RawScores>(json_str).ok().map(|s| JudgeScores {
-        completeness: s.completeness.clamp(1, 5) as u8,
-        solution_quality: s.solution_quality.clamp(1, 5) as u8,
-        error_recovery: s.error_recovery.map(|v| v.clamp(1, 5) as u8),
-        redundancy: s.redundancy.clamp(1, 5) as u8,
-    })
+    serde_json::from_str::<RawScores>(json_str)
+        .ok()
+        .map(|s| JudgeScores {
+            completeness: s.completeness.clamp(1, 5) as u8,
+            solution_quality: s.solution_quality.clamp(1, 5) as u8,
+            error_recovery: s.error_recovery.map(|v| v.clamp(1, 5) as u8),
+            redundancy: s.redundancy.clamp(1, 5) as u8,
+        })
 }
 
 /// LLM-as-Judge evaluator that calls an independent model to score agent performance.
@@ -322,7 +336,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_task_judge_evaluate_success() {
-        let mut provider = MockProvider::new("eval-judge");
+        let provider = MockProvider::new("eval-judge");
         // Simulate the evaluator model returning a JSON score
         provider.push_script(vec![
             StreamEvent::TextDelta {
@@ -344,14 +358,16 @@ mod tests {
 
     #[tokio::test]
     async fn test_task_judge_evaluate_with_markdown_fence() {
-        let mut provider = MockProvider::new("eval-judge");
+        let provider = MockProvider::new("eval-judge");
         // Simulate a model that wraps JSON in markdown code fence
         provider.push_script(vec![
             StreamEvent::TextDelta {
                 text: "```json\n".into(),
             },
             StreamEvent::TextDelta {
-                text: r#"{"completeness":3,"solution_quality":2,"error_recovery":3,"redundancy":2}"#.into(),
+                text:
+                    r#"{"completeness":3,"solution_quality":2,"error_recovery":3,"redundancy":2}"#
+                        .into(),
             },
             StreamEvent::TextDelta {
                 text: "\n```".into(),
@@ -371,11 +387,13 @@ mod tests {
 
     #[tokio::test]
     async fn test_task_judge_evaluate_scores_clamped() {
-        let mut provider = MockProvider::new("eval-judge");
+        let provider = MockProvider::new("eval-judge");
         // Out-of-range values should be clamped by parse_judge_response
         provider.push_script(vec![
             StreamEvent::TextDelta {
-                text: r#"{"completeness":10,"solution_quality":0,"error_recovery":7,"redundancy":-1}"#.into(),
+                text:
+                    r#"{"completeness":10,"solution_quality":0,"error_recovery":7,"redundancy":-1}"#
+                        .into(),
             },
             StreamEvent::MessageStop {
                 stop_reason: Some("end_turn".into()),
@@ -392,7 +410,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_task_judge_evaluate_unparseable_response() {
-        let mut provider = MockProvider::new("eval-judge");
+        let provider = MockProvider::new("eval-judge");
         // Garbage response — should fail to parse
         provider.push_script(vec![
             StreamEvent::TextDelta {
@@ -407,15 +425,17 @@ mod tests {
         let result = judge.evaluate(&make_report()).await;
 
         assert!(result.is_err());
-        assert!(result
-            .unwrap_err()
-            .to_string()
-            .contains("failed to parse judge response"));
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("failed to parse judge response")
+        );
     }
 
     #[tokio::test]
     async fn test_task_judge_evaluate_empty_response() {
-        let mut provider = MockProvider::new("eval-judge");
+        let provider = MockProvider::new("eval-judge");
         // Empty response — should fail to parse
         provider.push_script(vec![StreamEvent::MessageStop {
             stop_reason: Some("end_turn".into()),
@@ -430,7 +450,7 @@ mod tests {
     #[tokio::test]
     async fn test_eval_report_with_scores_roundtrip() {
         // Full round-trip: create report → evaluate → attach scores
-        let mut provider = MockProvider::new("eval-judge");
+        let provider = MockProvider::new("eval-judge");
         provider.push_script(vec![
             StreamEvent::TextDelta {
                 text: r#"{"completeness":4,"solution_quality":5,"error_recovery":null,"redundancy":5,"rationale":"Clean execution"}"#.into(),

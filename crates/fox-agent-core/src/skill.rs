@@ -1,6 +1,6 @@
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use serde::{Deserialize, Serialize};
 
 // ── Skill source ──
 
@@ -92,47 +92,49 @@ impl Skill {
             return Err(format!("skill `{name}` file is empty"));
         }
 
-        if let Some(body) = trimmed.strip_prefix("---") {
-            if let Some(end) = body.find("\n---") {
-                let frontmatter = &body[..end];
-                let prompt = body[end + 4..].trim().to_string();
-                let fm = parse_frontmatter(frontmatter);
+        if let Some(body) = trimmed.strip_prefix("---")
+            && let Some(end) = body.find("\n---")
+        {
+            let frontmatter = &body[..end];
+            let prompt = body[end + 4..].trim().to_string();
+            let fm = parse_frontmatter(frontmatter);
 
-                let skill_name = fm.get("name").cloned().unwrap_or(name);
-                let description = fm
-                    .get("description")
-                    .cloned()
-                    .unwrap_or_else(|| skill_name.clone());
-                let allowed_tools = fm
-                    .get("allowed-tools")
-                    .map(|s| parse_list(s))
-                    .unwrap_or_default();
-                let model = fm.get("model").cloned();
-                let version = fm.get("version").cloned();
-                let disable_model_invocation = fm
-                    .get("disable-model-invocation")
-                    .map(|v| v == "true")
-                    .unwrap_or(false);
+            let skill_name = fm.get("name").cloned().unwrap_or(name);
+            let description = fm
+                .get("description")
+                .cloned()
+                .unwrap_or_else(|| skill_name.clone());
+            let allowed_tools = fm
+                .get("allowed-tools")
+                .map(|s| parse_list(s))
+                .unwrap_or_default();
+            let model = fm.get("model").cloned();
+            let version = fm.get("version").cloned();
+            let disable_model_invocation = fm
+                .get("disable-model-invocation")
+                .map(|v| v == "true")
+                .unwrap_or(false);
 
-                // Parse args block (Claude Code format: multiline "- name: ..." lines)
-                let args = parse_skill_args(&fm);
+            // Parse args block (Claude Code format: multiline "- name: ..." lines)
+            let args = parse_skill_args(&fm);
 
-                return Ok(Self {
-                    name: skill_name,
-                    description,
-                    prompt,
-                    allowed_tools,
-                    model,
-                    version,
-                    args,
-                    disable_model_invocation,
-                    base_directory: None,
-                    source: SkillSource::Project,
-                });
-            }
+            return Ok(Self {
+                name: skill_name,
+                description,
+                prompt,
+                allowed_tools,
+                model,
+                version,
+                args,
+                disable_model_invocation,
+                base_directory: None,
+                source: SkillSource::Project,
+            });
         }
 
-        Err(format!("skill `{name}`: missing YAML frontmatter. Skills must start with `---`."))
+        Err(format!(
+            "skill `{name}`: missing YAML frontmatter. Skills must start with `---`."
+        ))
     }
 
     /// Create a new skill from a markdown file on disk.
@@ -260,7 +262,11 @@ fn parse_skill_args(fm: &HashMap<String, String>) -> Vec<SkillArg> {
         if trimmed.starts_with("- name:") || trimmed.starts_with("name:") {
             // Flush previous entry
             if has_name {
-                args.push(SkillArg { name: name.clone(), description: desc.clone(), required });
+                args.push(SkillArg {
+                    name: name.clone(),
+                    description: desc.clone(),
+                    required,
+                });
             }
             let name_part = trimmed.trim_start_matches('-').trim();
             name = name_part["name:".len()..].trim().to_string();
@@ -276,7 +282,11 @@ fn parse_skill_args(fm: &HashMap<String, String>) -> Vec<SkillArg> {
 
     // Flush last entry
     if has_name {
-        args.push(SkillArg { name, description: desc, required });
+        args.push(SkillArg {
+            name,
+            description: desc,
+            required,
+        });
     }
 
     args
@@ -341,8 +351,9 @@ impl SkillRegistry {
         working_dir: Option<&Path>,
         args: &HashMap<String, String>,
     ) -> Option<Skill> {
-        self.skills.get(name).and_then(|s| {
-            match s.expand_prompt(working_dir, args) {
+        self.skills
+            .get(name)
+            .and_then(|s| match s.expand_prompt(working_dir, args) {
                 Ok(prompt) => {
                     let mut expanded = s.clone();
                     expanded.prompt = prompt;
@@ -352,8 +363,7 @@ impl SkillRegistry {
                     tracing::warn!(skill = %name, error = %e, "failed to expand skill prompt");
                     None
                 }
-            }
-        })
+            })
     }
 
     pub fn remove(&mut self, name: &str) -> Option<Skill> {
@@ -453,15 +463,16 @@ fn scan_dir_for_skills(
 
     for entry in entries.flatten() {
         let path = entry.path();
-        let file_type = entry.file_type().map_err(|e| {
-            format!("failed to read file type `{}`: {e}", path.display())
-        })?;
+        let file_type = entry
+            .file_type()
+            .map_err(|e| format!("failed to read file type `{}`: {e}", path.display()))?;
 
         if file_type.is_dir() {
             // Recursively scan subdirectories
             scan_dir_for_skills(&path, source, priority, registry, count, false)?;
         } else if path.extension().map(|e| e == "md").unwrap_or(false)
-            && let Some(stem) = path.file_stem().and_then(|s| s.to_str()) {
+            && let Some(stem) = path.file_stem().and_then(|s| s.to_str())
+        {
             match Skill::from_file(stem, &path) {
                 Ok(mut skill) => {
                     skill.source = source.clone();
@@ -547,8 +558,7 @@ mod tests {
 
     #[test]
     fn test_frontmatter_name_takes_priority() {
-        let content =
-            "---\nname: renamed-skill\ndescription: Custom desc\n---\n\nPrompt here.";
+        let content = "---\nname: renamed-skill\ndescription: Custom desc\n---\n\nPrompt here.";
         let skill = Skill::parse("filename-skill", content).unwrap();
         assert_eq!(skill.name, "renamed-skill");
         assert_eq!(skill.description, "Custom desc");
@@ -570,8 +580,7 @@ mod tests {
         let skill = Skill {
             name: "test".into(),
             description: "test".into(),
-            prompt: "Dir: {{SKILL_DIR}}, WD: {{WORKING_DIR}}, Style: {{ARGS.style}}"
-                .into(),
+            prompt: "Dir: {{SKILL_DIR}}, WD: {{WORKING_DIR}}, Style: {{ARGS.style}}".into(),
             allowed_tools: vec![],
             model: None,
             version: None,
@@ -585,9 +594,10 @@ mod tests {
             source: SkillSource::Project,
         };
 
-        let args: HashMap<String, String> =
-            [("style".into(), "compact".into())].into();
-        let expanded = skill.expand_prompt(Some(Path::new("/work")), &args).unwrap();
+        let args: HashMap<String, String> = [("style".into(), "compact".into())].into();
+        let expanded = skill
+            .expand_prompt(Some(Path::new("/work")), &args)
+            .unwrap();
         assert!(expanded.contains("/skills/test"));
         assert!(expanded.contains("/work"));
         assert!(expanded.contains("compact"));
@@ -598,8 +608,7 @@ mod tests {
         let skill = Skill {
             name: "test".into(),
             description: "test".into(),
-            prompt: "Style: {{ARGS.style}}"
-                .into(),
+            prompt: "Style: {{ARGS.style}}".into(),
             allowed_tools: vec![],
             model: None,
             version: None,
@@ -636,9 +645,7 @@ mod tests {
         std::fs::write(dir.join("note.txt"), "not a skill").unwrap();
 
         let mut registry = SkillRegistry::default();
-        let count = registry
-            .load_from_dir(&dir, SkillSource::Project)
-            .unwrap();
+        let count = registry.load_from_dir(&dir, SkillSource::Project).unwrap();
         assert_eq!(count, 2);
         {
             let pdf = registry.get("pdf").unwrap();
@@ -672,9 +679,7 @@ mod tests {
         .unwrap();
 
         let mut registry = SkillRegistry::default();
-        let count = registry
-            .load_from_dir(&dir, SkillSource::Project)
-            .unwrap();
+        let count = registry.load_from_dir(&dir, SkillSource::Project).unwrap();
         assert_eq!(count, 2);
         assert!(registry.get("root").is_some());
         assert!(registry.get("sub").is_some());

@@ -4,11 +4,12 @@
 //! a chainable, discoverable builder that provides sensible defaults.
 
 use fox_agent_core::{
-    FoxAgentSdkConfig, McpConfig, Model, PermissionDecision, PermissionRequest,
-    PermissionResult, PlanningStore, ProviderConfig, SafetyConfig, SessionStore,
-    WorkspaceSandbox, Tool, Skill,
+    FoxAgentSdkConfig, McpConfig, Model, PermissionDecision, PermissionRequest, PermissionResult,
+    PlanningStore, ProviderConfig, SafetyConfig, SessionStore, Skill, Tool, WorkspaceSandbox,
 };
-use fox_agent_providers::{AnthropicCompatibleProvider, DeepSeekProvider, OpenAiCompatibleProvider};
+use fox_agent_providers::{
+    AnthropicCompatibleProvider, DeepSeekProvider, OpenAiCompatibleProvider,
+};
 use fox_agent_swarm::SwarmCoordinator;
 use fox_agent_tools::register_default_tools_with_planning_store_and_skill_registry;
 use std::path::PathBuf;
@@ -20,19 +21,26 @@ use crate::agent::{Agent, AuditHandlerFn};
 use crate::artifact_tool::ArtifactReadTool;
 use crate::governance::GovernanceGuard;
 use crate::harness::Harness;
-use crate::mcp::{McpServerConfig, build_mcp_context_summary, connect_and_discover_tools, effective_profile};
+use crate::mcp::{
+    McpServerConfig, build_mcp_context_summary, connect_and_discover_tools, effective_profile,
+};
 use crate::swarm_runtime::SwarmRuntime;
 
 // ── Provider factory ──
 
 fn build_provider(config: ProviderConfig) -> Arc<dyn fox_agent_core::Provider> {
     match config.provider_name.as_str() {
-        "openai" => Arc::new(OpenAiCompatibleProvider::new(config)
-            .expect("failed to construct OpenAI provider")),
-        "anthropic" => Arc::new(AnthropicCompatibleProvider::new(config)
-            .expect("failed to construct Anthropic provider")),
+        "openai" => Arc::new(
+            OpenAiCompatibleProvider::new(config).expect("failed to construct OpenAI provider"),
+        ),
+        "anthropic" => Arc::new(
+            AnthropicCompatibleProvider::new(config)
+                .expect("failed to construct Anthropic provider"),
+        ),
         "deepseek" => Arc::new(DeepSeekProvider::new(config)),
-        other => panic!("unknown provider name: {other}, expected one of: openai, anthropic, deepseek"),
+        other => {
+            panic!("unknown provider name: {other}, expected one of: openai, anthropic, deepseek")
+        }
     }
 }
 
@@ -68,8 +76,7 @@ pub struct AgentBuilder {
     safety_config: Option<SafetyConfig>,
     default_tools: bool,
     tools: Vec<Arc<dyn Tool>>,
-    permission_hook:
-        Option<Arc<dyn Fn(&str, &serde_json::Value) -> PermissionResult + Send + Sync>>,
+    permission_hook: Option<crate::safety::PermissionHook>,
     /// Optional audit handler — auto-invoked on every user permission decision.
     audit_handler: Option<AuditHandlerFn>,
     system_prompt: Option<String>,
@@ -400,7 +407,8 @@ impl AgentBuilder {
             build_provider(cfg.clone())
         } else {
             return Err("provider or provider_config is required. \
-                Set FoxAgentSdkConfig.provider or call AgentBuilder::provider_config().".to_string());
+                Set FoxAgentSdkConfig.provider or call AgentBuilder::provider_config()."
+                .to_string());
         };
 
         let model_id = self
@@ -444,10 +452,7 @@ impl AgentBuilder {
         if self.default_tools {
             // Load skills: project (.claude/skills/) + global ({storage_dir}/skills/) + additional
             let working_dir = agent.harness().session_working_dir().cloned();
-            let storage_dir = resolve_storage_root_for_skills(
-                &sdk_config,
-                working_dir.as_deref(),
-            );
+            let storage_dir = resolve_storage_root_for_skills(&sdk_config, working_dir.as_deref());
             {
                 let mut reg = agent.harness().skill_registry.write().await;
                 if sdk_config.skills.enabled {
@@ -469,23 +474,23 @@ impl AgentBuilder {
             let plugins_cfg = &sdk_config.plugins;
             if plugins_cfg.enabled {
                 let mut pm = agent.harness().plugin_manager.write().await;
-                if let Ok(count) = pm.discover_installed() {
-                    if count > 0 {
-                        info!(count, "Loaded installed plugins");
-                        // Load plugin skills into registry
-                        let plugin_skills = pm.active_skills();
-                        let plugin_skills_count = plugin_skills.len();
-                        if plugin_skills_count > 0 {
-                            // Drop pm lock before acquiring skill_registry lock
-                            drop(pm);
-                            let mut reg = agent.harness().skill_registry.write().await;
-                            // Re-acquire pm to read skills
-                            let pm2 = agent.harness().plugin_manager.read().await;
-                            for skill in pm2.active_skills() {
-                                reg.insert(skill);
-                            }
-                            info!(count = plugin_skills_count, "Loaded plugin skills");
+                if let Ok(count) = pm.discover_installed()
+                    && count > 0
+                {
+                    info!(count, "Loaded installed plugins");
+                    // Load plugin skills into registry
+                    let plugin_skills = pm.active_skills();
+                    let plugin_skills_count = plugin_skills.len();
+                    if plugin_skills_count > 0 {
+                        // Drop pm lock before acquiring skill_registry lock
+                        drop(pm);
+                        let mut reg = agent.harness().skill_registry.write().await;
+                        // Re-acquire pm to read skills
+                        let pm2 = agent.harness().plugin_manager.read().await;
+                        for skill in pm2.active_skills() {
+                            reg.insert(skill);
                         }
+                        info!(count = plugin_skills_count, "Loaded plugin skills");
                     }
                 }
             }
@@ -495,11 +500,12 @@ impl AgentBuilder {
             let skill_registry = agent.harness().skill_registry.clone();
             let active_skill = agent.active_skill.clone();
             register_default_tools_with_planning_store_and_skill_registry(
-                &*agent.harness().tool_executor(),
+                agent.harness().tool_executor(),
                 planning_store,
                 Some(skill_registry),
                 Some(active_skill),
-            ).await;
+            )
+            .await;
         }
 
         if sdk_config.artifact_store.enabled {
@@ -573,11 +579,7 @@ impl AgentBuilder {
     pub async fn build_swarm_runtime(self) -> Result<SwarmRuntime, String> {
         let agent = self.build().await?;
         let coordinator = Arc::new(SwarmCoordinator::new());
-        Ok(SwarmRuntime::new(
-            coordinator,
-            agent.model.clone(),
-            agent.harness.clone(),
-        ).await)
+        Ok(SwarmRuntime::new(coordinator, agent.model.clone(), agent.harness.clone()).await)
     }
 }
 
@@ -587,10 +589,10 @@ fn resolve_storage_root_for_skills(
     cfg: &FoxAgentSdkConfig,
     working_dir: Option<&std::path::Path>,
 ) -> std::path::PathBuf {
-    if cfg.storage_dir.is_relative() {
-        if let Some(dir) = working_dir {
-            return dir.join(&cfg.storage_dir);
-        }
+    if cfg.storage_dir.is_relative()
+        && let Some(dir) = working_dir
+    {
+        return dir.join(&cfg.storage_dir);
     }
     cfg.storage_dir.clone()
 }
@@ -709,10 +711,6 @@ impl SwarmRuntimeBuilder {
             .unwrap_or_else(|| Arc::new(SwarmCoordinator::new()));
 
         let agent = self.inner.build().await?;
-        Ok(SwarmRuntime::new(
-            coordinator,
-            agent.model.clone(),
-            agent.harness.clone(),
-        ).await)
+        Ok(SwarmRuntime::new(coordinator, agent.model.clone(), agent.harness.clone()).await)
     }
 }

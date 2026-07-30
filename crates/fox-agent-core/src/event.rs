@@ -213,16 +213,32 @@ pub enum AgentEvent {
     /// Token usage statistics from the provider
     ModelUsage { usage: TokenUsage },
     /// A tool call has been initiated by the model
-    ToolCallStart { call_id: String, name: String, input: Value },
+    ToolCallStart {
+        call_id: String,
+        name: String,
+        input: Value,
+    },
     /// A partial chunk of a tool call's input JSON, streamed while the model is
     /// still generating the arguments. Enables the UI to show progress like
     /// "generating edit repository.rs…" for large write/edit inputs. Purely
     /// informational; the executable call arrives as `ToolCallStart`.
-    ToolInputDelta { index: usize, call_id: Option<String>, tool_name: Option<String>, delta: String },
+    ToolInputDelta {
+        index: usize,
+        call_id: Option<String>,
+        tool_name: Option<String>,
+        delta: String,
+    },
     /// A tool call completed (contains the tool output)
     ToolCallEnd { call_id: String, output: ToolOutput },
     /// Agent needs user permission before executing a tool
-    PermissionRequest { request_id: String, tool_name: String, prompt: String, risk_level: String, policy_source: String, tool_summary: String },
+    PermissionRequest {
+        request_id: String,
+        tool_name: String,
+        prompt: String,
+        risk_level: String,
+        policy_source: String,
+        tool_summary: String,
+    },
     /// A compaction event occurred
     Compaction { event: CompactionEvent },
     /// Memory injection state changed
@@ -236,11 +252,18 @@ pub enum AgentEvent {
     /// An MCP server connected successfully
     McpServerConnected { server_name: String },
     /// An MCP server disconnected
-    McpServerDisconnected { server_name: String, error: Option<String> },
+    McpServerDisconnected {
+        server_name: String,
+        error: Option<String>,
+    },
     /// Tool is still executing (periodic heartbeat for progress UI).
     /// Emitted every 3s after the first 5s of tool execution. Purely
     /// informational; the TUI can use this to show elapsed time.
-    ToolExecutionProgress { call_id: String, tool_name: String, elapsed_secs: u64 },
+    ToolExecutionProgress {
+        call_id: String,
+        tool_name: String,
+        elapsed_secs: u64,
+    },
     /// A large tool result was externalized into the artifact store.
     ArtifactStored {
         artifact_id: String,
@@ -280,7 +303,11 @@ pub enum AgentEvent {
     },
     /// Plan progress updated. Emitted when the plan tool detects a change
     /// in completed/total ratios. Enables TUI to show overall progress.
-    PlanProgress { completed: usize, total: usize, current_item: Option<String> },
+    PlanProgress {
+        completed: usize,
+        total: usize,
+        current_item: Option<String>,
+    },
     /// A sub-agent task was dispatched (Phase 3).
     SubagentTaskStarted {
         task_id: String,
@@ -346,25 +373,82 @@ pub struct EventEnvelope {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum EnvelopePayload {
-    TurnStart { turn_id: u64 },
-    TurnEnd { turn_id: u64, outcome: String },
-    ModelMessageStart { message_id: String },
-    ModelTextDelta { text: String },
-    ModelThinkingDelta { text: String },
-    ModelMessageEnd { message_id: String },
-    WaitingForModel { elapsed_secs: u64 },
-    ModelUsage { usage: TokenUsage },
-    ToolCallStart { call_id: String, name: String, input: Value },
-    ToolInputDelta { index: usize, call_id: Option<String>, tool_name: Option<String>, delta: String },
-    ToolCallEnd { call_id: String, output: ToolOutput },
-    PermissionRequest { request_id: String, tool_name: String, prompt: String, risk_level: String, policy_source: String, tool_summary: String },
-    Compaction { removed_messages: u64, kept_messages: u64, summary_chars: u64 },
-    MemoryStateChanged { event: MemoryStateEvent },
-    MemoryInjected { count: u32, memory_ids: Vec<String> },
-    SoftInterruptInjected { content: String, urgent: bool },
-    McpServerConnected { server_name: String },
-    McpServerDisconnected { server_name: String, error: Option<String> },
-    ToolExecutionProgress { call_id: String, tool_name: String, elapsed_secs: u64 },
+    TurnStart {
+        turn_id: u64,
+    },
+    TurnEnd {
+        turn_id: u64,
+        outcome: String,
+    },
+    ModelMessageStart {
+        message_id: String,
+    },
+    ModelTextDelta {
+        text: String,
+    },
+    ModelThinkingDelta {
+        text: String,
+    },
+    ModelMessageEnd {
+        message_id: String,
+    },
+    WaitingForModel {
+        elapsed_secs: u64,
+    },
+    ModelUsage {
+        usage: TokenUsage,
+    },
+    ToolCallStart {
+        call_id: String,
+        name: String,
+        input: Value,
+    },
+    ToolInputDelta {
+        index: usize,
+        call_id: Option<String>,
+        tool_name: Option<String>,
+        delta: String,
+    },
+    ToolCallEnd {
+        call_id: String,
+        output: ToolOutput,
+    },
+    PermissionRequest {
+        request_id: String,
+        tool_name: String,
+        prompt: String,
+        risk_level: String,
+        policy_source: String,
+        tool_summary: String,
+    },
+    Compaction {
+        removed_messages: u64,
+        kept_messages: u64,
+        summary_chars: u64,
+    },
+    MemoryStateChanged {
+        event: MemoryStateEvent,
+    },
+    MemoryInjected {
+        count: u32,
+        memory_ids: Vec<String>,
+    },
+    SoftInterruptInjected {
+        content: String,
+        urgent: bool,
+    },
+    McpServerConnected {
+        server_name: String,
+    },
+    McpServerDisconnected {
+        server_name: String,
+        error: Option<String>,
+    },
+    ToolExecutionProgress {
+        call_id: String,
+        tool_name: String,
+        elapsed_secs: u64,
+    },
     ArtifactStored {
         artifact_id: String,
         tool_name: String,
@@ -391,12 +475,45 @@ pub enum EnvelopePayload {
         transport: Option<String>,
         original_tool_name: Option<String>,
     },
-    ArtifactGc { scope: String, deleted: u64, kept: u64, bytes_freed: u64, session_quota_evictions: u64, store_quota_evictions: u64 },
-    PlanProgress { completed: usize, total: usize, current_item: Option<String> },
-    SubagentTaskStarted { task_id: String, objective: String, max_turns: u32 },
-    SubagentTaskCompleted { task_id: String, outcome: String, findings_count: u32, evidence_count: u32, turns_used: u32, elapsed_secs: u64, summary_text: String },
-    RoutingDecision { tool_name: String, call_id: String, routing: ToolResultRouting, context_pressure: f64, output_size: usize, reason: Option<String> },
-    Error { kind: String, message: String },
+    ArtifactGc {
+        scope: String,
+        deleted: u64,
+        kept: u64,
+        bytes_freed: u64,
+        session_quota_evictions: u64,
+        store_quota_evictions: u64,
+    },
+    PlanProgress {
+        completed: usize,
+        total: usize,
+        current_item: Option<String>,
+    },
+    SubagentTaskStarted {
+        task_id: String,
+        objective: String,
+        max_turns: u32,
+    },
+    SubagentTaskCompleted {
+        task_id: String,
+        outcome: String,
+        findings_count: u32,
+        evidence_count: u32,
+        turns_used: u32,
+        elapsed_secs: u64,
+        summary_text: String,
+    },
+    RoutingDecision {
+        tool_name: String,
+        call_id: String,
+        routing: ToolResultRouting,
+        context_pressure: f64,
+        output_size: usize,
+        reason: Option<String>,
+    },
+    Error {
+        kind: String,
+        message: String,
+    },
 }
 
 impl EventEnvelope {
@@ -450,12 +567,12 @@ impl From<&AgentEvent> for EnvelopePayload {
             AgentEvent::ModelMessageStart { message_id } => EnvelopePayload::ModelMessageStart {
                 message_id: message_id.clone(),
             },
-            AgentEvent::ModelTextDelta { text } => EnvelopePayload::ModelTextDelta {
-                text: text.clone(),
-            },
-            AgentEvent::ModelThinkingDelta { text } => EnvelopePayload::ModelThinkingDelta {
-                text: text.clone(),
-            },
+            AgentEvent::ModelTextDelta { text } => {
+                EnvelopePayload::ModelTextDelta { text: text.clone() }
+            }
+            AgentEvent::ModelThinkingDelta { text } => {
+                EnvelopePayload::ModelThinkingDelta { text: text.clone() }
+            }
             AgentEvent::ModelMessageEnd { message_id } => EnvelopePayload::ModelMessageEnd {
                 message_id: message_id.clone(),
             },
@@ -465,12 +582,21 @@ impl From<&AgentEvent> for EnvelopePayload {
             AgentEvent::ModelUsage { usage } => EnvelopePayload::ModelUsage {
                 usage: usage.clone(),
             },
-            AgentEvent::ToolCallStart { call_id, name, input } => EnvelopePayload::ToolCallStart {
+            AgentEvent::ToolCallStart {
+                call_id,
+                name,
+                input,
+            } => EnvelopePayload::ToolCallStart {
                 call_id: call_id.clone(),
                 name: name.clone(),
                 input: input.clone(),
             },
-            AgentEvent::ToolInputDelta { index, call_id, tool_name, delta } => EnvelopePayload::ToolInputDelta {
+            AgentEvent::ToolInputDelta {
+                index,
+                call_id,
+                tool_name,
+                delta,
+            } => EnvelopePayload::ToolInputDelta {
                 index: *index,
                 call_id: call_id.clone(),
                 tool_name: tool_name.clone(),
@@ -480,16 +606,21 @@ impl From<&AgentEvent> for EnvelopePayload {
                 call_id: call_id.clone(),
                 output: output.clone(),
             },
-            AgentEvent::PermissionRequest { request_id, tool_name, prompt, risk_level, policy_source, tool_summary } => {
-                EnvelopePayload::PermissionRequest {
-                    request_id: request_id.clone(),
-                    tool_name: tool_name.clone(),
-                    prompt: prompt.clone(),
-                    risk_level: risk_level.clone(),
-                    policy_source: policy_source.clone(),
-                    tool_summary: tool_summary.clone(),
-                }
-            }
+            AgentEvent::PermissionRequest {
+                request_id,
+                tool_name,
+                prompt,
+                risk_level,
+                policy_source,
+                tool_summary,
+            } => EnvelopePayload::PermissionRequest {
+                request_id: request_id.clone(),
+                tool_name: tool_name.clone(),
+                prompt: prompt.clone(),
+                risk_level: risk_level.clone(),
+                policy_source: policy_source.clone(),
+                tool_summary: tool_summary.clone(),
+            },
             AgentEvent::Compaction { event } => EnvelopePayload::Compaction {
                 removed_messages: event.removed_messages as u64,
                 kept_messages: event.kept_messages as u64,
@@ -508,22 +639,24 @@ impl From<&AgentEvent> for EnvelopePayload {
                     urgent: interrupt.urgent,
                 }
             }
-            AgentEvent::McpServerConnected { server_name } => {
-                EnvelopePayload::McpServerConnected { server_name: server_name.clone() }
-            }
+            AgentEvent::McpServerConnected { server_name } => EnvelopePayload::McpServerConnected {
+                server_name: server_name.clone(),
+            },
             AgentEvent::McpServerDisconnected { server_name, error } => {
                 EnvelopePayload::McpServerDisconnected {
                     server_name: server_name.clone(),
                     error: error.clone(),
                 }
             }
-            AgentEvent::ToolExecutionProgress { call_id, tool_name, elapsed_secs } => {
-                EnvelopePayload::ToolExecutionProgress {
-                    call_id: call_id.clone(),
-                    tool_name: tool_name.clone(),
-                    elapsed_secs: *elapsed_secs,
-                }
-            }
+            AgentEvent::ToolExecutionProgress {
+                call_id,
+                tool_name,
+                elapsed_secs,
+            } => EnvelopePayload::ToolExecutionProgress {
+                call_id: call_id.clone(),
+                tool_name: tool_name.clone(),
+                elapsed_secs: *elapsed_secs,
+            },
             AgentEvent::ArtifactStored {
                 artifact_id,
                 tool_name,
@@ -536,21 +669,19 @@ impl From<&AgentEvent> for EnvelopePayload {
                 transport,
                 original_tool_name,
                 externalized_reason,
-            } => {
-                EnvelopePayload::ArtifactStored {
-                    artifact_id: artifact_id.clone(),
-                    tool_name: tool_name.clone(),
-                    call_id: call_id.clone(),
-                    size_bytes: *size_bytes,
-                    artifact_type: artifact_type.clone(),
-                    retention_class: retention_class.clone(),
-                    server_name: server_name.clone(),
-                    server_kind: server_kind.clone(),
-                    transport: transport.clone(),
-                    original_tool_name: original_tool_name.clone(),
-                    externalized_reason: externalized_reason.clone(),
-                }
-            }
+            } => EnvelopePayload::ArtifactStored {
+                artifact_id: artifact_id.clone(),
+                tool_name: tool_name.clone(),
+                call_id: call_id.clone(),
+                size_bytes: *size_bytes,
+                artifact_type: artifact_type.clone(),
+                retention_class: retention_class.clone(),
+                server_name: server_name.clone(),
+                server_kind: server_kind.clone(),
+                transport: transport.clone(),
+                original_tool_name: original_tool_name.clone(),
+                externalized_reason: externalized_reason.clone(),
+            },
             AgentEvent::ArtifactRead {
                 artifact_id,
                 tool_name,
@@ -563,21 +694,19 @@ impl From<&AgentEvent> for EnvelopePayload {
                 server_kind,
                 transport,
                 original_tool_name,
-            } => {
-                EnvelopePayload::ArtifactRead {
-                    artifact_id: artifact_id.clone(),
-                    tool_name: tool_name.clone(),
-                    returned_chars: *returned_chars,
-                    offset_chars: *offset_chars,
-                    limit_chars: *limit_chars,
-                    source_tool_name: source_tool_name.clone(),
-                    artifact_type: artifact_type.clone(),
-                    server_name: server_name.clone(),
-                    server_kind: server_kind.clone(),
-                    transport: transport.clone(),
-                    original_tool_name: original_tool_name.clone(),
-                }
-            }
+            } => EnvelopePayload::ArtifactRead {
+                artifact_id: artifact_id.clone(),
+                tool_name: tool_name.clone(),
+                returned_chars: *returned_chars,
+                offset_chars: *offset_chars,
+                limit_chars: *limit_chars,
+                source_tool_name: source_tool_name.clone(),
+                artifact_type: artifact_type.clone(),
+                server_name: server_name.clone(),
+                server_kind: server_kind.clone(),
+                transport: transport.clone(),
+                original_tool_name: original_tool_name.clone(),
+            },
             AgentEvent::ArtifactGc {
                 scope,
                 deleted,
@@ -585,51 +714,64 @@ impl From<&AgentEvent> for EnvelopePayload {
                 bytes_freed,
                 session_quota_evictions,
                 store_quota_evictions,
-            } => {
-                EnvelopePayload::ArtifactGc {
-                    scope: scope.clone(),
-                    deleted: *deleted,
-                    kept: *kept,
-                    bytes_freed: *bytes_freed,
-                    session_quota_evictions: *session_quota_evictions,
-                    store_quota_evictions: *store_quota_evictions,
-                }
-            }
-            AgentEvent::PlanProgress { completed, total, current_item } => {
-                EnvelopePayload::PlanProgress {
-                    completed: *completed,
-                    total: *total,
-                    current_item: current_item.clone(),
-                }
-            }
-            AgentEvent::SubagentTaskStarted { task_id, objective, max_turns } => {
-                EnvelopePayload::SubagentTaskStarted {
-                    task_id: task_id.clone(),
-                    objective: objective.clone(),
-                    max_turns: *max_turns,
-                }
-            }
-            AgentEvent::SubagentTaskCompleted { task_id, outcome, findings_count, evidence_count, turns_used, elapsed_secs, summary_text } => {
-                EnvelopePayload::SubagentTaskCompleted {
-                    task_id: task_id.clone(),
-                    outcome: outcome.clone(),
-                    findings_count: *findings_count,
-                    evidence_count: *evidence_count,
-                    turns_used: *turns_used,
-                    elapsed_secs: *elapsed_secs,
-                    summary_text: summary_text.clone(),
-                }
-            }
-            AgentEvent::RoutingDecision { tool_name, call_id, routing, context_pressure, output_size, reason } => {
-                EnvelopePayload::RoutingDecision {
-                    tool_name: tool_name.clone(),
-                    call_id: call_id.clone(),
-                    routing: *routing,
-                    context_pressure: *context_pressure,
-                    output_size: *output_size,
-                    reason: reason.clone(),
-                }
-            }
+            } => EnvelopePayload::ArtifactGc {
+                scope: scope.clone(),
+                deleted: *deleted,
+                kept: *kept,
+                bytes_freed: *bytes_freed,
+                session_quota_evictions: *session_quota_evictions,
+                store_quota_evictions: *store_quota_evictions,
+            },
+            AgentEvent::PlanProgress {
+                completed,
+                total,
+                current_item,
+            } => EnvelopePayload::PlanProgress {
+                completed: *completed,
+                total: *total,
+                current_item: current_item.clone(),
+            },
+            AgentEvent::SubagentTaskStarted {
+                task_id,
+                objective,
+                max_turns,
+            } => EnvelopePayload::SubagentTaskStarted {
+                task_id: task_id.clone(),
+                objective: objective.clone(),
+                max_turns: *max_turns,
+            },
+            AgentEvent::SubagentTaskCompleted {
+                task_id,
+                outcome,
+                findings_count,
+                evidence_count,
+                turns_used,
+                elapsed_secs,
+                summary_text,
+            } => EnvelopePayload::SubagentTaskCompleted {
+                task_id: task_id.clone(),
+                outcome: outcome.clone(),
+                findings_count: *findings_count,
+                evidence_count: *evidence_count,
+                turns_used: *turns_used,
+                elapsed_secs: *elapsed_secs,
+                summary_text: summary_text.clone(),
+            },
+            AgentEvent::RoutingDecision {
+                tool_name,
+                call_id,
+                routing,
+                context_pressure,
+                output_size,
+                reason,
+            } => EnvelopePayload::RoutingDecision {
+                tool_name: tool_name.clone(),
+                call_id: call_id.clone(),
+                routing: *routing,
+                context_pressure: *context_pressure,
+                output_size: *output_size,
+                reason: reason.clone(),
+            },
             AgentEvent::Error { error } => EnvelopePayload::Error {
                 kind: format!("{:?}", error.kind()),
                 message: error.to_string(),
@@ -684,6 +826,10 @@ pub struct ApprovalCacheConfig {
 
 impl Default for ApprovalCacheConfig {
     fn default() -> Self {
-        Self { enabled: true, ttl_secs: 3600, max_entries: 100 }
+        Self {
+            enabled: true,
+            ttl_secs: 3600,
+            max_entries: 100,
+        }
     }
 }

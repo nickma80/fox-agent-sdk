@@ -15,6 +15,12 @@ impl ReadTool {
     }
 }
 
+impl Default for ReadTool {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 #[derive(Deserialize)]
 struct ReadInput {
     file_path: String,
@@ -302,11 +308,11 @@ fn is_binary_file(path: &Path) -> bool {
     use std::io::Read;
     if let Ok(mut file) = std::fs::File::open(path) {
         let mut buf = [0u8; 8192];
-        if let Ok(n) = file.read(&mut buf) {
-            if n > 0 {
-                let null_count = buf[..n].iter().filter(|&&b| b == 0).count();
-                return null_count > n / 10;
-            }
+        if let Ok(n) = file.read(&mut buf)
+            && n > 0
+        {
+            let null_count = buf[..n].iter().filter(|&&b| b == 0).count();
+            return null_count > n / 10;
         }
     }
 
@@ -387,10 +393,7 @@ fn handle_image_file(path: &Path, file_path: &str) -> Result<ToolOutput, ToolErr
 
     const MAX_IMAGE_SIZE: u64 = 20 * 1024 * 1024;
     let (output_text, json_data) = if file_size <= MAX_IMAGE_SIZE {
-        let b64 = base64::Engine::encode(
-            &base64::engine::general_purpose::STANDARD,
-            &data,
-        );
+        let b64 = base64::Engine::encode(&base64::engine::general_purpose::STANDARD, &data);
         (
             format!(
                 "Image: {} ({})\nDimensions: {}\nImage sent to model for vision analysis.",

@@ -129,7 +129,8 @@ mod tests {
 
     #[tokio::test]
     async fn file_artifact_store_roundtrip_put_get_delete() {
-        let root = std::env::temp_dir().join(format!("fox-artifact-store-{}", uuid::Uuid::new_v4()));
+        let root =
+            std::env::temp_dir().join(format!("fox-artifact-store-{}", uuid::Uuid::new_v4()));
         let mut cfg = ArtifactStoreConfig::default();
         cfg.enabled = true;
         cfg.max_artifact_bytes = 4096;
@@ -137,14 +138,20 @@ mod tests {
 
         let store = FileArtifactStore::new(cfg, root.join("artifacts"));
 
-        let record = store.put_text(
-            "s1",
-            ArtifactProducer::Tool { tool_name: "read".to_string() },
-            ArtifactType::FileChunk,
-            ArtifactRetentionClass::Ephemeral,
-            "hello".to_string(),
-            serde_json::json!({"k":"v"}),
-        ).await.unwrap().record;
+        let record = store
+            .put_text(
+                "s1",
+                ArtifactProducer::Tool {
+                    tool_name: "read".to_string(),
+                },
+                ArtifactType::FileChunk,
+                ArtifactRetentionClass::Ephemeral,
+                "hello".to_string(),
+                serde_json::json!({"k":"v"}),
+            )
+            .await
+            .unwrap()
+            .record;
 
         let loaded = store.get_text(&record.artifact_id).await.unwrap().unwrap();
         assert_eq!(loaded, "hello");
@@ -162,7 +169,8 @@ mod tests {
 
     #[tokio::test]
     async fn file_artifact_store_enforces_session_quota() {
-        let root = std::env::temp_dir().join(format!("fox-artifact-store-quota-{}", uuid::Uuid::new_v4()));
+        let root =
+            std::env::temp_dir().join(format!("fox-artifact-store-quota-{}", uuid::Uuid::new_v4()));
         let mut cfg = ArtifactStoreConfig::default();
         cfg.enabled = true;
         cfg.max_artifact_bytes = 4096;
@@ -171,32 +179,50 @@ mod tests {
 
         let store = FileArtifactStore::new(cfg, root.join("artifacts"));
 
-        let first = store.put_text(
-            "s1",
-            ArtifactProducer::Tool { tool_name: "read".to_string() },
-            ArtifactType::FileChunk,
-            ArtifactRetentionClass::Ephemeral,
-            "12345".to_string(),
-            serde_json::json!({}),
-        ).await.unwrap().record;
+        let first = store
+            .put_text(
+                "s1",
+                ArtifactProducer::Tool {
+                    tool_name: "read".to_string(),
+                },
+                ArtifactType::FileChunk,
+                ArtifactRetentionClass::Ephemeral,
+                "12345".to_string(),
+                serde_json::json!({}),
+            )
+            .await
+            .unwrap()
+            .record;
 
-        let second = store.put_text(
-            "s1",
-            ArtifactProducer::Tool { tool_name: "grep".to_string() },
-            ArtifactType::SearchResults,
-            ArtifactRetentionClass::Ephemeral,
-            "67890".to_string(),
-            serde_json::json!({}),
-        ).await.unwrap().record;
+        let second = store
+            .put_text(
+                "s1",
+                ArtifactProducer::Tool {
+                    tool_name: "grep".to_string(),
+                },
+                ArtifactType::SearchResults,
+                ArtifactRetentionClass::Ephemeral,
+                "67890".to_string(),
+                serde_json::json!({}),
+            )
+            .await
+            .unwrap()
+            .record;
 
-        let third = store.put_text(
-            "s1",
-            ArtifactProducer::Tool { tool_name: "web_fetch".to_string() },
-            ArtifactType::WebPage,
-            ArtifactRetentionClass::Ephemeral,
-            "abcde".to_string(),
-            serde_json::json!({}),
-        ).await.unwrap().record;
+        let third = store
+            .put_text(
+                "s1",
+                ArtifactProducer::Tool {
+                    tool_name: "web_fetch".to_string(),
+                },
+                ArtifactType::WebPage,
+                ArtifactRetentionClass::Ephemeral,
+                "abcde".to_string(),
+                serde_json::json!({}),
+            )
+            .await
+            .unwrap()
+            .record;
 
         let listed = store.list_by_session("s1").await.unwrap();
         assert_eq!(listed.len(), 2);
@@ -217,7 +243,11 @@ pub struct FileArtifactStore {
 
 impl FileArtifactStore {
     pub fn new(cfg: ArtifactStoreConfig, root: PathBuf) -> Self {
-        Self { cfg, root, lock: Arc::new(RwLock::new(())) }
+        Self {
+            cfg,
+            root,
+            lock: Arc::new(RwLock::new(())),
+        }
     }
 
     fn records_dir(&self) -> PathBuf {
@@ -259,24 +289,39 @@ impl FileArtifactStore {
         let content = match tokio::fs::read_to_string(&path).await {
             Ok(c) => c,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
-            Err(e) => return Err(format!("failed to read session artifact index {}: {e}", path.display())),
+            Err(e) => {
+                return Err(format!(
+                    "failed to read session artifact index {}: {e}",
+                    path.display()
+                ));
+            }
         };
-        serde_json::from_str(&content)
-            .map_err(|e| format!("failed to parse session artifact index {}: {e}", path.display()))
+        serde_json::from_str(&content).map_err(|e| {
+            format!(
+                "failed to parse session artifact index {}: {e}",
+                path.display()
+            )
+        })
     }
 
     async fn write_index(&self, session_id: &str, ids: &[String]) -> Result<(), String> {
         let path = self.session_index_path(session_id);
         if let Some(parent) = path.parent() {
-            tokio::fs::create_dir_all(parent)
-                .await
-                .map_err(|e| format!("failed to create session artifact dir {}: {e}", parent.display()))?;
+            tokio::fs::create_dir_all(parent).await.map_err(|e| {
+                format!(
+                    "failed to create session artifact dir {}: {e}",
+                    parent.display()
+                )
+            })?;
         }
         let payload = serde_json::to_string_pretty(ids)
             .map_err(|e| format!("failed to serialize session artifact index: {e}"))?;
-        tokio::fs::write(&path, payload)
-            .await
-            .map_err(|e| format!("failed to write session artifact index {}: {e}", path.display()))
+        tokio::fs::write(&path, payload).await.map_err(|e| {
+            format!(
+                "failed to write session artifact index {}: {e}",
+                path.display()
+            )
+        })
     }
 
     fn compute_hash(text: &str) -> String {
@@ -296,10 +341,10 @@ impl FileArtifactStore {
             .get("ttl_hours_override")
             .and_then(|v| v.as_u64())
             .unwrap_or(match class {
-            ArtifactRetentionClass::Ephemeral => self.cfg.ephemeral_ttl_hours,
-            ArtifactRetentionClass::Referenced => self.cfg.referenced_ttl_hours,
-            ArtifactRetentionClass::Pinned => self.cfg.pinned_ttl_hours,
-        });
+                ArtifactRetentionClass::Ephemeral => self.cfg.ephemeral_ttl_hours,
+                ArtifactRetentionClass::Referenced => self.cfg.referenced_ttl_hours,
+                ArtifactRetentionClass::Pinned => self.cfg.pinned_ttl_hours,
+            });
         if hours == 0 {
             None
         } else {
@@ -321,7 +366,12 @@ impl FileArtifactStore {
         let content = match tokio::fs::read_to_string(&path).await {
             Ok(c) => c,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-            Err(e) => return Err(format!("failed to read artifact record {}: {e}", path.display())),
+            Err(e) => {
+                return Err(format!(
+                    "failed to read artifact record {}: {e}",
+                    path.display()
+                ));
+            }
         };
         let record: ArtifactRecord = serde_json::from_str(&content)
             .map_err(|e| format!("failed to parse artifact record {}: {e}", path.display()))?;
@@ -341,14 +391,27 @@ impl FileArtifactStore {
         let mut rd = match tokio::fs::read_dir(&dir).await {
             Ok(r) => r,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
-            Err(e) => return Err(format!("failed to read artifact sessions dir {}: {e}", dir.display())),
+            Err(e) => {
+                return Err(format!(
+                    "failed to read artifact sessions dir {}: {e}",
+                    dir.display()
+                ));
+            }
         };
         let mut ids = Vec::new();
-        while let Some(entry) = rd.next_entry().await.map_err(|e| format!("failed to iterate artifact sessions dir: {e}"))? {
-            if entry.file_type().await.map_err(|e| format!("failed to stat artifact sessions entry: {e}"))?.is_dir() {
-                if let Some(name) = entry.file_name().to_str() {
-                    ids.push(name.to_string());
-                }
+        while let Some(entry) = rd
+            .next_entry()
+            .await
+            .map_err(|e| format!("failed to iterate artifact sessions dir: {e}"))?
+        {
+            if entry
+                .file_type()
+                .await
+                .map_err(|e| format!("failed to stat artifact sessions entry: {e}"))?
+                .is_dir()
+                && let Some(name) = entry.file_name().to_str()
+            {
+                ids.push(name.to_string());
             }
         }
         Ok(ids)
@@ -385,10 +448,7 @@ impl FileArtifactStore {
         (class_rank, record.last_access_at, record.ref_count)
     }
 
-    async fn enforce_session_quota_unlocked(
-        &self,
-        session_id: &str,
-    ) -> Result<(u64, u64), String> {
+    async fn enforce_session_quota_unlocked(&self, session_id: &str) -> Result<(u64, u64), String> {
         if self.cfg.max_session_bytes == 0 {
             return Ok((0, 0));
         }
@@ -517,7 +577,7 @@ impl ArtifactStore for FileArtifactStore {
         if !self.cfg.enabled {
             return Err("artifact store is disabled".to_string());
         }
-        if (text.as_bytes().len() as u64) > self.cfg.max_artifact_bytes {
+        if (text.len() as u64) > self.cfg.max_artifact_bytes {
             return Err("artifact exceeds max_artifact_bytes".to_string());
         }
 
@@ -529,13 +589,21 @@ impl ArtifactStore for FileArtifactStore {
         let content_hash = Self::compute_hash(&text);
         let payload_path = self.payload_path(&artifact_id);
 
-        tokio::fs::write(&payload_path, text)
-            .await
-            .map_err(|e| format!("failed to write artifact payload {}: {e}", payload_path.display()))?;
+        tokio::fs::write(&payload_path, text).await.map_err(|e| {
+            format!(
+                "failed to write artifact payload {}: {e}",
+                payload_path.display()
+            )
+        })?;
 
         let size_bytes = tokio::fs::metadata(&payload_path)
             .await
-            .map_err(|e| format!("failed to stat artifact payload {}: {e}", payload_path.display()))?
+            .map_err(|e| {
+                format!(
+                    "failed to stat artifact payload {}: {e}",
+                    payload_path.display()
+                )
+            })?
             .len();
 
         let record = ArtifactRecord {
@@ -555,7 +623,9 @@ impl ArtifactStore for FileArtifactStore {
 
         if self.cfg.deduplicate_by_content_hash {
             let existing = self.list_by_session(session_id).await?;
-            if let Some(hit) = existing.into_iter().find(|r| r.content_hash == record.content_hash && r.size_bytes == record.size_bytes) {
+            if let Some(hit) = existing.into_iter().find(|r| {
+                r.content_hash == record.content_hash && r.size_bytes == record.size_bytes
+            }) {
                 Self::remove_file_if_exists(&record.storage_path).await?;
                 return Ok(ArtifactPutResult {
                     record: hit,
@@ -597,7 +667,12 @@ impl ArtifactStore for FileArtifactStore {
         let content = match tokio::fs::read_to_string(&record.storage_path).await {
             Ok(c) => c,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-            Err(e) => return Err(format!("failed to read artifact payload {}: {e}", record.storage_path.display())),
+            Err(e) => {
+                return Err(format!(
+                    "failed to read artifact payload {}: {e}",
+                    record.storage_path.display()
+                ));
+            }
         };
         Ok(Some(content))
     }
@@ -629,9 +704,11 @@ impl ArtifactStore for FileArtifactStore {
 
     async fn stats_by_type(&self, session_id: &str) -> Result<ArtifactTypeStats, String> {
         let records = self.list_by_session(session_id).await?;
-        let mut stats = ArtifactTypeStats::default();
-        stats.total_count = records.len() as u64;
-        stats.total_bytes = records.iter().map(|r| r.size_bytes).sum();
+        let mut stats = ArtifactTypeStats {
+            total_count: records.len() as u64,
+            total_bytes: records.iter().map(|r| r.size_bytes).sum(),
+            ..Default::default()
+        };
         for record in &records {
             let type_key = format!("{:?}", record.artifact_type);
             let entry = stats.by_type.entry(type_key).or_default();
