@@ -568,7 +568,6 @@ pub(crate) fn message_chars(messages: &[Message]) -> usize {
 // ── Compaction artifact detection ──
 
 /// Whether a message is the leading "Conversation summary:" System block.
-#[expect(dead_code)]
 fn is_summary_block(m: &Message) -> bool {
     m.role == Role::System
         && m.content.first().is_some_and(|b| {

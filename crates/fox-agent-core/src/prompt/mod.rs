@@ -449,39 +449,37 @@ impl PromptBuilder {
     fn cpu_model() -> Option<String> {
         #[cfg(target_os = "linux")]
         {
-            return {
-                let info = std::fs::read_to_string("/proc/cpuinfo").ok()?;
-                info.lines().find_map(|line| {
-                    let (_, value) = line.split_once(':')?;
-                    if line.trim_start().starts_with("model name") {
-                        let v = value.trim();
-                        if v.is_empty() {
-                            None
-                        } else {
-                            Some(v.to_string())
-                        }
-                    } else {
+            let info = std::fs::read_to_string("/proc/cpuinfo").ok()?;
+            info.lines().find_map(|line| {
+                let (_, value) = line.split_once(':')?;
+                if line.trim_start().starts_with("model name") {
+                    let v = value.trim();
+                    if v.is_empty() {
                         None
+                    } else {
+                        Some(v.to_string())
                     }
-                })
-            };
+                } else {
+                    None
+                }
+            })
         }
+        #[cfg(not(target_os = "linux"))]
         None
     }
 
     fn memory_total() -> Option<String> {
         #[cfg(target_os = "linux")]
         {
-            return {
-                let info = std::fs::read_to_string("/proc/meminfo").ok()?;
-                let kb = info.lines().find_map(|line| {
-                    let rest = line.strip_prefix("MemTotal:")?.trim();
-                    rest.split_whitespace().next()?.parse::<u64>().ok()
-                })?;
-                let gib = kb as f64 / 1024.0 / 1024.0;
-                Some(format!("{:.1} GiB", gib))
-            };
+            let info = std::fs::read_to_string("/proc/meminfo").ok()?;
+            let kb = info.lines().find_map(|line| {
+                let rest = line.strip_prefix("MemTotal:")?.trim();
+                rest.split_whitespace().next()?.parse::<u64>().ok()
+            })?;
+            let gib = kb as f64 / 1024.0 / 1024.0;
+            Some(format!("{:.1} GiB", gib))
         }
+        #[cfg(not(target_os = "linux"))]
         None
     }
 
