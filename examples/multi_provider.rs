@@ -28,7 +28,7 @@ async fn main() {
     let cfg = FoxAgentSdkConfig::load_from_file(project_root.join("agent.toml"))
         .unwrap_or_else(|_| FoxAgentSdkConfig::default());
 
-    let mut agent = AgentBuilder::new()
+    let agent = AgentBuilder::new()
         .working_dir(&project_root)
         .sdk_config(cfg)
         .with_global_agents_md_path(project_root.join("AGENTS.md"))
