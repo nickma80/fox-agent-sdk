@@ -186,6 +186,78 @@ pub enum ErrorKind {
     Mcp,
 }
 
+// ── Turn summary ──
+
+/// Deterministically extracted, human-readable summary of an agent turn.
+///
+/// Produced by the SDK at turn end (no LLM calls) and emitted as
+/// `AgentEvent::TurnSummary` so the application layer (e.g. fox-code) can
+/// render a "how was the goal accomplished" panel instead of a raw
+/// tool-call histogram. All fields are best-effort extracts from the
+/// turn's message history.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct TurnSummary {
+    /// The turn this summary covers.
+    pub turn_id: u64,
+    /// The user's request that started this turn (truncated).
+    pub user_intent: String,
+    /// Files created or modified during this turn (write/edit tools), deduplicated.
+    pub files_modified: Vec<String>,
+    /// Files read during this turn (read/glob/grep/ls), deduplicated and capped.
+    pub files_read: Vec<String>,
+    /// Key actions taken (non-read tools), capped.
+    pub actions: Vec<String>,
+    /// Failed tool calls formatted as `tool: error preview`, capped.
+    pub failures: Vec<String>,
+    /// Preview of the final assistant response (truncated).
+    pub response_preview: String,
+    /// Total number of tool calls executed in this turn.
+    pub tool_call_count: u32,
+    /// Whether the turn ended as `TurnOutcome::Completed`.
+    pub completed: bool,
+    // ── Semantic fields ─────────────────────────────────────────────
+    // LLM-generated, best-effort, only populated on the final turn of a
+    // task (gated by the SDK's `final_turn_summary` toggle). When absent
+    // the consumer renders the deterministic fields above only.
+    /// How the goal was accomplished (one paragraph, grounded in the transcript).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub accomplishment: Option<String>,
+    /// Concrete changes made (e.g. "added shapefile write support in src/shp.rs").
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub changes: Vec<String>,
+    /// Caveats / things the user should watch out for.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub caveats: Vec<String>,
+    /// Known limitations of what was done (not covered / not tested / deferred).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub known_limitations: Vec<String>,
+    /// Key decisions made and why.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub decisions: Vec<String>,
+}
+
+impl TurnSummary {
+    /// A mostly-empty summary for turns with no user message yet.
+    pub fn empty(turn_id: u64) -> Self {
+        Self {
+            turn_id,
+            user_intent: String::new(),
+            files_modified: Vec::new(),
+            files_read: Vec::new(),
+            actions: Vec::new(),
+            failures: Vec::new(),
+            response_preview: String::new(),
+            tool_call_count: 0,
+            completed: false,
+            accomplishment: None,
+            changes: Vec::new(),
+            caveats: Vec::new(),
+            known_limitations: Vec::new(),
+            decisions: Vec::new(),
+        }
+    }
+}
+
 // ── Agent event types ──
 
 /// Events emitted by the agent during turn execution.
@@ -247,6 +319,10 @@ pub enum AgentEvent {
     MemoryInjected { count: u32, memory_ids: Vec<String> },
     /// A soft interrupt was injected into the conversation
     SoftInterruptInjected { interrupt: InjectedInterrupt },
+    /// A deterministic summary of the just-finished turn (goal, files touched,
+    /// key actions, failures). Emitted immediately before the matching
+    /// `TurnEnd`. The application layer renders it as the "turn summary".
+    TurnSummary { summary: TurnSummary },
     /// An error occurred
     Error { error: AgentError },
     /// An MCP server connected successfully
@@ -379,6 +455,9 @@ pub enum EnvelopePayload {
     TurnEnd {
         turn_id: u64,
         outcome: String,
+    },
+    TurnSummary {
+        summary: TurnSummary,
     },
     ModelMessageStart {
         message_id: String,
@@ -563,6 +642,9 @@ impl From<&AgentEvent> for EnvelopePayload {
             AgentEvent::TurnEnd { turn_id, outcome } => EnvelopePayload::TurnEnd {
                 turn_id: *turn_id,
                 outcome: format!("{:?}", outcome),
+            },
+            AgentEvent::TurnSummary { summary } => EnvelopePayload::TurnSummary {
+                summary: summary.clone(),
             },
             AgentEvent::ModelMessageStart { message_id } => EnvelopePayload::ModelMessageStart {
                 message_id: message_id.clone(),

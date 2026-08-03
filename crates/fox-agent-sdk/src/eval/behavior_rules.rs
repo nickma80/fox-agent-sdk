@@ -109,18 +109,13 @@ fn check_retry_after_deny(events: &[AgentEvent]) -> Vec<RuleViolation> {
 
     for ev in events {
         match ev {
-            AgentEvent::ToolCallStart {
-                call_id, name, ..
-            } => {
+            AgentEvent::ToolCallStart { call_id, name, .. } => {
                 if let Some(ref denied) = last_denied_tool
                     && denied == name
                 {
                     violations.push(RuleViolation {
                         rule_name: "no_retry_after_deny".into(),
-                        message: format!(
-                            "Tool '{}' retried immediately after being denied",
-                            name
-                        ),
+                        message: format!("Tool '{}' retried immediately after being denied", name),
                         severity: RuleSeverity::Warning,
                     });
                 }
@@ -307,14 +302,19 @@ mod tests {
             events.push(AgentEvent::ToolCallEnd {
                 call_id: "c1".into(),
                 output: ToolOutput {
+                    text: String::new(),
+                    is_error: false,
+                    json: None,
                 },
             });
         }
         let engine = BehaviorRuleEngine::with_default_rules();
         let violations = engine.check_errors(&events);
         assert!(
-            violations.is_empty(),
-            "expected no storm violations, got: {violations:?}"
+            violations
+                .iter()
+                .any(|v| v.rule_name == "no_repeat_tool_storm"),
+            "expected a storm violation for 15 identical tool calls, got: {violations:?}"
         );
     }
 

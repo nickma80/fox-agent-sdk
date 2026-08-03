@@ -4,8 +4,8 @@ use fox_agent_core::{
     McpServerKind, McpServerProfile, McpToolDescriptorSnapshot, Message, Model,
     PendingToolCallSnapshot, PermissionDecision, PermissionRequest, PermissionResult,
     ProviderError, Role, SessionSnapshot, Skill, StreamEvent, ToolContext, ToolError,
-    ToolExecutionMode, ToolOutput, ToolResultRouting, TurnOutcome, load_goals_with_store, now_secs,
-    save_goals_with_store,
+    ToolExecutionMode, ToolOutput, ToolResultRouting, TurnOutcome, TurnSummary,
+    load_goals_with_store, now_secs, save_goals_with_store,
 };
 use fox_agent_mcp::McpClient;
 use futures::StreamExt;
@@ -16,6 +16,7 @@ use tokio::sync::RwLock;
 use tracing::{Instrument, Level, debug, error, info, span, trace, warn};
 
 use crate::harness::Harness;
+use crate::turn_summary::{build_turn_summary, enhance_with_llm};
 
 // ── Type aliases ──
 
@@ -133,6 +134,11 @@ pub struct Agent {
     pub status: Arc<RwLock<AgentStatus>>,
     /// Optional audit handler — invoked on every user permission decision.
     audit_handler: Option<AuditHandlerFn>,
+    /// When enabled, the final turn of a task emits an LLM-enhanced
+    /// `AgentEvent::TurnSummary` (accomplishment / changes / caveats /
+    /// known_limitations / decisions). Off by default — the deterministic
+    /// summary is always emitted regardless.
+    final_turn_summary_enabled: std::sync::atomic::AtomicBool,
 }
 
 impl Agent {
@@ -157,7 +163,20 @@ impl Agent {
             subagent_runtime_enabled: false,
             status: Arc::new(RwLock::new(AgentStatus::default())),
             audit_handler: None,
+            final_turn_summary_enabled: std::sync::atomic::AtomicBool::new(false),
         }
+    }
+
+    /// Enable/disable LLM-enhanced final-turn summaries.
+    ///
+    /// When enabled, the final turn of a task (`run_once_streaming`) emits an
+    /// `AgentEvent::TurnSummary` enriched with `accomplishment`, `changes`,
+    /// `caveats`, `known_limitations` and `decisions` (one extra LLM call,
+    /// best-effort — falls back to the deterministic fields on failure).
+    pub fn with_final_turn_summary(self, enabled: bool) -> Self {
+        self.final_turn_summary_enabled
+            .store(enabled, std::sync::atomic::Ordering::SeqCst);
+        self
     }
 
     /// Set an optional audit handler that is automatically invoked on every user
@@ -258,7 +277,7 @@ impl Agent {
         event_tx: &AgentEventTx,
     ) -> Result<TurnOutcome, AgentError> {
         self.harness.push_message(Message::user(user_message)).await;
-        self.run_turn_streaming(event_tx).await
+        self.run_turn_streaming(event_tx, false).await
     }
 
     /// Set MCP resources/prompts context for the system prompt.
@@ -339,6 +358,7 @@ impl Agent {
             subagent_runtime_enabled: false,
             status: Arc::new(RwLock::new(AgentStatus::default())),
             audit_handler: None,
+            final_turn_summary_enabled: std::sync::atomic::AtomicBool::new(false),
         }
     }
 
@@ -401,7 +421,7 @@ impl Agent {
         }
         self.harness.push_message(Message::user(user_message)).await;
         self.persist_snapshot("user_message");
-        self.run_turn_streaming(event_tx).await
+        self.run_turn_streaming(event_tx, true).await
     }
 
     /// Resume a turn after the user made a permission decision.
@@ -457,7 +477,7 @@ impl Agent {
             }
         }
 
-        self.run_turn_streaming(event_tx).await
+        self.run_turn_streaming(event_tx, false).await
     }
 
     /// Execute (or deny) a single tool call and push the result message. (P2: duration)
@@ -698,7 +718,11 @@ impl Agent {
 
     // ── Core turn loop (P0: retry, continuation, filtering) ──
 
-    async fn run_turn_streaming(&self, event_tx: &AgentEventTx) -> Result<TurnOutcome, AgentError> {
+    async fn run_turn_streaming(
+        &self,
+        event_tx: &AgentEventTx,
+        final_turn: bool,
+    ) -> Result<TurnOutcome, AgentError> {
         let session_id = self.harness.session_id().to_string();
         let mut context_limit_retries = 0u32;
         let mut incomplete_continuations = 0u32;
@@ -734,9 +758,7 @@ impl Agent {
                     event_tx,
                     turn_id,
                     AgentError::BudgetExceeded {
-                        message: format!(
-                            "Exceeded maximum tool loop iterations ({effective_max})"
-                        ),
+                        message: format!("Exceeded maximum tool loop iterations ({effective_max})"),
                     },
                 ));
             }
@@ -1365,6 +1387,12 @@ impl Agent {
                     "Turn completed"
                 );
                 let outcome = TurnOutcome::Completed { text: final_text };
+                let semantic = final_turn
+                    && self
+                        .final_turn_summary_enabled
+                        .load(std::sync::atomic::Ordering::SeqCst);
+                self.emit_turn_summary(event_tx, turn_id, true, semantic)
+                    .await;
                 let _ = event_tx
                     .send(AgentEvent::TurnEnd {
                         turn_id,
@@ -1509,6 +1537,8 @@ impl Agent {
                             })
                             .await;
                         let outcome = TurnOutcome::RequiresUserDecision { request };
+                        self.emit_turn_summary(event_tx, turn_id, false, false)
+                            .await;
                         let _ = event_tx
                             .send(AgentEvent::TurnEnd {
                                 turn_id,
@@ -2023,6 +2053,8 @@ impl Agent {
             })
             .await;
         let outcome = TurnOutcome::Cancelled;
+        self.emit_turn_summary(event_tx, turn_id, false, false)
+            .await;
         let _ = event_tx
             .send(AgentEvent::TurnEnd {
                 turn_id,
@@ -2038,6 +2070,30 @@ impl Agent {
     async fn emit_error_event(&self, event_tx: &AgentEventTx, error: AgentError) {
         error!(kind = ?error.kind(), message = %error, "Emitting agent error event");
         let _ = event_tx.send(AgentEvent::Error { error }).await;
+    }
+
+    /// Deterministically summarize the current turn and emit it as
+    /// `AgentEvent::TurnSummary` immediately before the matching `TurnEnd`.
+    /// Best-effort: the application layer (e.g. fox-code) renders this instead
+    /// of a raw tool-call histogram. When `semantic` is set, the summary is
+    /// additionally enriched by the LLM (accomplishment / changes / caveats /
+    /// known_limitations / decisions); on failure the deterministic fields are
+    /// kept.
+    async fn emit_turn_summary(
+        &self,
+        event_tx: &AgentEventTx,
+        turn_id: u64,
+        completed: bool,
+        semantic: bool,
+    ) {
+        let messages = self.harness.session_messages().await;
+        let mut summary = build_turn_summary(turn_id, &messages, completed);
+        if semantic {
+            if let Err(e) = enhance_with_llm(&mut summary, &messages, &self.model).await {
+                warn!(error = %e, "final turn summary LLM enhancement failed; using deterministic fields");
+            }
+        }
+        let _ = event_tx.send(AgentEvent::TurnSummary { summary }).await;
     }
 
     async fn push_assistant_message(&self, text: String, thinking: String) {
@@ -2115,6 +2171,13 @@ impl Agent {
         };
         tokio::spawn(
             async move {
+                // Error turns carry minimal summary data (no completed transcript);
+                // the `Error` event above already carries the failure details.
+                let _ = tx
+                    .send(AgentEvent::TurnSummary {
+                        summary: TurnSummary::empty(turn_id),
+                    })
+                    .await;
                 let _ = tx.send(AgentEvent::Error { error: err_event }).await;
                 let _ = tx.send(AgentEvent::TurnEnd { turn_id, outcome }).await;
             }

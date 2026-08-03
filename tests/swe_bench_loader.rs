@@ -194,8 +194,7 @@ mod tests {
     #[test]
     fn load_instance_by_id() {
         let tmp = tempfile::NamedTempFile::new().unwrap();
-        let jsonl =
-            r#"{"instance_id":"django__django-12345","repo":"django/django","base_commit":"abc","problem_statement":"Fix X"}"#;
+        let jsonl = r#"{"instance_id":"django__django-12345","repo":"django/django","base_commit":"abc","problem_statement":"Fix X"}"#;
         std::fs::write(tmp.path(), jsonl).unwrap();
 
         let loader = SweBenchLoader::new(tmp.path());

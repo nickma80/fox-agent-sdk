@@ -114,15 +114,16 @@ fn eval_report_serialization() {
 #[ignore = "requires real LLM provider"]
 async fn task_judge_e2e() -> anyhow::Result<()> {
     use fox_agent_core::StreamEvent;
-    use fox_agent_sdk::eval::TaskJudge;
     use fox_agent_sdk::MockProvider;
+    use fox_agent_sdk::eval::TaskJudge;
     use std::sync::Arc;
 
     let judge_provider = MockProvider::new("judge");
 
     judge_provider.push_script(vec![
         StreamEvent::TextDelta {
-            text: "{\n  \"completeness\": 4,\n  \"solution_quality\": 5,\n  \"redundancy\": 4\n}".into(),
+            text: "{\n  \"completeness\": 4,\n  \"solution_quality\": 5,\n  \"redundancy\": 4\n}"
+                .into(),
         },
         StreamEvent::MessageStop {
             stop_reason: Some("end_turn".into()),

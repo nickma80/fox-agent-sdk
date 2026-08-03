@@ -14,9 +14,9 @@ use std::sync::Arc;
 use goldenscript::{Command, Context, Runner};
 
 use fox_agent_core::{AgentEvent, TokenReport};
+use fox_agent_core::{DefaultSafetyPolicy, FoxAgentSdkConfig, SafetyConfig};
 use fox_agent_sdk::eval::behavior_rules::BehaviorRuleEngine;
 use fox_agent_sdk::{Agent, Harness, MockProvider, StreamEvent};
-use fox_agent_core::{DefaultSafetyPolicy, FoxAgentSdkConfig, SafetyConfig};
 
 /// Goldenscript Runner：持有 MockProvider 及 Agent 实例。
 pub struct GoldenRunner {
@@ -119,21 +119,15 @@ impl GoldenRunner {
             let token_report = Self::collect_token_report(&events);
             let summary = format!(
                 "tokens_in={} tokens_out={} tools={}",
-                token_report.total_input,
-                token_report.total_output,
-                token_report.tool_calls,
+                token_report.total_input, token_report.total_output, token_report.tool_calls,
             );
             self.last_events = events;
             self.last_token_report = Some(token_report);
 
             match result {
                 Ok(outcome) => match outcome {
-                    fox_agent_core::TurnOutcome::Completed { .. } => {
-                        Ok(format!("{summary}"))
-                    }
-                    fox_agent_core::TurnOutcome::Cancelled => {
-                        Ok(format!("{summary}\n[cancelled]"))
-                    }
+                    fox_agent_core::TurnOutcome::Completed { .. } => Ok(format!("{summary}")),
+                    fox_agent_core::TurnOutcome::Cancelled => Ok(format!("{summary}\n[cancelled]")),
                     fox_agent_core::TurnOutcome::RequiresUserDecision { .. } => {
                         Ok(format!("{summary}\n[requires decision]"))
                     }
@@ -179,24 +173,30 @@ impl Runner for GoldenRunner {
                 let path = args.next_pos().ok_or("missing path argument")?;
                 let expected = args.next_pos().ok_or("missing content argument")?;
                 args.reject_next()?;
-                let content =
-                    std::fs::read_to_string(path).map_err(|e| e.to_string())?;
+                let content = std::fs::read_to_string(path).map_err(|e| e.to_string())?;
                 if content.contains(expected) {
                     writeln!(output, "✓")?;
                 } else {
-                    return Err(
-                        format!("File {path} does not contain '{expected}'").into(),
-                    );
+                    return Err(format!("File {path} does not contain '{expected}'").into());
                 }
             }
             "summary" => {
                 if let Some(ref report) = self.last_token_report {
-                    writeln!(output, "Total: {} tokens, {} tool calls, {} API calls",
-                        report.total_tokens(), report.tool_calls, report.api_calls)?;
+                    writeln!(
+                        output,
+                        "Total: {} tokens, {} tool calls, {} API calls",
+                        report.total_tokens(),
+                        report.tool_calls,
+                        report.api_calls
+                    )?;
                     if report.cache_read > 0 || report.cache_write > 0 {
-                        writeln!(output, "Cache: {} read, {} write, hit_ratio={:.1}%",
-                            report.cache_read, report.cache_write,
-                            report.cache_hit_ratio() * 100.0)?;
+                        writeln!(
+                            output,
+                            "Cache: {} read, {} write, hit_ratio={:.1}%",
+                            report.cache_read,
+                            report.cache_write,
+                            report.cache_hit_ratio() * 100.0
+                        )?;
                     }
                     if report.compactions > 0 {
                         writeln!(output, "Compactions: {}", report.compactions)?;

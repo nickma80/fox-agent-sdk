@@ -28,6 +28,7 @@ mod scrub;
 mod session;
 mod subagent;
 mod swarm_runtime;
+mod turn_summary;
 
 pub use artifact_tool::*;
 pub use compaction::*;
@@ -47,6 +48,7 @@ pub use plugin::*;
 pub use replay_runner::*;
 pub use scrub::*;
 pub use swarm_runtime::*;
+pub use turn_summary::build_turn_summary;
 
 #[cfg(test)]
 mod tests;

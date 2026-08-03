@@ -98,12 +98,21 @@ impl BatchReport {
         let mut map: std::collections::HashMap<String, (usize, usize)> =
             std::collections::HashMap::new();
         for inst in instances {
-            let diff = inst.difficulty.clone().unwrap_or_else(|| "unknown".to_string());
+            let diff = inst
+                .difficulty
+                .clone()
+                .unwrap_or_else(|| "unknown".to_string());
             map.entry(diff).or_insert((0, 0)).0 += 1;
         }
         for result in &self.results {
-            if let Some(inst) = instances.iter().find(|i| i.instance_id == result.instance_id) {
-                let diff = inst.difficulty.clone().unwrap_or_else(|| "unknown".to_string());
+            if let Some(inst) = instances
+                .iter()
+                .find(|i| i.instance_id == result.instance_id)
+            {
+                let diff = inst
+                    .difficulty
+                    .clone()
+                    .unwrap_or_else(|| "unknown".to_string());
                 if let Some(entry) = map.get_mut(&diff) {
                     if result.passed {
                         entry.1 += 1;
@@ -151,11 +160,7 @@ fn load_and_filter(dataset_path: &Path, max: usize) -> anyhow::Result<Vec<Instan
 ///
 /// 工作目录应为已 checkout 到 base_commit 的仓库副本；批量评估的调用方
 /// 负责准备（如 `git clone` 到临时目录）。
-async fn eval_instance(
-    cfg: &FoxAgentSdkConfig,
-    inst: &Instance,
-    work_dir: &Path,
-) -> InstanceEval {
+async fn eval_instance(cfg: &FoxAgentSdkConfig, inst: &Instance, work_dir: &Path) -> InstanceEval {
     let mut cfg = cfg.clone();
     // 批量评估无人值守：自动放行工具调用，避免卡在权限确认。
     cfg.safety = SafetyConfig {
@@ -251,7 +256,10 @@ pub async fn run_batch(
         std::fs::create_dir_all(&work_dir)?;
         let result = eval_instance(&cfg, inst, &work_dir).await;
         let tag = if result.passed { "PASS" } else { "FAIL" };
-        println!("[{tag}] {} — {:?}ms, {} tool calls", inst.instance_id, result.duration_ms, result.tool_calls);
+        println!(
+            "[{tag}] {} — {:?}ms, {} tool calls",
+            inst.instance_id, result.duration_ms, result.tool_calls
+        );
         report.add(result);
     }
     report.compute_by_difficulty(&instances);

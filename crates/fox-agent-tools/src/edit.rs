@@ -295,10 +295,7 @@ fn extract_context(
     (start + 1, end, context_lines.join("\n"))
 }
 
-fn try_flexible_match(
-    content: &str,
-    old_string: &str,
-) -> Result<String, ToolError> {
+fn try_flexible_match(content: &str, old_string: &str) -> Result<String, ToolError> {
     // Try trimmed matching (single-line)
     let trimmed = old_string.trim();
     if content.contains(trimmed) && trimmed != old_string {

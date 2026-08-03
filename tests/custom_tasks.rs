@@ -8,8 +8,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use fox_agent_core::{
-    AgentEvent, DefaultSafetyPolicy, FoxAgentSdkConfig, SafetyConfig, StreamEvent,
-    TokenUsage,
+    AgentEvent, DefaultSafetyPolicy, FoxAgentSdkConfig, SafetyConfig, StreamEvent, TokenUsage,
 };
 use fox_agent_sdk::{Agent, Harness, MockProvider};
 
@@ -100,7 +99,10 @@ async fn create_file_event_flow() {
         .iter()
         .filter(|e| matches!(e, AgentEvent::ToolCallStart { .. }))
         .collect();
-    assert!(!tool_starts.is_empty(), "should have tool call start events");
+    assert!(
+        !tool_starts.is_empty(),
+        "should have tool call start events"
+    );
 
     let tool_ends: Vec<_> = events
         .iter()

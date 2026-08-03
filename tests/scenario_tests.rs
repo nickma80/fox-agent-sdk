@@ -1172,7 +1172,10 @@ async fn case_016_max_turns_tool_loop_limit() {
 
     match result {
         Err(fox_agent_core::AgentError::BudgetExceeded { message }) => {
-            assert!(message.contains("tool loop iterations"), "Unexpected message: {message}");
+            assert!(
+                message.contains("tool loop iterations"),
+                "Unexpected message: {message}"
+            );
         }
         other => panic!("Expected BudgetExceeded error, got: {other:?}"),
     }
@@ -1181,7 +1184,9 @@ async fn case_016_max_turns_tool_loop_limit() {
         .iter()
         .filter(|ev| matches!(ev, AgentEvent::ToolCallStart { .. }))
         .count();
-    assert_eq!(tool_count, 3, "Should stop after 3 tool calls, got {tool_count}");
+    assert_eq!(
+        tool_count, 3,
+        "Should stop after 3 tool calls, got {tool_count}"
+    );
     println!("max_turns tool-loop limit: 3 tool calls before BudgetExceeded");
 }
-

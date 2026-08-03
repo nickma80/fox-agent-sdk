@@ -194,8 +194,9 @@ fn handle_goal_show(
     scope: GoalScope,
 ) -> Result<Value, ToolError> {
     let id = params.id.ok_or_else(|| ToolError::Message {
-        message: "missing required field `id` for action=show. Use `list` first to find the goal id."
-            .to_string(),
+        message:
+            "missing required field `id` for action=show. Use `list` first to find the goal id."
+                .to_string(),
     })?;
     let goals = load_goals_with_store(store, &ctx.session_id, scope);
     let goal = goals
@@ -214,8 +215,9 @@ fn handle_goal_resume(
     scope: GoalScope,
 ) -> Result<Value, ToolError> {
     let id = params.id.ok_or_else(|| ToolError::Message {
-        message: "missing required field `id` for action=resume. Use `list` first to find the goal id."
-            .to_string(),
+        message:
+            "missing required field `id` for action=resume. Use `list` first to find the goal id."
+                .to_string(),
     })?;
     let mut goals = load_goals_with_store(store, &ctx.session_id, scope.clone());
     let idx = goals
@@ -353,8 +355,9 @@ fn handle_goal_focus(
     scope: GoalScope,
 ) -> Result<Value, ToolError> {
     let id = params.id.ok_or_else(|| ToolError::Message {
-        message: "missing required field `id` for action=focus. Use `list` first to find the goal id."
-            .to_string(),
+        message:
+            "missing required field `id` for action=focus. Use `list` first to find the goal id."
+                .to_string(),
     })?;
     let mut goals = load_goals_with_store(store, &ctx.session_id, scope.clone());
     let mut updated: Option<Goal> = None;

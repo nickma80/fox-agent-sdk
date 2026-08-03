@@ -82,7 +82,10 @@ impl BatchReport {
             entry.0 += 1;
         }
         for result in &self.results {
-            if let Some(inst) = instances.iter().find(|i| i.instance_id == result.instance_id) {
+            if let Some(inst) = instances
+                .iter()
+                .find(|i| i.instance_id == result.instance_id)
+            {
                 let diff = inst
                     .difficulty
                     .map(|d| format!("{d:?}"))

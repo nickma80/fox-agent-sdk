@@ -163,7 +163,10 @@ mod tests {
     fn mock_registry_has_002_create_file() {
         let registry = mock_scripts();
         let scripts = registry.get("002_create_file");
-        assert!(scripts.is_some(), "002_create_file should have mock scripts");
+        assert!(
+            scripts.is_some(),
+            "002_create_file should have mock scripts"
+        );
         assert!(!scripts.unwrap().is_empty(), "scripts should not be empty");
     }
 
@@ -182,6 +185,10 @@ mod tests {
 
         let result = runner.run_agent_sync("create a file");
         // Should succeed with registered mock script
-        assert!(result.is_ok(), "run_agent should work with mock scripts: {:?}", result.err());
+        assert!(
+            result.is_ok(),
+            "run_agent should work with mock scripts: {:?}",
+            result.err()
+        );
     }
 }

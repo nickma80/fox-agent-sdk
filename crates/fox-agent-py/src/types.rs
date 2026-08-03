@@ -186,6 +186,29 @@ pub fn agent_event_to_py(py: Python<'_>, event: &AgentEvent) -> Option<Py<PyDict
             d.set_item("total", *total).ok();
         }
 
+        AgentEvent::TurnSummary { summary } => {
+            d.set_item("type", "turn_summary").ok();
+            d.set_item("turn_id", summary.turn_id).ok();
+            d.set_item("user_intent", &summary.user_intent).ok();
+            d.set_item("files_modified", summary.files_modified.clone())
+                .ok();
+            d.set_item("files_read", summary.files_read.clone()).ok();
+            d.set_item("actions", summary.actions.clone()).ok();
+            d.set_item("failures", summary.failures.clone()).ok();
+            d.set_item("response_preview", &summary.response_preview)
+                .ok();
+            d.set_item("tool_call_count", summary.tool_call_count).ok();
+            d.set_item("completed", summary.completed).ok();
+            if let Some(ref a) = summary.accomplishment {
+                d.set_item("accomplishment", a).ok();
+            }
+            d.set_item("changes", summary.changes.clone()).ok();
+            d.set_item("caveats", summary.caveats.clone()).ok();
+            d.set_item("known_limitations", summary.known_limitations.clone())
+                .ok();
+            d.set_item("decisions", summary.decisions.clone()).ok();
+        }
+
         // Internal events — don't surface to Python consumer
         AgentEvent::ToolInputDelta { .. }
         | AgentEvent::ModelMessageStart { .. }

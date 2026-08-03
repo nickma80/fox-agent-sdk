@@ -499,7 +499,7 @@ pub(crate) fn inject_narrative_summaries(
 
 /// Mechanical (non-LLM) transcript builder used both as the LLM prompt input
 /// and as the fallback summary when the LLM is unavailable.
-fn mechanical_transcript(messages: &[Message]) -> String {
+pub(crate) fn mechanical_transcript(messages: &[Message]) -> String {
     const MAX_CONTENT_LEN: usize = 500; // Truncate each content block to 500 chars
     const MAX_SUMMARY_LEN: usize = 4000; // Truncate total summary to 4KB
 
