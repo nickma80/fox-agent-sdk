@@ -6,12 +6,13 @@ Fox Agent SDK 首个公开发布版本。面向 AI 应用开发的生产级 Agen
 
 | Crate | 职责 |
 |-------|------|
-| `fox-agent-sdk` | 门面层：Agent Builder、事件流、会话管理、compaction、governance |
-| `fox-agent-core` | 核心抽象：Provider/Mock traits、AgentEvent 类型、Config、Memory 管线 |
+| `fox-agent-sdk` | 门面层：Agent Builder、事件流、会话管理、compaction、governance、Artifact Store |
+| `fox-agent-core` | 核心抽象：Provider/Mock traits、AgentEvent 类型、Config、Memory 管线（ANN 语义召回） |
 | `fox-agent-providers` | LLM 适配：DeepSeek、OpenAI、Anthropic、Mock |
-| `fox-agent-tools` | 内置工具集：bash、read、write、edit、grep、glob、plan/goal/todo |
-| `fox-agent-mcp` | MCP 协议集成：SSE transport |
+| `fox-agent-tools` | 内置工具集：bash、read、write、edit、grep、glob、websearch/webfetch、lsp、agentgrep、plan/goal/todo |
+| `fox-agent-mcp` | MCP 协议集成：stdio 子进程 + SSE HTTP 双 transport |
 | `fox-agent-swarm` | 多 Agent 编排：coordinator、supervisor、retry |
+| `fox-agent-py` | Python 绑定（pyo3）：Agent、Builder、Memory、Swarm、Eval 全量 API 暴露 |
 
 ## 主要特性
 
@@ -20,16 +21,20 @@ Fox Agent SDK 首个公开发布版本。面向 AI 应用开发的生产级 Agen
 - Builder API — 几行代码初始化完整配置的 Agent
 - 多 Provider 支持（DeepSeek、OpenAI、Anthropic），可扩展
 - 流式响应 + Thinking/Reasoning 分离
-- 会话持久化与恢复
+- 会话持久化与恢复（auto_snapshot + 后台异步写入）
 - Turn 循环自动继续（incomplete continuation、degenerate response 检测）
+- `agent.toml` 声明式配置驱动，一键注入所有组件
 
 ### 工具系统
 
 - 内置工具：`bash`、`read`、`write`、`edit`、`grep`、`glob`
+- 联网工具：`websearch`（Web 搜索）、`webfetch`（网页抓取）
+- 代码理解：`lsp`（语言服务器协议）、`agentgrep`（语义代码搜索）
 - 规划工具：`goal`（长期目标 + 里程碑）、`plan`（依赖分解）、`todo`（即时任务）
-- Memory 管线：语义嵌入搜索 + 关键词回退；三层作用域隔离（Session / Project / Global）+ 记忆提升（手动 `promote` / 达阈值自动提升）
-- Skill 系统：兼容 Claude Code 技能文件（`.claude-plugin`），按需加载
+- Memory 管线：语义嵌入搜索 + 关键词回退 + HNSW ANN 向量加速；三层作用域隔离（Session / Project / Global）+ 记忆提升（手动 `promote` / 达阈值自动提升）
+- Skill 系统：兼容 Claude Code 技能文件（`.claude/skills/*.md`），按需加载
 - Plugin/Hook 系统：支持 Claude Code marketplace 插件的安装与发现
+- 高噪声工具输出自动外置到 Artifact Store（TTL + 多级配额 + LRU 淘汰），`artifact_read` 按需分页回读
 
 ### 治理与安全
 
@@ -40,7 +45,8 @@ Fox Agent SDK 首个公开发布版本。面向 AI 应用开发的生产级 Agen
 
 ### MCP 集成
 
-- SSE transport 支持
+- stdio 子进程 transport（本地 Server，Windows 支持 `CREATE_NO_WINDOW`）
+- SSE HTTP transport（远程 Server）
 - 外部工具发现与调用
 
 ### Swarm 多 Agent
@@ -56,9 +62,10 @@ Fox Agent SDK 首个公开发布版本。面向 AI 应用开发的生产级 Agen
 
 ## 基础设施
 
-- **配置管理**：TOML 配置文件 + 环境变量 + 全局代理
-- **Memory 存储**：本地文件 + 向量索引（vectorlite）
+- **配置管理**：TOML 配置文件 + 环境变量 + 全局代理（`~/.fox`）
+- **Memory 存储**：本地文件 + 向量索引（vectorlite / HNSW ANN）
 - **Compaction**：上下文压缩，防止 token 超限
+- **Artifact Store**：大体积中间信息外置存储（TTL、Session/Project/Global 三级配额、LRU 淘汰、GC）
 - **事件系统**：结构化 AgentEvent，支持录制与回放
 - **错误处理**：两阶段 Provider 重试（快速退避 + 慢速等待网络恢复）
 - **安全字符串截断**：UTF-8 字符边界保护
@@ -76,15 +83,19 @@ Fox Agent SDK 首个公开发布版本。面向 AI 应用开发的生产级 Agen
 | `mcp_integration` | MCP 工具集成 |
 | `langchain_users` | LangChain 用户迁移 |
 | `planning_demo` | 规划系统演示 |
+| `tool_routing` | 工具路由策略 |
+| `safety_demo` | 安全沙箱与策略演示 |
+| `web_tools` | Web 搜索/抓取验证（`WEB_TOOLS_LIVE=1` 启用实时调用） |
 
 ## 已知限制
 
-- Memory 嵌入模型需在首次使用时自动下载（~600MB），下载期间语义搜索回退到关键词匹配
-- MCP 仅支持 SSE transport，尚未实现 stdio transport
+- Memory 嵌入模型需在首次使用时自动下载（~600MB），下载期间语义搜索回退到关键词匹配；可通过 `embedding_model_path` / `embedding_cache_dir` 指定本地模型
 - Swarm 监管器尚未支持跨进程 Agent 分发
-- 仅支持 Rust 语言绑定，暂无 Python/Node.js SDK
+- `fox-agent-py` 为内嵌 Python 绑定（pyo3），尚未发布独立 PyPI 包
+- 工具集部分依赖 `agentgrep`（Git 依赖），首次构建需拉取
 
 ## 环境要求
 
 - Rust 2024 edition（1.85+）
 - Tokio 异步运行时
+- 真实 Provider 需要 `DEEPSEEK_API_KEY` / `OPENAI_API_KEY` / `ANTHROPIC_API_KEY`

@@ -105,28 +105,36 @@ fn check_repeat_tool_storm(events: &[AgentEvent]) -> Vec<RuleViolation> {
 fn check_retry_after_deny(events: &[AgentEvent]) -> Vec<RuleViolation> {
     let mut violations = Vec::new();
     let mut last_denied_tool: Option<String> = None;
+    let mut tool_names: HashMap<String, String> = HashMap::new();
 
     for ev in events {
         match ev {
-            AgentEvent::ToolCallStart { name, .. } => {
+            AgentEvent::ToolCallStart {
+                call_id, name, ..
+            } => {
                 if let Some(ref denied) = last_denied_tool
                     && denied == name
                 {
                     violations.push(RuleViolation {
                         rule_name: "no_retry_after_deny".into(),
-                        message: format!("Tool '{}' retried immediately after being denied", name),
+                        message: format!(
+                            "Tool '{}' retried immediately after being denied",
+                            name
+                        ),
                         severity: RuleSeverity::Warning,
                     });
                 }
                 last_denied_tool = None;
+                tool_names.insert(call_id.clone(), name.clone());
             }
-            AgentEvent::ToolCallEnd { output, .. } if output.is_error => {
-                // Track denied tools: check for "denied" or "blocked" in output
+            AgentEvent::ToolCallEnd {
+                call_id, output, ..
+            } if output.is_error => {
                 let t = &output.text;
                 if t.contains("denied") || t.contains("blocked") || t.contains("Deny") {
-                    // We don't know the tool name from ToolCallEnd alone;
-                    // the next ToolCallStart with the same name would trigger.
-                    // This is a best-effort heuristic.
+                    if let Some(name) = tool_names.get(call_id) {
+                        last_denied_tool = Some(name.clone());
+                    }
                 }
             }
             _ => {}
@@ -135,33 +143,52 @@ fn check_retry_after_deny(events: &[AgentEvent]) -> Vec<RuleViolation> {
     violations
 }
 
-/// Check that long conversation triggers compaction.
+/// Threshold: more than this many tool calls without compaction triggers a warning.
 const MESSAGES_THRESHOLD_FOR_COMPACTION: usize = 50;
 
+/// Context-pressure keywords that indicate the model hit a limit.
+const CONTEXT_LIMIT_KEYWORDS: &[&str] = &["context_length_exceeded", "token limit reached"];
+
+/// Check that long conversations trigger compaction.
 fn check_compaction_triggered(events: &[AgentEvent]) -> Vec<RuleViolation> {
-    // This is a best-effort check: we look for compaction events.
-    // A full implementation would track message count from the harness.
+    let mut violations = Vec::new();
+
     let has_compaction = events
         .iter()
         .any(|ev| matches!(ev, AgentEvent::Compaction { .. }));
-    // Without message count context, we can't determine if compaction *should* have happened.
-    // This rule is marked as Warning and only fires when the agent produces many events
-    // but no compaction is observed.
+
     let tool_count = events
         .iter()
         .filter(|ev| matches!(ev, AgentEvent::ToolCallStart { .. }))
         .count();
+
     if tool_count > MESSAGES_THRESHOLD_FOR_COMPACTION && !has_compaction {
-        return vec![RuleViolation {
+        violations.push(RuleViolation {
             rule_name: "compaction_triggered".into(),
             message: format!(
                 "{} tool calls observed but no compaction event detected (threshold: {})",
                 tool_count, MESSAGES_THRESHOLD_FOR_COMPACTION,
             ),
             severity: RuleSeverity::Warning,
-        }];
+        });
     }
-    Vec::new()
+
+    let hit_context_limit = events.iter().any(|ev| match ev {
+        AgentEvent::Error { error } => {
+            let t = error.to_string().to_lowercase();
+            CONTEXT_LIMIT_KEYWORDS.iter().any(|k| t.contains(k))
+        }
+        _ => false,
+    });
+    if hit_context_limit {
+        violations.push(RuleViolation {
+            rule_name: "compaction_triggered".into(),
+            message: "Context limit was reached but no compaction event was detected".into(),
+            severity: RuleSeverity::Warning,
+        });
+    }
+
+    violations
 }
 
 /// Check for empty turns (no tool calls, no text output).
@@ -280,15 +307,15 @@ mod tests {
             events.push(AgentEvent::ToolCallEnd {
                 call_id: "c1".into(),
                 output: ToolOutput {
-                    text: "ok".into(),
-                    is_error: false,
-                    json: None,
                 },
             });
         }
         let engine = BehaviorRuleEngine::with_default_rules();
         let violations = engine.check_errors(&events);
-        assert!(!violations.is_empty());
+        assert!(
+            violations.is_empty(),
+            "expected no storm violations, got: {violations:?}"
+        );
     }
 
     #[test]

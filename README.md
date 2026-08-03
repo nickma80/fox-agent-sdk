@@ -1,6 +1,16 @@
 # Fox Agent SDK
 
-面向 AI 应用开发的生产级 Agent SDK，提供从快速原型到部署就绪治理的完整生命周期管理。
+**Fox Agent SDK** 是一个基于 Rust 的面向 AI 应用开发的生产级 Agent SDK，提供从快速原型到部署就绪治理的完整生命周期管理。
+
+## 项目简介
+
+本 SDK 践行 **Agent = Model + Harness** 的架构实践，实现了 `Agent`、`Model`、`Harness` 三大核心组件：
+
+- **Agent**（智能体）—— 编排 Agent Loop（感知 → 决策 → 行动 → 观察），支持单轮/流式执行、事件录制与回放
+- **Model**（模型）—— 通过统一 Provider 抽象接入 DeepSeek、OpenAI、Anthropic 等多家 LLM，可插拔、可 Mock
+- **Harness**（工具箱）—— 封装 Agent 运行所需的基础能力：工具系统、记忆、安全审批、会话持久化、Swarm 多 Agent 协作
+
+核心特性包括：`agent.toml` 声明式配置、跨会话长期记忆（语义召回 + 图结构级联检索）、细粒度权限审批、预算治理与可观测性、Claude Code 兼容的 Skills 技能系统、事件录制与回放、多 Agent 协调。基于 `tokio` 异步运行时，全链路非阻塞 I/O，`MockProvider` 支持确定性测试。
 
 ## 安装
 
@@ -358,26 +368,35 @@ cargo bench --bench agent_bench
 #### 2. 质量回归（Quality）—— 测"框架跑得对不对"
 
 ```bash
-# Golden Transcript 回放：验证框架路由、事件分发
+# Goldenscript Golden Master 测试（.gs 用例回放）
 cargo test --test golden_transcripts
 
-# TaskAssertions 端到端状态验证：检查文件、目录、编译产物
-$env:RUST_TEST_NOCAPTURE = "1"
-cargo test -p fox-agent-core -- task_assertions
+# Goldenscript 录制/更新黄金文件（二选一）
+#   Bash / Linux:
+UPDATE_GOLDENFILES=1 cargo test --test golden_transcripts
+#   Windows PowerShell:
+#   $env:UPDATE_GOLDENFILES = "1"
+#   cargo test --test golden_transcripts
+#   Remove-Item Env:\UPDATE_GOLDENFILES   # 清除变量（回到验证模式）
 
-# Behavior Rules 行为正确性规则：通用行为底线检查
-cargo test -p fox-agent-sdk -- behavior_rules
+# 深度场景测试（MockProvider 驱动完整评估管线）
+cargo test --test scenario_tests -- --nocapture
 
-# LLM-as-Judge 质量评分：prompt 构建 + 解析 + 完整调用链路（MockProvider，无需 API Key）
-cargo test -p fox-agent-sdk -- judge
+# 行为规则检查（重复工具调用、孤儿输出、Deny 后重试等）
+cargo test --test behavior_rules
+
+# 自定义任务 + 物证断言
+cargo test --test custom_tasks
+
+# LLM-as-Judge 质量评分（prompt 构建 + 解析 + 加权平均）
+cargo test --test quality_judge
 ```
 
 #### 3. Token 效率（Efficiency）—— 测"烧了多少钱"
 
 ```bash
-# Token 消耗报告：压缩率、缓存命中率、冗余调用比例
-$env:RUST_TEST_NOCAPTURE = "1"
-cargo test -p fox-agent-core -- report
+# Token 消耗追踪：输入/输出 token、缓存命中率、压实统计
+cargo test --test token_tracking -- --nocapture
 ```
 
 #### 4. 健壮性（Robustness）—— 测"会不会崩溃"
@@ -385,6 +404,19 @@ cargo test -p fox-agent-core -- report
 ```bash
 # 模糊测试：畸形 JSON、超大输出、随机超时等对抗性输入
 cargo test --test proptest
+```
+
+#### SWE-bench 基准（Phase 2，需真实 LLM + feature gate）
+
+```bash
+# SWE-bench 数据加载器（无需真实 LLM）
+cargo test --test swe_bench_loader
+
+# SWE-bench 评估流程（数据结构验证，无需真实 LLM）
+cargo test --test swe_bench_eval
+
+# SWE-bench 批量评估（需 swe_bench feature + 真实 LLM）
+cargo test --features swe_bench --test swe_bench_batch -- --ignored
 ```
 
 ## API 概览

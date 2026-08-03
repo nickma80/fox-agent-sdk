@@ -10,7 +10,7 @@
 
 mod harness;
 
-use criterion::{Criterion, criterion_group, criterion_main};
+use criterion::Criterion;
 use harness::{EchoTool, build_mock_agent, drain_events, push_tool_then_text, text_done_script};
 use std::sync::Arc;
 use tokio::runtime::Runtime;
@@ -84,9 +84,11 @@ fn bench_resume_streaming(c: &mut Criterion) {
     group.finish();
 }
 
-criterion_group!(
-    name = agent_benches;
-    config = Criterion::default().with_plots();
-    targets = bench_run_once_streaming_cold, bench_run_once_streaming_with_tools, bench_resume_streaming
-);
-criterion_main!(agent_benches);
+fn main() {
+    // Keep the guard alive for the whole process so the trace file is flushed on exit.
+    let _guard = harness::init_tracing();
+    let mut criterion = Criterion::default().with_plots().configure_from_args();
+    bench_run_once_streaming_cold(&mut criterion);
+    bench_run_once_streaming_with_tools(&mut criterion);
+    bench_resume_streaming(&mut criterion);
+}

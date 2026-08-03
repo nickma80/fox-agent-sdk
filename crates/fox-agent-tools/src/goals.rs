@@ -74,11 +74,19 @@ impl Tool for GoalTool {
     fn parameters_schema(&self) -> Value {
         json!({
             "type": "object",
+            "description": "Manage goals. Use `create` to add a goal, `list` to see all goals, `update` to modify a goal's fields, `focus` to set the current working goal, `checkpoint` to save progress on a goal, `show` to see details of one goal, `resume` to reactivate a paused goal.",
             "properties": {
                 "intent": intent_schema_property(),
-                "action": { "type": "string", "enum": ["create", "list", "show", "resume", "update", "checkpoint", "focus"] },
+                "action": {
+                    "type": "string",
+                    "enum": ["create", "list", "show", "resume", "update", "checkpoint", "focus"],
+                    "description": "Action to perform. Requires `id` field for: show, resume, update, focus. `id` optional for checkpoint (falls back to focused active goal). No `id` needed for create or list."
+                },
                 "scope": { "type": "string", "enum": ["session", "global"] },
-                "id": { "type": "string" },
+                "id": {
+                    "type": "string",
+                    "description": "Required for show, resume, update, and focus actions. Optional for checkpoint (defaults to focused active goal). Not used for create or list."
+                },
                 "title": { "type": "string" },
                 "description": { "type": "string" },
                 "status": { "type": "string", "enum": ["active", "paused", "completed", "abandoned"] },
@@ -186,7 +194,8 @@ fn handle_goal_show(
     scope: GoalScope,
 ) -> Result<Value, ToolError> {
     let id = params.id.ok_or_else(|| ToolError::Message {
-        message: "missing required field `id` for action=show".to_string(),
+        message: "missing required field `id` for action=show. Use `list` first to find the goal id."
+            .to_string(),
     })?;
     let goals = load_goals_with_store(store, &ctx.session_id, scope);
     let goal = goals
@@ -205,7 +214,8 @@ fn handle_goal_resume(
     scope: GoalScope,
 ) -> Result<Value, ToolError> {
     let id = params.id.ok_or_else(|| ToolError::Message {
-        message: "missing required field `id` for action=resume".to_string(),
+        message: "missing required field `id` for action=resume. Use `list` first to find the goal id."
+            .to_string(),
     })?;
     let mut goals = load_goals_with_store(store, &ctx.session_id, scope.clone());
     let idx = goals
@@ -244,7 +254,8 @@ fn handle_goal_update(
     scope: GoalScope,
 ) -> Result<Value, ToolError> {
     let id = params.id.ok_or_else(|| ToolError::Message {
-        message: "missing required field `id` for action=update".to_string(),
+        message: "missing required field `id` for action=update. Use `list` first to find the goal id, or `focus` on a goal before updating it."
+            .to_string(),
     })?;
     let mut goals = load_goals_with_store(store, &ctx.session_id, scope.clone());
     let mut updated: Option<Goal> = None;
@@ -342,7 +353,8 @@ fn handle_goal_focus(
     scope: GoalScope,
 ) -> Result<Value, ToolError> {
     let id = params.id.ok_or_else(|| ToolError::Message {
-        message: "missing required field `id` for action=focus".to_string(),
+        message: "missing required field `id` for action=focus. Use `list` first to find the goal id."
+            .to_string(),
     })?;
     let mut goals = load_goals_with_store(store, &ctx.session_id, scope.clone());
     let mut updated: Option<Goal> = None;

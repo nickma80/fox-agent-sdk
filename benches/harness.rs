@@ -28,14 +28,18 @@ pub async fn build_mock_agent(tools: Vec<Arc<dyn Tool>>) -> (Agent, MockProvider
 
 /// Initialise a tracing subscriber for Chrome trace output.
 /// Set `BENCH_TRACE_DIR` env var to enable; otherwise no-op.
-pub fn init_tracing() {
+///
+/// Returns the `FlushGuard` — callers must keep it alive until process exit
+/// so the trace file is fully written on drop.
+pub fn init_tracing() -> Option<tracing_chrome::FlushGuard> {
     let Ok(dir) = std::env::var("BENCH_TRACE_DIR") else {
-        return;
+        return None;
     };
-    let (chrome_layer, _guard) = ChromeLayerBuilder::new()
+    let (chrome_layer, guard) = ChromeLayerBuilder::new()
         .file(std::path::PathBuf::from(&dir).join("bench-trace.json"))
         .build();
     let _ = tracing_subscriber::registry().with(chrome_layer).try_init();
+    Some(guard)
 }
 
 // ── Standard test tools ──

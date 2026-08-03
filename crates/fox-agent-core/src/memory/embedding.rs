@@ -95,6 +95,9 @@ enum WorkerRequest {
 
 impl MistralEmbeddingProvider {
     pub fn from_config(config: &MemoryConfig) -> Result<Option<Self>, String> {
+        if !config.enabled {
+            return Ok(None);
+        }
         if config.embedding_model_path.is_none() && !config.auto_download_embedding_model {
             return Ok(None);
         }

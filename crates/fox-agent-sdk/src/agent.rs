@@ -714,19 +714,28 @@ impl Agent {
             let turn_id = self.allocate_turn_id();
             tool_loop_iterations += 1;
 
-            // P1: Tool loop upper limit
-            if tool_loop_iterations > MAX_TOOL_LOOP_ITERATIONS {
+            // P1: Tool loop upper limit (configurable via max_turns in BudgetConfig)
+            let effective_max = self
+                .governance
+                .as_ref()
+                .and_then(|g| {
+                    let max = g.budget().max_turns;
+                    if max > 0 { Some(max as u32) } else { None }
+                })
+                .unwrap_or(MAX_TOOL_LOOP_ITERATIONS)
+                .min(MAX_TOOL_LOOP_ITERATIONS);
+            if tool_loop_iterations > effective_max {
                 warn!(
                     iterations = tool_loop_iterations,
+                    limit = effective_max,
                     "Tool loop iteration limit reached"
                 );
                 return Err(self.handle_error(
                     event_tx,
                     turn_id,
-                    AgentError::Internal {
+                    AgentError::BudgetExceeded {
                         message: format!(
-                            "Exceeded maximum tool loop iterations ({})",
-                            MAX_TOOL_LOOP_ITERATIONS
+                            "Exceeded maximum tool loop iterations ({effective_max})"
                         ),
                     },
                 ));
@@ -1468,7 +1477,20 @@ impl Agent {
                     PermissionResult::Deny { reason } => {
                         info!(tool = %name, reason = %reason, "Tool denied by policy");
                         self.harness
-                            .push_message(Message::tool_result(&call_id, reason, true))
+                            .push_message(Message::tool_result(&call_id, reason.clone(), true))
+                            .await;
+                        // Keep the event stream balanced: ToolCallStart was
+                        // already emitted while streaming, so emit the matching
+                        // end for consumers (TUI, eval behavior rules).
+                        let _ = event_tx
+                            .send(AgentEvent::ToolCallEnd {
+                                call_id: call_id.clone(),
+                                output: ToolOutput {
+                                    text: format!("tool denied: {}", reason),
+                                    is_error: true,
+                                    json: None,
+                                },
+                            })
                             .await;
                         continue;
                     }
@@ -1559,6 +1581,17 @@ impl Agent {
                         info!(tool = %name, reason = %reason, "Tool blocked by PreToolUse hook");
                         self.harness
                             .push_message(Message::tool_result(&call_id, reason.clone(), true))
+                            .await;
+                        // Keep the event stream balanced (see Deny path above).
+                        let _ = event_tx
+                            .send(AgentEvent::ToolCallEnd {
+                                call_id: call_id.clone(),
+                                output: ToolOutput {
+                                    text: format!("tool blocked: {}", reason),
+                                    is_error: true,
+                                    json: None,
+                                },
+                            })
                             .await;
                         continue;
                     }

@@ -77,6 +77,15 @@ tracing-chrome = "0.7"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 proptest = "1.5"
 tempfile = "3"
+goldenscript = "0.8"
+test_each_file = "0.3"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+anyhow = "1"
+
+[features]
+swe_bench = []
+quality_judge = []
 
 [[bench]]
 name = "agent_bench"

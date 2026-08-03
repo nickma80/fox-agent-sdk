@@ -19,7 +19,11 @@ fn build_shell_command(cmd_str: &str) -> TokioCommand {
     {
         const CREATE_NO_WINDOW: u32 = 0x08000000;
         let mut cmd = TokioCommand::new("cmd.exe");
-        cmd.arg("/C").arg(cmd_str);
+        // Use /D /S /C + raw_arg so cmd_str is passed through unescaped.
+        // `cmd.arg("/C").arg(cmd_str)` would escape embedded `"` as `\"`,
+        // which cmd.exe does not understand, breaking quoted paths.
+        cmd.arg("/D").arg("/S").arg("/C");
+        cmd.raw_arg(cmd_str);
         cmd.creation_flags(CREATE_NO_WINDOW);
         cmd
     }
