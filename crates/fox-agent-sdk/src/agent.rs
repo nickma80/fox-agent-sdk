@@ -2088,10 +2088,8 @@ impl Agent {
     ) {
         let messages = self.harness.session_messages().await;
         let mut summary = build_turn_summary(turn_id, &messages, completed);
-        if semantic {
-            if let Err(e) = enhance_with_llm(&mut summary, &messages, &self.model).await {
-                warn!(error = %e, "final turn summary LLM enhancement failed; using deterministic fields");
-            }
+        if semantic && let Err(e) = enhance_with_llm(&mut summary, &messages, &self.model).await {
+            warn!(error = %e, "final turn summary LLM enhancement failed; using deterministic fields");
         }
         let _ = event_tx.send(AgentEvent::TurnSummary { summary }).await;
     }

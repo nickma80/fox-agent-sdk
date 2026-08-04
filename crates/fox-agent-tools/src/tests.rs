@@ -589,7 +589,7 @@ mod tools_tests {
     }
 
     #[tokio::test]
-    async fn memory_tool_supports_reindex_and_reembed_actions() {
+    async fn memory_tool_supports_reindex_action() {
         let tool = MemoryTool::new_test();
         let ctx = ToolContext {
             session_id: "mem-maint".into(),
@@ -608,20 +608,130 @@ mod tools_tests {
         .unwrap();
 
         let reindex = tool
-            .execute(json!({"action":"reindex"}), ctx.clone())
+            .execute(json!({"action":"reindex"}), ctx)
             .await
             .unwrap();
         assert!(reindex.text.contains("Reindexed"));
+    }
 
-        let reembed = tool
-            .execute(json!({"action":"reembed"}), ctx)
-            .await
-            .unwrap();
-        assert!(reembed.text.contains("Re-embedded"));
+    /// Deterministic wiki assistant for the `enrich` / `rebuild_index` tool test.
+    struct StaticWikiAssistant {
+        title: &'static str,
+        summary: &'static str,
+        tags: Vec<String>,
+        aliases: Vec<String>,
+    }
+
+    #[async_trait::async_trait]
+    impl fox_agent_core::WikiAssistant for StaticWikiAssistant {
+        async fn expand_query(
+            &self,
+            query: &str,
+        ) -> Result<fox_agent_core::QueryExpansion, String> {
+            Ok(fox_agent_core::QueryExpansion::from_query(query))
+        }
+
+        async fn rerank(
+            &self,
+            _query: &str,
+            candidates: &[fox_agent_core::MemoryEntry],
+        ) -> Result<Vec<fox_agent_core::RankedCandidate>, String> {
+            Ok(candidates
+                .iter()
+                .map(|c| fox_agent_core::RankedCandidate {
+                    id: c.id.clone(),
+                    score: 1.0,
+                    reason: "mock".into(),
+                })
+                .collect())
+        }
+
+        async fn enrich(
+            &self,
+            _entry: &fox_agent_core::MemoryEntry,
+            _existing_titles: &[String],
+        ) -> Result<fox_agent_core::EnrichedMemory, String> {
+            Ok(fox_agent_core::EnrichedMemory {
+                title: self.title.to_string(),
+                summary: self.summary.to_string(),
+                tags: self.tags.clone(),
+                aliases: self.aliases.clone(),
+                link_ids: vec![],
+            })
+        }
+
+        async fn are_same(&self, _a: &str, _b: &str) -> Result<bool, String> {
+            Ok(false)
+        }
     }
 
     #[tokio::test]
-    async fn memory_tool_supports_disable_enable_redact_and_refresh_clusters_actions() {
+    async fn memory_tool_supports_rebuild_index_and_enrich_actions() {
+        let manager =
+            MemoryManager::new_test().with_wiki_assistant(Arc::new(StaticWikiAssistant {
+                title: "Wiki Memory Title",
+                summary: "A wiki-style memory",
+                tags: vec!["wiki".to_string()],
+                aliases: vec!["wikititle".to_string()],
+            }));
+        let tool = MemoryTool::with_manager(manager);
+        let ctx = ToolContext {
+            session_id: "mem-wiki".into(),
+            message_id: "m1".into(),
+            tool_call_id: "t1".into(),
+            working_dir: None,
+            execution_mode: ToolExecutionMode::Foreground,
+            graceful_shutdown_requested: false,
+            progress_tx: None,
+        };
+        tool.execute(
+            json!({"action":"remember","content":"wiki memory content","category":"fact"}),
+            ctx.clone(),
+        )
+        .await
+        .unwrap();
+
+        let enrich = tool
+            .execute(json!({"action":"enrich"}), ctx.clone())
+            .await
+            .unwrap();
+        assert!(
+            enrich.text.contains("Enriched"),
+            "enrich output: {}",
+            enrich.text
+        );
+
+        let rebuild = tool
+            .execute(json!({"action":"rebuild_index"}), ctx.clone())
+            .await
+            .unwrap();
+        assert!(
+            rebuild.text.contains("Rebuilt index"),
+            "rebuild output: {}",
+            rebuild.text
+        );
+        let entries = rebuild
+            .json
+            .as_ref()
+            .and_then(|v| v.get("entries"))
+            .and_then(|v| v.as_u64())
+            .unwrap_or(0);
+        assert!(
+            entries >= 1,
+            "expected at least 1 index entry, got {entries}"
+        );
+
+        // 未装配 assistant 时 enrich 应为 no-op（返回 0，不报错）。
+        let plain_tool = MemoryTool::new_test();
+        let plain = plain_tool
+            .execute(json!({"action":"enrich"}), ctx)
+            .await
+            .unwrap();
+        assert!(plain.json.as_ref().and_then(|v| v.get("count")).is_some());
+    }
+
+    #[tokio::test]
+    async fn memory_tool_supports_disable_enable_redact_actions() {
         let tool = MemoryTool::new_test();
         let ctx = ToolContext {
             session_id: "mem-govern".into(),
@@ -669,21 +779,12 @@ mod tools_tests {
             .unwrap();
         assert!(redacted.text.contains("Redacted memory"));
 
-        let listed = tool
-            .execute(json!({"action":"list"}), ctx.clone())
-            .await
-            .unwrap();
+        let listed = tool.execute(json!({"action":"list"}), ctx).await.unwrap();
         assert!(listed.text.contains("[hidden]"));
-
-        let refreshed = tool
-            .execute(json!({"action":"refresh_clusters","scope":"all"}), ctx)
-            .await
-            .unwrap();
-        assert!(refreshed.text.contains("Refreshed clusters"));
     }
 
     #[tokio::test]
-    async fn memory_tool_supports_export_import_and_rebuild_ann_actions() {
+    async fn memory_tool_supports_export_and_import_actions() {
         let source_storage =
             std::env::temp_dir().join(format!("fox-agent-tools-memory-src-{}", Uuid::new_v4()));
         let source_project = std::env::temp_dir().join(format!(
@@ -731,12 +832,6 @@ mod tools_tests {
             .unwrap();
         assert!(exported.text.contains("Exported memories"));
         assert!(export_path.exists());
-
-        let rebuilt = source_tool
-            .execute(json!({"action":"rebuild_ann","scope":"all"}), source_ctx)
-            .await
-            .unwrap();
-        assert!(rebuilt.text.contains("Rebuilt ANN indexes"));
 
         let target_storage =
             std::env::temp_dir().join(format!("fox-agent-tools-memory-dst-{}", Uuid::new_v4()));

@@ -116,7 +116,7 @@ impl Tool for MemoryTool {
     }
 
     fn description(&self) -> &str {
-        "Manage cross-session memory. Supports remember, recall, search, list, forget, promote, disable, enable, redact, tag, link, related, stats, reembed, reindex, refresh_clusters, rebuild_ann, export, import, compact."
+        "Manage cross-session memory. Supports remember, recall, search, list, forget, promote, disable, enable, redact, tag, link, related, stats, reindex, rebuild_index, enrich, export, import, compact."
     }
 
     fn parameters_schema(&self) -> Value {
@@ -126,7 +126,7 @@ impl Tool for MemoryTool {
                 "intent": intent_schema_property(),
                 "action": {
                     "type": "string",
-                    "enum": ["remember", "recall", "search", "list", "forget", "promote", "disable", "enable", "redact", "tag", "link", "related", "stats", "reembed", "reindex", "refresh_clusters", "rebuild_ann", "export", "import", "compact"],
+                    "enum": ["remember", "recall", "search", "list", "forget", "promote", "disable", "enable", "redact", "tag", "link", "related", "stats", "reindex", "rebuild_index", "enrich", "export", "import", "compact"],
                     "description": "Action to perform."
                 },
                 "content": { "type": "string", "description": "Content to remember (for remember action)." },
@@ -141,7 +141,7 @@ impl Tool for MemoryTool {
                 "weight": { "type": "number", "description": "Link weight 0.0-1.0 (default: 0.5)." },
                 "depth": { "type": "integer", "description": "Graph traversal depth (default: 2)." },
                 "limit": { "type": "integer", "description": "Max results (default: 10)." },
-                "mode": { "type": "string", "enum": ["recent", "keyword", "semantic", "cascade"], "description": "Recall mode (default: keyword)." },
+                "mode": { "type": "string", "enum": ["recent", "keyword", "wiki"], "description": "Recall mode (default: keyword)." },
                 "file_path": { "type": "string", "description": "Path used by export/import actions." },
                 "merge": { "type": "boolean", "description": "Whether import should merge with existing memories (default: true)." },
                 "max_age_hours": { "type": "integer", "description": "Max age hours for compact/gc action (default: 720)." },
@@ -207,13 +207,10 @@ impl Tool for MemoryTool {
                 let mode = match input.mode.as_deref().unwrap_or("keyword") {
                     "recent" => RecallMode::Recent,
                     "keyword" => RecallMode::Keyword,
-                    "semantic" => RecallMode::Semantic,
-                    "cascade" => RecallMode::Cascade,
+                    "wiki" => RecallMode::Wiki,
                     other => {
                         return Err(ToolError::Message {
-                            message: format!(
-                                "Unknown mode: {other}. Use recent, keyword, semantic, or cascade"
-                            ),
+                            message: format!("Unknown mode: {other}. Use recent, keyword, or wiki"),
                         });
                     }
                 };
@@ -251,8 +248,7 @@ impl Tool for MemoryTool {
                         hit.retrieval_source
                     ));
                     out.push_str(&format!(
-                        "  breakdown: semantic={:?}, keyword={:?}, graph={:?}, recency={:.2}, trust={:.2}, final={:.2}\n\n",
-                        hit.score_breakdown.semantic_score,
+                        "  breakdown: keyword={:?}, graph={:?}, recency={:.2}, trust={:.2}, final={:.2}\n\n",
                         hit.score_breakdown.keyword_score,
                         hit.score_breakdown.graph_score,
                         hit.score_breakdown.recency_score,
@@ -274,7 +270,6 @@ impl Tool for MemoryTool {
                             "score": hit.score,
                             "source": format!("{:?}", hit.retrieval_source),
                             "score_breakdown": {
-                                "semantic": hit.score_breakdown.semantic_score,
                                 "keyword": hit.score_breakdown.keyword_score,
                                 "graph": hit.score_breakdown.graph_score,
                                 "recency": hit.score_breakdown.recency_score,
@@ -529,8 +524,8 @@ impl Tool for MemoryTool {
                     .map_err(|e| ToolError::Message { message: e })?;
                 Ok(ToolOutput {
                     text: format!(
-                        "Memory Graph Statistics:\n  Memories: {}\n  Tags: {}\n  Edges: {}\n  Clusters: {}",
-                        stats.0, stats.1, stats.2, stats.3
+                        "Memory Graph Statistics:\n  Memories: {}\n  Tags: {}\n  Edges: {}",
+                        stats.0, stats.1, stats.2
                     ),
                     is_error: false,
                     json: Some(json!({
@@ -538,22 +533,6 @@ impl Tool for MemoryTool {
                         "memories": stats.0,
                         "tags": stats.1,
                         "edges": stats.2,
-                        "clusters": stats.3,
-                    })),
-                })
-            }
-
-            "reembed" => {
-                let scope = Self::parse_scope(input.scope.as_deref(), MemoryScope::All)?;
-                let count = manager
-                    .reembed(scope)
-                    .map_err(|e| ToolError::Message { message: e })?;
-                Ok(ToolOutput {
-                    text: format!("Re-embedded {count} memories."),
-                    is_error: false,
-                    json: Some(json!({
-                        "action": "reembed",
-                        "count": count,
                     })),
                 })
             }
@@ -569,44 +548,6 @@ impl Tool for MemoryTool {
                     json: Some(json!({
                         "action": "reindex",
                         "count": count,
-                    })),
-                })
-            }
-
-            "refresh_clusters" => {
-                let scope = Self::parse_scope(input.scope.as_deref(), MemoryScope::All)?;
-                let stats = manager
-                    .refresh_clusters(scope)
-                    .map_err(|e| ToolError::Message { message: e })?;
-                Ok(ToolOutput {
-                    text: format!(
-                        "Refreshed clusters. project_clusters={}, global_clusters={}",
-                        stats.project_clusters, stats.global_clusters
-                    ),
-                    is_error: false,
-                    json: Some(json!({
-                        "action": "refresh_clusters",
-                        "project_clusters": stats.project_clusters,
-                        "global_clusters": stats.global_clusters,
-                    })),
-                })
-            }
-
-            "rebuild_ann" => {
-                let scope = Self::parse_scope(input.scope.as_deref(), MemoryScope::All)?;
-                let stats = manager
-                    .rebuild_ann(scope)
-                    .map_err(|e| ToolError::Message { message: e })?;
-                Ok(ToolOutput {
-                    text: format!(
-                        "Rebuilt ANN indexes. project_vectors={}, global_vectors={}",
-                        stats.project_vectors, stats.global_vectors
-                    ),
-                    is_error: false,
-                    json: Some(json!({
-                        "action": "rebuild_ann",
-                        "project_vectors": stats.project_vectors,
-                        "global_vectors": stats.global_vectors,
                     })),
                 })
             }
@@ -654,6 +595,50 @@ impl Tool for MemoryTool {
                         "merge": merge,
                         "project_memories": stats.project_memories,
                         "global_memories": stats.global_memories,
+                    })),
+                })
+            }
+
+            "rebuild_index" => {
+                let scope = Self::parse_scope(input.scope.as_deref(), MemoryScope::All)?;
+                // 重建 MemoryIndex 并持久化 `{graph}.index.json`（§3.3/§8.1）。
+                let index = manager
+                    .persist_index(scope)
+                    .map_err(|e| ToolError::Message { message: e })?;
+                Ok(ToolOutput {
+                    text: format!(
+                        "Rebuilt index ({} entries, updated {}).",
+                        index.entries.len(),
+                        index.updated_at
+                    ),
+                    is_error: false,
+                    json: Some(json!({
+                        "action": "rebuild_index",
+                        "entries": index.entries.len(),
+                        "updated_at": index.updated_at.to_rfc3339(),
+                    })),
+                })
+            }
+
+            "enrich" => {
+                let scope = Self::parse_scope(input.scope.as_deref(), MemoryScope::All)?;
+                // limit==0 表示不限（PRD §8.1）。
+                let limit = input.limit.unwrap_or(0);
+                let count = manager
+                    .backfill_enrich(scope, limit)
+                    .await
+                    .map_err(|e| ToolError::Message { message: e })?;
+                Ok(ToolOutput {
+                    text: if count > 0 {
+                        format!("Enriched {count} memories.")
+                    } else {
+                        "No memories enriched (all already enriched, or no wiki assistant attached)."
+                            .to_string()
+                    },
+                    is_error: false,
+                    json: Some(json!({
+                        "action": "enrich",
+                        "count": count,
                     })),
                 })
             }

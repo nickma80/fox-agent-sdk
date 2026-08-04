@@ -358,27 +358,27 @@ let config = FoxAgentSdkConfig {
 };
 ```
 
-### 4.4 Memory — 语义长期记忆系统
+### 4.4 Memory — LLM Wiki 语义长期记忆系统
 
 > 完整设计参见 **[memory_prd.md](./memory_prd.md)**。
 
-Memory 模块是一个完整的语义长期记忆系统，核心能力：
+Memory 模块是一个 LLM wiki 式长期记忆系统（无 embedding），核心能力：
 
 | 能力 | 说明 |
 |------|------|
-| 语义召回 | embedding cosine similarity 驱动，支持 ANN (HNSW) 加速 |
-| 图结构记忆 | MemoryGraph v2：记忆节点 + 标签 + 聚类 + 6 种关系边 |
-| 四级召回 | Recent → Keyword → Semantic → Cascade（BFS 图扩展） |
-| 自动 ingest | auto_extract：对话 → LLM 抽取 → 去重 → 冲突检测 → embed → 持久化 |
+| 语义召回 | LLM 查询扩展 + 词汇预筛 + LLM 重排（复用主 Agent Provider，无向量模型） |
+| 图结构记忆 | MemoryGraph：记忆节点 + 标签 + 5 种关系边（`[[链接]]` + 反向链接）|
+| 三级召回 | Recent → Keyword → Wiki（查询扩展 → 词汇预筛 → 重排 → BFS 图扩散）|
+| 自动 ingest | auto_extract：对话 → LLM 抽取 → 去重 → 冲突检测 → 入库 + 后台 enrich |
 | 冲突策略 | Ignore / Supersede / DowngradeConfidence / MarkContradictionEdge |
-| 提示注入 | 每轮 Semantic recall → 按 category 分组 → 预算截断 → dynamic_part |
-| 治理运维 | 保留策略、大小限制、导入导出、reembed、reindex、聚簇刷新、审计日志 |
-| 降级安全 | embedding 不可用时自动回退 keyword；文件损坏回退 .bak 备份 |
+| 提示注入 | 每轮 Wiki recall → 按 category 分组 → 预算截断 → dynamic_part（兜底注入 MemoryIndex）|
+| 治理运维 | 保留策略、大小限制、导入导出、rebuild_index、enrich、审计日志 |
+| 降级安全 | LLM 不可用时回退纯词汇召回；文件损坏回退 .bak 备份 |
 
 Memory Pipeline（异步，非阻塞主 turn）：
 1. **Trigger** — turn N 收集上下文触发异步检索
-2. **Search** — embedding + 相似度检索（ANN 加速）
-3. **Cascade** — memory graph BFS 扩展候选集
+2. **Search** — expand_query（LLM）→ 词汇预筛 → 可选 rerank（LLM）
+3. **Cascade** — memory graph BFS 扩展候选集（`[[链接]]` 扩散）
 4. **Verify** — 可选 sidecar 相关性验证
 5. **Stage** — 结果写入 pending（turn N+1 消费）
 6. **Inject** — turn N+1 注入到 system prompt（dynamic_part）
@@ -387,16 +387,16 @@ Memory Pipeline（异步，非阻塞主 turn）：
 
 ```rust
 // MemoryEntry — 一条长期记忆
-// 20+ 字段：content, embedding (384d), trust, confidence (时间衰减),
+// 20+ 字段：content, title/summary/aliases (LLM 增强), trust, confidence (时间衰减),
 //            category, tags, source, reinforcements, superseded_by...
 // 详见 memory_prd.md §2.2
 
 // RecallHit — 召回结果
-// score + score_breakdown (semantic/keyword/recency/graph/trust/final)
-// + retrieval_source (Recent/Keyword/Semantic/SemanticAnn/CascadeSeed/CascadeGraph)
+// score + score_breakdown (keyword/recency/graph/trust/final)
+// + retrieval_source (Recent/Keyword/CascadeSeed/CascadeGraph)
 ```
 
-配置入口：`MemoryConfig`（30+ 字段），详见 [memory_prd.md §9](./memory_prd.md#9-memoryconfig-完整配置)。
+配置入口：`MemoryConfig`（含 wiki 系列开关：`wiki_enabled`/`enrich_on_write`/`query_expansion_enabled`/`rerank_enabled` 等），详见 [memory_prd.md §9](./memory_prd.md#9-memoryconfig-完整配置)。
 
 ### 4.5 Tools — 工具系统
 

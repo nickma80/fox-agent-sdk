@@ -12,7 +12,6 @@ bincode.workspace = true
 chrono.workspace = true
 dirs.workspace = true
 futures.workspace = true
-mistralrs.workspace = true
 reqwest.workspace = true
 serde.workspace = true
 serde_json.workspace = true
@@ -20,6 +19,5 @@ thiserror.workspace = true
 tokio.workspace = true
 toml.workspace = true
 tracing.workspace = true
-vectorlite.workspace = true
 uuid.workspace = true
 

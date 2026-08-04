@@ -30,8 +30,8 @@ pub use tool::*;
 pub use utils::*;
 // Re-export memory types, but not `prompt` submodule (conflicts with crate-level prompt module)
 pub use event::*;
-pub use memory::embedding::{self, EmbeddingProvider, MistralEmbeddingProvider};
-pub use memory::graph::{self, ClusterEntry, Edge, EdgeKind, MemoryGraph, TagEntry};
+pub use memory::graph::{self, Edge, EdgeKind, MemoryGraph, TagEntry};
+pub use memory::index::{self, IndexEntry, MemoryIndex};
 pub use memory::prompt::{
     format_entries_for_prompt, format_recall_hits_display_prompt, format_recall_hits_prompt,
     format_relevant_display_prompt, format_relevant_prompt, select_recall_hits_for_injection,
@@ -43,10 +43,13 @@ pub use memory::types::{
     self, MemoryCategory, MemoryEntry, MemoryScope, NarrativeRecord, RecallMode, Reinforcement,
     TrustLevel,
 };
+pub use memory::wiki::{
+    self, EnrichedMemory, ProviderBackedWikiAssistant, QueryExpansion, RankedCandidate,
+    WikiAssistant,
+};
 pub use memory::{
-    AnnRebuildStats, ClusterRefreshStats, CompactStats, ExportStats, ImportStats, IngestionReport,
-    MemoryAuditEvent, MemoryExportBundle, MemoryManager, MemoryStateEvent, RecallHit,
-    RetrievalSource, ScoreBreakdown,
+    CompactStats, ExportStats, ImportStats, IngestionReport, MemoryAuditEvent, MemoryExportBundle,
+    MemoryManager, MemoryStateEvent, RecallHit, RetrievalSource, ScoreBreakdown, WikiExportStats,
 };
 pub use prompt::*;
 pub use report::*;

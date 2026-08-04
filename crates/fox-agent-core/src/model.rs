@@ -58,6 +58,15 @@ pub trait Model: Send + Sync {
     fn runtime_state(&self) -> ModelRuntimeState;
     /// Apply a state event.
     fn apply_state_event(&self, event: ModelStateEvent);
+
+    /// Access the underlying provider, when directly exposed.
+    ///
+    /// Returns `None` for composite/wrapped models that route through another
+    /// abstraction — the memory wiki assistant (`ProviderBackedWikiAssistant`)
+    /// is only assembled from a directly exposed provider.
+    fn provider(&self) -> Option<Arc<dyn Provider>> {
+        None
+    }
 }
 
 /// Default implementation of Model that wraps a single Provider.
@@ -79,14 +88,14 @@ impl DefaultModel {
             provider,
         }
     }
-
-    pub fn provider(&self) -> Arc<dyn Provider> {
-        self.provider.clone()
-    }
 }
 
 #[async_trait]
 impl Model for DefaultModel {
+    fn provider(&self) -> Option<Arc<dyn Provider>> {
+        Some(self.provider.clone())
+    }
+
     async fn complete(
         &self,
         messages: &[Message],

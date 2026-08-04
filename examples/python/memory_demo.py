@@ -48,7 +48,7 @@ def test_memory():
     mem = mem.with_project_dir(projdir)
     mem = mem.with_session_id("test-session-1")
     print(f"  Created: {mem}")
-    print(f"  Semantic enabled: {mem.semantic_enabled()}")
+    print(f"  Wiki enabled: {mem.wiki_enabled()}")
 
     # Store
     id1 = mem.remember("The user prefers Rust for backend development", category="preference", scope="project")
@@ -126,7 +126,7 @@ def test_memory_config_comprehensive():
         auto_extract_scope="Project",
         auto_extract_message_window=10,
         auto_extract_max_items_per_turn=5,
-        embedding_enabled=True,
+        wiki_enabled=True,
         max_results=20,
         injection_max_chars=2000,
         injection_max_per_category=5,
@@ -139,7 +139,7 @@ def test_memory_config_comprehensive():
 
     mem = MemoryManager(cfg)
     print(f"  Manager: {mem}")
-    print(f"  Semantic: {mem.semantic_enabled()}")
+    print(f"  Wiki: {mem.wiki_enabled()}")
     print("  PASSED\n")
 
 

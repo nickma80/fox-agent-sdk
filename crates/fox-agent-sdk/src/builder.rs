@@ -427,6 +427,8 @@ impl AgentBuilder {
         } else {
             Harness::new(sdk_config.clone(), self.working_dir.clone())
         };
+        // Assemble the LLM wiki assistant from the model's provider (PRD §6 Phase 6).
+        harness.attach_wiki_assistant(model.clone());
 
         // Override stores if explicitly provided
         if let Some(store) = self.session_store {
@@ -506,6 +508,15 @@ impl AgentBuilder {
                 Some(active_skill),
             )
             .await;
+
+            // Replace the default memory tool with one backed by the harness's
+            // memory_manager, so `enrich` / `rebuild_index` operate on the same
+            // storage as the injection pipeline and the wiki assistant is used
+            // (PRD §6 Phase 6). register_tool overwrites by name.
+            let memory_tool = Arc::new(fox_agent_tools::MemoryTool::with_manager(
+                agent.harness().memory_manager.core().clone(),
+            ));
+            agent.harness().register_tool(memory_tool).await;
         }
 
         if sdk_config.artifact_store.enabled {

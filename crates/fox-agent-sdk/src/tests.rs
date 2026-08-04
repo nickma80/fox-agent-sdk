@@ -733,7 +733,6 @@ mod sdk_tests {
                     auto_extract_scope: fox_agent_core::AutoExtractScope::Global,
                     auto_extract_message_window: 4,
                     verify_relevance: false,
-                    embedding_enabled: false,
                     ..Default::default()
                 },
                 storage_dir: mem_dir,

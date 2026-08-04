@@ -193,7 +193,7 @@ Output ONLY the formatted lines, no other text. If no NEW memories worth extract
     }
 }
 
-async fn call_provider(
+pub(crate) async fn call_provider(
     provider: &dyn Provider,
     model_id: &str,
     system: &str,

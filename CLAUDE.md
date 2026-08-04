@@ -118,9 +118,9 @@ The SDK implements three Claude Code-compatible extension systems, loaded from `
 ### Memory System
 
 `fox_agent_core::memory` provides graph-based long-term memory with:
-- **Knowledge Memory**: facts, preferences, entities, corrections — embedding-based semantic search + ANN index
+- **Knowledge Memory**: facts, preferences, entities, corrections — LLM wiki semantic search (query expansion + lexical prefilter + rerank, no embedding)
 - **Narrative Memory** (`MemoryCategory::Narrative`): structured turn-by-turn records produced by compaction — captures "user intent → actions → findings → decisions". Stored as JSON in `MemoryGraph`, injected as `## Session History` in prompts.
-- Auto-extraction from conversation, deduplication, clustering, contradiction handling
+- Auto-extraction from conversation, deduplication, contradiction handling
 
 ### Governance
 

@@ -884,7 +884,7 @@ approval.export_audit(&audit_path).await?;
 
 ## 6. 记忆系统
 
-Fox Agent SDK 内建完整的语义长期记忆系统，支持跨会话知识积累与召回。
+Fox Agent SDK 内建完整的 LLM wiki 式长期记忆系统（无 embedding），支持跨会话知识积累与召回。语义理解复用主 Agent 的 LLM，不依赖任何向量化模型。
 
 ### 6.1 三级作用域模型
 
@@ -902,11 +902,11 @@ Fox Agent SDK 内建完整的语义长期记忆系统，支持跨会话知识积
 
 ```
 MemoryManager → 统一入口（CRUD、召回、治理）
-MemoryGraph   → 图结构存储（节点 + 标签 + 聚类 + 边）
+MemoryGraph   → 图结构存储（节点 + 标签 + 边，[[链接]] + 反向链接）
+MemoryIndex   → 紧凑目录（title/tags/aliases/summary），随写随更
 Extractor     → LLM 驱动从对话中抽取候选记忆
 RelevanceChecker → LLM 校验记忆相关性与冲突
-EmbeddingProvider → 语义向量化（Rust 本地推理）
-ANN 索引      → HNSW 快速语义搜索（vectorlite）
+WikiAssistant → LLM 语义接口（查询扩展 / 重排 / enrich / 去重判断）
 ```
 
 ### 6.3 配置示例
@@ -914,9 +914,14 @@ ANN 索引      → HNSW 快速语义搜索（vectorlite）
 ```toml
 [memory]
 enabled = true                       # 启用记忆系统
-embedding_enabled = true             # 启用语义召回
-embedding_model_id = "Qwen/Qwen3-Embedding-0.6B"
-# embedding_model_path = "/local/path/to/model"
+
+# Wiki 语义检索（复用主 Agent LLM，无需 embedding 模型）
+wiki_enabled = true                  # 启用 wiki 检索（查询扩展/重排/链接发现）
+enrich_on_write = true               # 写入后后台 LLM 增强（title/summary/aliases/links）
+query_expansion_enabled = true       # LLM 查询扩展（关闭则退化为纯词汇召回）
+rerank_enabled = true                # LLM 重排（关闭则按词汇分直接截断）
+link_discovery_enabled = true        # 写入时发现与既有条目的 [[链接]]
+index_budget_chars = 1200            # MemoryIndex 注入字符预算
 
 # 召回与注入预算
 max_candidates = 30
@@ -936,10 +941,8 @@ auto_promote_enabled = false         # 开启后 strength ≥ 3 自动提升到 
 auto_promote_strength_threshold = 3
 auto_promote_target = "Project"
 
-# 去重与聚类
-dedupe_similarity_threshold = 0.92
-cluster_similarity_threshold = 0.9
-cluster_min_members = 2
+# 去重（词重叠 + 可选 LLM 判断）
+dedupe_min_overlap_ratio = 0.6
 
 # 冲突处理
 contradiction_policy = "MarkContradictionEdge"
@@ -948,7 +951,6 @@ contradiction_policy = "MarkContradictionEdge"
 # 治理
 # retention_days = 90
 # memory_size_limit = 10000
-rebuild_on_model_change = false     # embedding 模型变化时自动重嵌
 ```
 
 ```rust
@@ -983,9 +985,10 @@ pub struct MemoryEntry {
     pub active: bool,                   // 启用/禁用状态
     pub superseded_by: Option<String>,  // 被取代的 ID
     pub reinforcements: Vec<Reinforcement>,  // 强化面包屑（session_id, message_index, timestamp）
-    pub embedding: Option<Vec<f32>>,    // 语义向量
-    pub embedding_model: Option<String>, // 模型标识
-    pub embedding_version: Option<String>, // 模型版本
+    pub title: Option<String>,       // LLM 生成的一行式标题（wiki 页面名）
+    pub summary: Option<String>,     // LLM 生成的一句话摘要（用于 index 与注入）
+    pub aliases: Vec<String>,        // LLM 生成的别名/同义词（提升词汇召回命中）
+    pub enriched: bool,              // 是否已完成 LLM 增强
     pub confidence: f32,                // 置信度（0-1），支持时间衰减和访问加成
 }
 ```
@@ -1022,26 +1025,24 @@ Narrative 在后续 turn 的 prompt 中注入为 `## Session History` section。
 
 ### 6.7 召回模式
 
-| 模式 | 种子来源 | 排序权重 | 需要 embedding |
+| 模式 | 种子来源 | 排序权重 | 需要 LLM |
 |------|---------|---------|---------------|
 | **Recent** | 全部 active 记忆 | `recency × 0.85 + trust × 0.15` | 否 |
 | **Keyword** | `search_text` 关键词匹配 | `keyword × 0.65 + recency × 0.2 + trust × 0.15` | 否 |
-| **Semantic** | 全量 cosine 相似度 | `cosine × 0.7 + recency × 0.15 + trust × 0.15` | 是 |
-| **Cascade** | Semantic/Keyword top-k(×2) → BFS 图扩展 | seed score + graph score + recency + trust | 阶梯式 |
+| **Wiki** | 查询扩展 → 词汇预筛 → BFS 图扩散 | 词汇分 + 重排分 + recency + trust | 可选（`wiki_enabled` 开关） |
 
-当 embedding 不可用时自动回退到 Keyword 模式。
+当 `wiki_enabled` 未启用或 LLM 不可用时，Wiki 自动回退到纯词汇预筛 + 图扩散。
 
-### 6.8 ANN 索引（可选）
+### 6.8 Wiki 检索流程
 
-启用 ANN 后，Semantic 召回通过 HNSW 索引加速（引擎：`vectorlite`）：
-
-```toml
-ann_enabled = true
-ann_min_vectors = 256               # 达到此向量数才启用 ANN
-ann_candidate_multiplier = 8        # ANN 候选数 = limit × 此值
 ```
-
-索引文件存储在 `{graph_path}.ann.bin`，首次 semantic recall 时惰性构建。数据变化后自动失效并重建。
+recall(query, mode="wiki"):
+ ① 查询扩展（LLM，可选）：expand_query(query) → QueryExpansion
+    └── 失败/未启用 → 纯 query 词汇
+ ② 词汇预筛：title(3.0) / aliases(2.0) / tags(1.5) / content(1.0) 加权 → top-N
+ ③ LLM 重排（可选）：rerank(query, candidates) → top-K（limit × 2）
+ ④ 图链接 BFS 扩散：cascade_retrieve(seed_ids, seed_scores, depth) → 合并取 top_k
+```
 
 ### 6.9 记忆注入 Context 的完整流程
 
@@ -1050,7 +1051,7 @@ ann_candidate_multiplier = 8        # ANN 候选数 = limit × 此值
 
 1. trigger_memory_for_next_turn()               [后台 tokio::spawn]
    └── 提取最新 user message 文本作为 query
-   └── recall(MemoryScope::All, Cascade)
+   └── recall(MemoryScope::All, Wiki)
         ├── 返回 RecallHit 列表（按综合得分排序）
         └── select_recall_hits_for_injection()
              ├── per-category ≤ max_per_category 条（默认 3）
@@ -1077,11 +1078,11 @@ ann_candidate_multiplier = 8        # ANN 候选数 = limit × 此值
   │
   ▼
 [2] For each candidate:
-  ├── embed 生成语义向量
+  ├── refresh_search_text（纯文本归一化，含 title/aliases）
   ├── verify_relevance（LLM 校验）
-  ├── find_duplicate → reinforce（strength+1, confidence+0.05）
+  ├── find_duplicate → reinforce（词重叠判断，可选 LLM are_same）
   ├── find_contradiction → apply_contradiction_policy
-  └── remember → 写入 graph + 持久化
+  └── remember → 写入 graph + 持久化 + 后台 enrich（title/summary/aliases/links）
 ```
 
 ### 6.11 冲突处理策略
@@ -1104,9 +1105,9 @@ ann_candidate_multiplier = 8        # ANN 候选数 = limit × 此值
     │   └── {session_id}.json
     ├── projects/                      ← Project 记忆（跨会话共享）
     │   └── {project_hash}.json
-    │   └── {project_hash}.ann.bin     ← HNSW 索引
+    │   └── {project_hash}.index.json  ← MemoryIndex（随写随更）
     ├── global.json                    ← Global 记忆
-    ├── global.ann.bin                 ← HNSW 索引
+    ├── global.index.json              ← MemoryIndex
     └── memory.audit.jsonl             ← 审计日志
 ```
 
@@ -1114,18 +1115,19 @@ ann_candidate_multiplier = 8        # ANN 候选数 = limit × 此值
 
 | 操作 | 方法 | 说明 |
 |------|------|------|
-| 写入 | `remember(entry, scope)` | 自动 embed + 持久化 |
-| 召回 | `recall(query, limit, mode, scope)` | 4 种策略 |
+| 写入 | `remember(entry, scope)` | 同步快路径 + 后台 enrich（LLM 生成 title/summary/aliases/links）|
+| 召回 | `recall(query, limit, mode, scope)` | 3 种策略（Recent/Keyword/Wiki）|
 | 搜索 | `search(text, scope)` | 精确关键词搜索 |
 | 删除 | `forget(id)` | 从图中移除 |
 | 禁用 | `disable_memory(id)` / `enable_memory(id)` | 标记 active 字段 |
-| 脱敏 | `redact_memory(id, replacement)` | 替换内容 + 重新 embed |
+| 脱敏 | `redact_memory(id, replacement)` | 替换内容 + 刷新 search_text |
 | 提升 | `promote_memory(id, Session → Project)` | 单向，不可降级 |
 | 导出 | `export_to_path(scope, path)` | JSON bundle |
 | 导入 | `import_from_path(path, merge)` | 合并或替换 |
-| GC | `gc(max_age_hours)` | 清理过期文件（含 session_scoped） |
+| GC | `gc(max_age_hours)` | 清理过期文件（含 session_scoped）|
 | 压缩 | `compact(scope)` | 保留策略 + 大小限制 |
-| 重嵌 | `reembed(scope)` | 模型变化后重建所有 embedding |
+| 增强 | `enrich(id)` | 对指定条目执行 LLM 增强 |
+| 重建索引 | `rebuild_index(scope)` | 重建 MemoryIndex + 补 enrich |
 
 SDK 层 API：
 
@@ -1137,7 +1139,7 @@ mem_manager.add_memory("用户偏好中文回复").await;
 // 也可以直接操作 core MemoryManager：
 let core = mem_manager.core();
 core.remember(entry, MemoryScope::Project)?;
-core.recall(Some("中文偏好"), 5, RecallMode::Cascade, MemoryScope::All)?;
+core.recall(Some("中文偏好"), 5, RecallMode::Wiki, MemoryScope::All)?;
 ```
 
 ### 6.14 记忆工作流示例

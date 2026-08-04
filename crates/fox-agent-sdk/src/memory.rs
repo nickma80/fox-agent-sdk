@@ -10,8 +10,8 @@ use async_trait::async_trait;
 use fox_agent_core::{
     AgentEvent, AgentEventTx, ContentBlock, ExtractedMemory, MemoryConfig, MemoryExtractor,
     MemoryManager as CoreMemoryManager, MemoryRelevanceChecker, MemoryScope, Message, Model,
-    RecallMode, Role, format_recall_hits_display_prompt, format_recall_hits_prompt,
-    select_recall_hits_for_injection,
+    ProviderBackedWikiAssistant, RecallMode, Role, format_recall_hits_display_prompt,
+    format_recall_hits_prompt, select_recall_hits_for_injection,
 };
 use futures::StreamExt;
 use std::path::PathBuf;
@@ -139,6 +139,19 @@ impl MemoryManager {
         self
     }
 
+    /// Attach a `ProviderBackedWikiAssistant` built from the model's provider
+    /// (PRD §6 Phase 6).
+    ///
+    /// Enables LLM-backed query expansion / rerank / enrich / dedupe.  No-op
+    /// when the model does not expose a direct provider.
+    pub fn with_wiki_assistant(mut self, model: Arc<dyn Model>) -> Self {
+        if let Some(provider) = model.provider() {
+            let assistant = ProviderBackedWikiAssistant::new(provider, model.model_id());
+            self.core = self.core.with_wiki_assistant(Arc::new(assistant));
+        }
+        self
+    }
+
     /// Store a memory entry via the core MemoryManager (project scope).
     pub async fn add_memory(&self, content: impl Into<String>) -> String {
         let entry = fox_agent_core::MemoryEntry::new(fox_agent_core::MemoryCategory::Fact, content);
@@ -178,24 +191,45 @@ impl MemoryManager {
                     .unwrap_or_default();
 
                 if query.is_empty() {
+                    // §7.1 step 3：无具体查询的轮次注入 MemoryIndex 摘要，
+                    // 让 agent「知道有什么」，需要细节时再用 memory 工具取整条。
+                    Self::inject_index_digest(&core, cfg.index_budget_chars, &memory_state).await;
                     return;
                 }
 
-                let results = match core.recall_detailed(
-                    Some(&query),
-                    cfg.max_results,
-                    if core.semantic_enabled() {
-                        RecallMode::Cascade
-                    } else {
-                        RecallMode::Keyword
-                    },
-                    MemoryScope::All,
-                ) {
-                    Ok(r) => r,
-                    Err(_) => return,
+                let results = if core.wiki_enabled() {
+                    // Wiki 模式：assistant 已装配时走 LLM 查询扩展 + 重排的异步
+                    // 检索；失败时回退到同步词汇预筛 + 图扩散路径。
+                    match core
+                        .recall_wiki_async(&query, cfg.max_results, MemoryScope::All)
+                        .await
+                    {
+                        Ok(hits) => hits,
+                        Err(_) => match core.recall_detailed(
+                            Some(&query),
+                            cfg.max_results,
+                            RecallMode::Wiki,
+                            MemoryScope::All,
+                        ) {
+                            Ok(hits) => hits,
+                            Err(_) => return,
+                        },
+                    }
+                } else {
+                    match core.recall_detailed(
+                        Some(&query),
+                        cfg.max_results,
+                        RecallMode::Keyword,
+                        MemoryScope::All,
+                    ) {
+                        Ok(hits) => hits,
+                        Err(_) => return,
+                    }
                 };
 
                 if results.is_empty() {
+                    // 兜底：具体查询未命中时同样注入索引摘要（§7.1 step 3）。
+                    Self::inject_index_digest(&core, cfg.index_budget_chars, &memory_state).await;
                     return;
                 }
 
@@ -235,6 +269,26 @@ impl MemoryManager {
             }
             .in_current_span(),
         );
+    }
+
+    /// §7.1 step 3：注入 MemoryIndex 摘要（按 `index_budget_chars` 裁剪），
+    /// 用于无具体查询或查询未命中的轮次。空索引时为 no-op。
+    async fn inject_index_digest(
+        core: &CoreMemoryManager,
+        budget_chars: usize,
+        memory_state: &Arc<RwLock<MemoryInjectionState>>,
+    ) {
+        let Some(digest) = core.index_to_prompt(MemoryScope::All, budget_chars) else {
+            return;
+        };
+        let injection = MemoryInjection {
+            prompt: format!("{digest}\n"),
+            display_prompt: None,
+            count: 0,
+            memory_ids: vec![],
+        };
+        let mut state = memory_state.write().await;
+        let _ = state.apply(MemoryInjectionEvent::InjectionComputed { injection });
     }
 
     pub fn trigger_ingestion_for_turn(
@@ -433,4 +487,30 @@ async fn run_memory_prompt(
         }
     }
     Ok(output)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn inject_index_digest_injects_when_entries_exist_and_noop_when_empty() {
+        // 空索引：no-op，不产生注入。
+        let core = CoreMemoryManager::new_test();
+        let state = Arc::new(RwLock::new(MemoryInjectionState::default()));
+        MemoryManager::inject_index_digest(&core, 1_200, &state).await;
+        assert!(state.read().await.pending_injection.is_none());
+
+        // 有条目：注入 MemoryIndex 摘要（§7.1 step 3）。
+        let mut titled =
+            fox_agent_core::MemoryEntry::new(fox_agent_core::MemoryCategory::Fact, "content body");
+        titled.title = Some("Rust Errors".into());
+        titled.summary = Some("Handle errors with Result".into());
+        let _ = core.remember_project(titled).unwrap();
+        MemoryManager::inject_index_digest(&core, 1_200, &state).await;
+        let guard = state.read().await;
+        let injection = guard.pending_injection.as_ref().expect("injection pending");
+        assert!(injection.prompt.contains("Rust Errors"));
+        assert!(injection.prompt.contains("Handle errors with Result"));
+    }
 }

@@ -96,10 +96,9 @@ pub enum RecallMode {
     Recent,
     /// Plain-text keyword search on search_text
     Keyword,
-    /// Embedding cosine similarity (needs `memory-embeddings` feature)
-    Semantic,
-    /// Semantic + BFS graph cascade expansion
-    Cascade,
+    /// LLM wiki: query expansion + lexical prefilter + optional LLM rerank +
+    /// graph link expansion (replaces the former `Cascade` mode).
+    Wiki,
 }
 
 // ── Data structures ──
@@ -139,15 +138,18 @@ pub struct MemoryEntry {
     pub superseded_by: Option<String>,
     #[serde(default)]
     pub reinforcements: Vec<Reinforcement>,
-    /// Embedding vector (384-dim for MiniLM-style).
+    /// LLM-generated one-line title (wiki page name).
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub embedding: Option<Vec<f32>>,
-    /// Embedding model identifier used to generate `embedding`.
+    pub title: Option<String>,
+    /// LLM-generated one-sentence summary (used for index & injection).
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub embedding_model: Option<String>,
-    /// Embedding model/version fingerprint used to detect re-embed needs.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub embedding_version: Option<String>,
+    pub summary: Option<String>,
+    /// LLM-generated aliases/synonyms (boost lexical recall hits).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub aliases: Vec<String>,
+    /// Whether LLM enrichment (title/aliases/links) has completed.
+    #[serde(default)]
+    pub enriched: bool,
     /// Confidence score 0.0-1.0.
     #[serde(default = "default_confidence")]
     pub confidence: f32,
@@ -181,15 +183,36 @@ impl MemoryEntry {
             active: true,
             superseded_by: None,
             reinforcements: Vec::new(),
-            embedding: None,
-            embedding_model: None,
-            embedding_version: None,
+            title: None,
+            summary: None,
+            aliases: Vec::new(),
+            enriched: false,
             confidence: 1.0,
         }
     }
 
     pub fn refresh_search_text(&mut self) {
-        self.search_text = normalize_memory_search_text(&self.content, &self.tags);
+        // Normalization sources: title + aliases + tags + content (LLM wiki).
+        let mut parts: Vec<&str> = Vec::new();
+        if let Some(t) = self
+            .title
+            .as_deref()
+            .map(str::trim)
+            .filter(|t| !t.is_empty())
+        {
+            parts.push(t);
+        }
+        for alias in &self.aliases {
+            let a = alias.trim();
+            if !a.is_empty() {
+                parts.push(a);
+            }
+        }
+        for tag in &self.tags {
+            parts.push(tag.trim());
+        }
+        parts.push(self.content.trim());
+        self.search_text = normalize_memory_search_text(&parts.join(" "), &[]);
     }
 
     pub fn searchable_text(&self) -> std::borrow::Cow<'_, str> {
@@ -262,22 +285,6 @@ impl MemoryEntry {
         self.active = false;
         self.superseded_by = Some(new_id.into());
     }
-
-    pub fn with_embedding(mut self, embedding: Vec<f32>) -> Self {
-        self.embedding = Some(embedding);
-        self
-    }
-
-    pub fn set_embedding_metadata(
-        &mut self,
-        embedding: Vec<f32>,
-        model_name: impl Into<String>,
-        version: impl Into<String>,
-    ) {
-        self.embedding = Some(embedding);
-        self.embedding_model = Some(model_name.into());
-        self.embedding_version = Some(version.into());
-    }
 }
 
 // ── Narrative record ──
@@ -294,7 +301,7 @@ impl MemoryEntry {
 ///
 /// - Fast session restore (load narratives instead of full messages)
 /// - Cross-session context (previous session's work visible to the model)
-/// - Semantic search over past tasks ("what did I ask about last time?")
+/// - Keyword/wiki recall over past tasks ("what did I ask about last time?")
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct NarrativeRecord {
     /// Turn range this record covers (inclusive).

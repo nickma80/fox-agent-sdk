@@ -1,4 +1,4 @@
-//! Graph-based memory storage with tags, clusters, and semantic links.
+//! Graph-based memory storage with tags, links, and wiki metadata.
 //! MemoryGraph v2 — HashMap-based for clean JSON serialization.
 
 use crate::memory::ranking::top_k_by_score;
@@ -15,7 +15,6 @@ pub const GRAPH_VERSION: u32 = 2;
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum EdgeKind {
     HasTag,
-    InCluster,
     RelatesTo {
         #[serde(default = "default_weight")]
         weight: f32,
@@ -33,7 +32,6 @@ impl EdgeKind {
     pub fn traversal_weight(&self) -> f32 {
         match self {
             EdgeKind::HasTag => 0.8,
-            EdgeKind::InCluster => 0.6,
             EdgeKind::RelatesTo { weight } => *weight,
             EdgeKind::Supersedes => 0.9,
             EdgeKind::Contradicts => 0.3,
@@ -83,47 +81,9 @@ impl TagEntry {
     }
 }
 
-/// A cluster node (auto-discovered grouping via embeddings).
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ClusterEntry {
-    pub id: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub name: Option<String>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub centroid: Vec<f32>,
-    pub member_count: u32,
-    pub created_at: DateTime<Utc>,
-    pub updated_at: DateTime<Utc>,
-}
-
-impl ClusterEntry {
-    pub fn new(id: impl Into<String>) -> Self {
-        let id = id.into();
-        let now = Utc::now();
-        Self {
-            id: format!("cluster:{id}"),
-            name: None,
-            centroid: Vec::new(),
-            member_count: 0,
-            created_at: now,
-            updated_at: now,
-        }
-    }
-}
-
 /// Graph metadata for tracking statistics.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct GraphMetadata {
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub last_cluster_update: Option<DateTime<Utc>>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub last_embedding_rebuild_at: Option<DateTime<Utc>>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub embedding_model: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub embedding_version: Option<String>,
-    #[serde(default)]
-    pub total_embeddings: u64,
     #[serde(default)]
     pub retrieval_count: u64,
     #[serde(default)]
@@ -137,8 +97,6 @@ pub struct MemoryGraph {
     pub memories: HashMap<String, MemoryEntry>,
     #[serde(default)]
     pub tags: HashMap<String, TagEntry>,
-    #[serde(default)]
-    pub clusters: HashMap<String, ClusterEntry>,
     #[serde(default)]
     pub edges: HashMap<String, Vec<Edge>>,
     #[serde(default, skip_serializing_if = "HashMap::is_empty")]
@@ -159,7 +117,6 @@ impl MemoryGraph {
             graph_version: GRAPH_VERSION,
             memories: HashMap::new(),
             tags: HashMap::new(),
-            clusters: HashMap::new(),
             edges: HashMap::new(),
             reverse_edges: HashMap::new(),
             metadata: GraphMetadata::default(),
@@ -172,7 +129,7 @@ impl MemoryGraph {
         self.memories.len()
     }
     pub fn node_count(&self) -> usize {
-        self.memories.len() + self.tags.len() + self.clusters.len()
+        self.memories.len() + self.tags.len()
     }
     pub fn edge_count(&self) -> usize {
         self.edges.values().map(|v| v.len()).sum()
@@ -235,10 +192,6 @@ impl MemoryGraph {
 
     pub fn active_memories(&self) -> impl Iterator<Item = &MemoryEntry> {
         self.memories.values().filter(|m| m.active)
-    }
-
-    pub fn cluster_count(&self) -> usize {
-        self.clusters.len()
     }
 
     // ── Tags ──
@@ -364,95 +317,6 @@ impl MemoryGraph {
         self.add_edge(id_b, id_a, EdgeKind::Contradicts);
     }
 
-    pub fn refresh_clusters(&mut self, similarity_threshold: f32, min_members: usize) -> usize {
-        self.clear_clusters();
-
-        let mut candidates: Vec<(String, Vec<f32>)> = self
-            .active_memories()
-            .filter_map(|entry| {
-                entry
-                    .embedding
-                    .as_ref()
-                    .filter(|embedding| !embedding.is_empty())
-                    .map(|embedding| (entry.id.clone(), embedding.clone()))
-            })
-            .collect();
-        candidates.sort_by(|a, b| a.0.cmp(&b.0));
-
-        let mut groups: Vec<TempCluster> = Vec::new();
-        for (memory_id, embedding) in candidates {
-            let mut best_idx = None;
-            let mut best_score = 0.0f32;
-            for (idx, group) in groups.iter().enumerate() {
-                let Some(score) = cosine_similarity(&group.centroid, &embedding) else {
-                    continue;
-                };
-                if score >= similarity_threshold && score > best_score {
-                    best_score = score;
-                    best_idx = Some(idx);
-                }
-            }
-
-            if let Some(idx) = best_idx {
-                groups[idx].add_member(memory_id, embedding);
-            } else {
-                groups.push(TempCluster::new(memory_id, embedding));
-            }
-        }
-
-        let now = Utc::now();
-        let mut retained = 0usize;
-        for (idx, group) in groups.into_iter().enumerate() {
-            if group.members.len() < min_members.max(1) || group.centroid.is_empty() {
-                continue;
-            }
-            retained += 1;
-            let cluster_id = format!("cluster:auto-{}", idx + 1);
-            self.clusters.insert(
-                cluster_id.clone(),
-                ClusterEntry {
-                    id: cluster_id.clone(),
-                    name: Some(format!("Auto Cluster {}", idx + 1)),
-                    centroid: group.centroid.clone(),
-                    member_count: group.members.len() as u32,
-                    created_at: now,
-                    updated_at: now,
-                },
-            );
-            for member_id in group.members {
-                self.add_edge(&member_id, &cluster_id, EdgeKind::InCluster);
-            }
-        }
-        self.metadata.last_cluster_update = Some(now);
-        retained
-    }
-
-    pub fn clear_clusters(&mut self) {
-        let cluster_ids: HashSet<String> = self.clusters.keys().cloned().collect();
-        if cluster_ids.is_empty() {
-            self.metadata.last_cluster_update = Some(Utc::now());
-            return;
-        }
-
-        self.clusters.clear();
-        self.reverse_edges
-            .retain(|target, _| !cluster_ids.contains(target));
-
-        let mut empty_sources = Vec::new();
-        for (source, edges) in &mut self.edges {
-            edges.retain(|edge| {
-                !(matches!(edge.kind, EdgeKind::InCluster) || cluster_ids.contains(&edge.target))
-            });
-            if edges.is_empty() {
-                empty_sources.push(source.clone());
-            }
-        }
-        for source in empty_sources {
-            self.edges.remove(&source);
-        }
-        self.metadata.last_cluster_update = Some(Utc::now());
-    }
-
     // ── Cascade (BFS) Retrieval ──
 
     /// BFS cascade retrieval starting from seed memories.
@@ -489,19 +353,14 @@ impl MemoryGraph {
                 let decay = 0.7_f32.powi(depth as i32 + 1);
                 let new_score = score * edge_weight * decay;
 
-                if target.starts_with("tag:") || target.starts_with("cluster:") {
-                    let propagated = if target.starts_with("cluster:") {
-                        (new_score * 1.1).min(1.0)
-                    } else {
-                        new_score
-                    };
+                if target.starts_with("tag:") {
                     for src_id in self.get_incoming(target) {
                         let src_id = src_id.to_string();
                         if !visited.contains(&src_id) && self.memories.contains_key(&src_id) {
                             let existing = results.get(&src_id).copied().unwrap_or(0.0);
-                            if propagated > existing {
-                                results.insert(src_id.clone(), propagated);
-                                queue.push_back((src_id, propagated, depth + 1));
+                            if new_score > existing {
+                                results.insert(src_id.clone(), new_score);
+                                queue.push_back((src_id, new_score, depth + 1));
                             }
                         }
                     }
@@ -516,46 +375,4 @@ impl MemoryGraph {
         }
         top_k_by_score(results, max_results)
     }
-}
-
-struct TempCluster {
-    members: Vec<String>,
-    centroid: Vec<f32>,
-}
-
-impl TempCluster {
-    fn new(memory_id: String, embedding: Vec<f32>) -> Self {
-        Self {
-            members: vec![memory_id],
-            centroid: embedding,
-        }
-    }
-
-    fn add_member(&mut self, memory_id: String, embedding: Vec<f32>) {
-        let existing_members = self.members.len() as f32;
-        for (idx, value) in embedding.iter().enumerate() {
-            if let Some(centroid) = self.centroid.get_mut(idx) {
-                *centroid = ((*centroid * existing_members) + *value) / (existing_members + 1.0);
-            }
-        }
-        self.members.push(memory_id);
-    }
-}
-
-fn cosine_similarity(lhs: &[f32], rhs: &[f32]) -> Option<f32> {
-    if lhs.len() != rhs.len() || lhs.is_empty() {
-        return None;
-    }
-    let mut dot = 0.0f32;
-    let mut lhs_norm = 0.0f32;
-    let mut rhs_norm = 0.0f32;
-    for (a, b) in lhs.iter().zip(rhs.iter()) {
-        dot += a * b;
-        lhs_norm += a * a;
-        rhs_norm += b * b;
-    }
-    if lhs_norm <= f32::EPSILON || rhs_norm <= f32::EPSILON {
-        return None;
-    }
-    Some(dot / (lhs_norm.sqrt() * rhs_norm.sqrt()))
 }

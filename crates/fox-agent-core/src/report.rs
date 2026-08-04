@@ -98,9 +98,11 @@ mod tests {
 
     #[test]
     fn test_cache_hit_ratio() {
-        let mut report = TokenReport::default();
-        report.total_input = 1000;
-        report.cache_read = 400;
+        let report = TokenReport {
+            total_input: 1000,
+            cache_read: 400,
+            ..Default::default()
+        };
         assert!((report.cache_hit_ratio() - 0.4).abs() < 0.001);
     }
 

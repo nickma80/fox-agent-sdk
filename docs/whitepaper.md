@@ -286,7 +286,6 @@ graph TD
     MG[MemoryGraph] --> ME
     MG --> Edge
     MG --> TagEntry
-    MG --> ClusterEntry
 ```
 
 **核心组件**：
@@ -297,8 +296,8 @@ graph TD
 | `MemoryGraph` | 基于图结构的记忆存储（节点=记忆，边=关系） |
 | `MemoryExtractor` | 从会话消息中自动提取记忆（基于 LLM） |
 | `MemoryRelevanceChecker` | 基于 LLM 的相关性校验 |
-| `EmbeddingProvider` | 语义嵌入生成（默认 Mistral） |
-| ANN 索引 | 本地 HNSW 索引加速语义搜索 |
+| `WikiAssistant` | LLM 语义接口（查询扩展 / 重排 / enrich / 去重判断） |
+| `MemoryIndex` | 紧凑目录（title/tags/aliases/summary），随写随更 |
 
 **召回模式**：
 - `RecallMode::Relevant`：LLM 相关性校验 + 语义检索
@@ -581,7 +580,7 @@ agent.run_once("continue where we left off").await?;
 ### 5.5 性能保障
 
 - Prompt 拆分（static / dynamic）支持 Provider 缓存优化
-- HNSW ANN 索引加速记忆语义召回
+- LLM wiki 召回（查询扩展 + 词汇预筛 + 重排 + 图扩散），无向量索引
 - `CompactionManager` 上下文窗口控制
 - 工具并发 Semaphore 防止资源耗尽
 - 工具超时保护防阻塞
@@ -601,7 +600,7 @@ agent.run_once("continue where we left off").await?;
 | Swarm | Coordinator+Supervisor | 需自建 | Built-in | 无 |
 | MCP | 完整客户端 | 集成中 | 无 | Built-in |
 | 事件回放 | JSONL + Golden Test | 无内置 | 无内置 | 无 |
-| 记忆系统 | Graph+Embedding+ANN | RAG（需集成） | 有限 | 无 |
+| 记忆系统 | Graph+LLM Wiki（无 embedding） | RAG（需集成） | 有限 | 无 |
 | 域自适应 | AGENTS.md+Overlay | Prompt Template | 有限 | AGENTS.md |
 
 ---
@@ -615,7 +614,7 @@ agent.run_once("continue where we left off").await?;
 3. **内置工具集**（15+ 工具涵盖文件、Shell、搜索、规划、记忆、技能）
 4. **会话持久化**（SessionStore + SessionSnapshot + 自动快照）
 5. **上下文压缩**（多触发策略 + 摘要）
-6. **记忆系统**（Graph + Embedding + ANN + LLM 校验）
+6. **记忆系统**（Graph + LLM Wiki 无 embedding 检索）
 7. **权限审批**（4 种策略 + 3 层缓存 + 审计）
 8. **规划持久化**（Todo + VersionedPlan + Goal）
 9. **运行治理**（Token/Cost Budget + Metrics Hooks + 工具并发控制）

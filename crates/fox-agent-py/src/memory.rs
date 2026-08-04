@@ -15,7 +15,7 @@ use std::path::PathBuf;
 
 /// Python binding for MemoryConfig.
 ///
-/// Controls all aspects of the memory system: enabling, embeddings,
+/// Controls all aspects of the memory system: enabling, LLM-wiki recall,
 /// auto-extraction, injection limits, deduplication, and retention.
 #[pyclass(name = "MemoryConfig", module = "fox_agent_sdk._core")]
 #[derive(Clone)]
@@ -34,7 +34,7 @@ impl PyMemoryConfig {
         auto_extract_scope = "Project",
         auto_extract_message_window = 6,
         auto_extract_max_items_per_turn = 4,
-        embedding_enabled = true,
+        wiki_enabled = true,
         max_results = 10,
         injection_max_chars = 1500,
         injection_max_per_category = 3,
@@ -49,7 +49,7 @@ impl PyMemoryConfig {
         auto_extract_scope: &str,
         auto_extract_message_window: usize,
         auto_extract_max_items_per_turn: usize,
-        embedding_enabled: bool,
+        wiki_enabled: bool,
         max_results: usize,
         injection_max_chars: usize,
         injection_max_per_category: usize,
@@ -76,7 +76,7 @@ impl PyMemoryConfig {
                 auto_extract_scope: scope,
                 auto_extract_message_window,
                 auto_extract_max_items_per_turn,
-                embedding_enabled,
+                wiki_enabled,
                 max_results,
                 injection_max_chars,
                 injection_max_per_category,
@@ -161,19 +161,16 @@ impl PyRecallMode {
     #[classattr]
     const KEYWORD: &'static str = "keyword";
     #[classattr]
-    const SEMANTIC: &'static str = "semantic";
-    #[classattr]
-    const CASCADE: &'static str = "cascade";
+    const WIKI: &'static str = "wiki";
 }
 
 fn parse_mode(s: &str) -> PyResult<RecallMode> {
     match s {
         "recent" => Ok(RecallMode::Recent),
         "keyword" => Ok(RecallMode::Keyword),
-        "semantic" => Ok(RecallMode::Semantic),
-        "cascade" => Ok(RecallMode::Cascade),
+        "wiki" => Ok(RecallMode::Wiki),
         other => Err(pyo3::exceptions::PyValueError::new_err(format!(
-            "unknown mode '{}', expected 'recent', 'keyword', 'semantic', or 'cascade'",
+            "unknown mode '{}', expected 'recent', 'keyword', or 'wiki'",
             other
         ))),
     }
@@ -221,9 +218,9 @@ impl PyMemoryManager {
         }
     }
 
-    /// Whether semantic (embedding-based) search is available.
-    fn semantic_enabled(&self) -> bool {
-        self.inner.semantic_enabled()
+    /// Whether wiki (LLM-based) recall is enabled.
+    fn wiki_enabled(&self) -> bool {
+        self.inner.wiki_enabled()
     }
 
     /// Store a memory entry.
@@ -346,7 +343,47 @@ impl PyMemoryManager {
             .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(format!("forget failed: {}", e)))
     }
 
+    /// Rebuild the wiki index for a scope (PRD §8.1).
+    ///
+    /// The index is a derived projection (id/title/summary/tags/aliases)
+    /// rebuilt lazily from the current graph(s).
+    #[pyo3(signature = (scope = "all"))]
+    fn rebuild_index(&self, scope: &str, py: Python<'_>) -> PyResult<Py<PyDict>> {
+        let scope = parse_scope(scope)?;
+        let index = self.inner.rebuild_index(scope).map_err(|e| {
+            pyo3::exceptions::PyRuntimeError::new_err(format!("rebuild_index failed: {}", e))
+        })?;
+        let dict = PyDict::new(py);
+        dict.set_item("entries", index.entries.len())?;
+        Ok(dict.into())
+    }
+
+    /// Batch-enrich `enriched=false` memories via the wiki assistant (PRD §8.1).
+    ///
+    /// `limit == 0` means unlimited.  Returns the number of entries enriched;
+    /// requires the manager to have a wiki assistant attached (otherwise 0).
+    #[pyo3(signature = (scope = "all", limit = 0))]
+    fn enrich<'py>(
+        &self,
+        scope: &str,
+        limit: usize,
+        py: Python<'py>,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        let scope = parse_scope(scope)?;
+        let inner = self.inner.clone();
+        pyo3_async_runtimes::tokio::future_into_py::<_, Py<PyAny>>(py, async move {
+            let count = inner.backfill_enrich(scope, limit).await.map_err(|e| {
+                pyo3::exceptions::PyRuntimeError::new_err(format!("enrich failed: {}", e))
+            })?;
+            Python::with_gil(|py| {
+                let dict = PyDict::new(py);
+                dict.set_item("count", count)?;
+                Ok(dict.into_any().unbind())
+            })
+        })
+    }
+
     fn __repr__(&self) -> String {
-        format!("MemoryManager(semantic={})", self.inner.semantic_enabled())
+        format!("MemoryManager(wiki={})", self.inner.wiki_enabled())
     }
 }

@@ -433,21 +433,6 @@ impl FoxAgentSdkConfig {
                 self.global_agents_md_path = Some(expand(path_str));
             }
 
-            if let Some(ref path) = self.memory.embedding_model_path
-                && let Some(path_str) = path.to_str()
-                && path_str.starts_with("~")
-            {
-                self.memory.embedding_model_path = Some(expand(path_str));
-            }
-
-            // Also expand memory.embedding_cache_dir
-            if let Some(ref path) = self.memory.embedding_cache_dir
-                && let Some(path_str) = path.to_str()
-                && path_str.starts_with("~")
-            {
-                self.memory.embedding_cache_dir = Some(expand(path_str));
-            }
-
             if let Some(base_dir_str) = self.artifact_store.base_dir.to_str()
                 && base_dir_str.starts_with("~")
             {
@@ -639,33 +624,26 @@ pub enum ContradictionPolicy {
 pub struct MemoryConfig {
     /// Whether memory retrieval is enabled
     pub enabled: bool,
-    /// Whether semantic embedding generation and recall are enabled.
-    pub embedding_enabled: bool,
-    /// Local directory containing a pre-downloaded embedding model.
-    /// If not provided, the SDK will use `embedding_model_id` and may download
-    /// it from Hugging Face or the configured mirror.
-    pub embedding_model_path: Option<std::path::PathBuf>,
-    /// Hugging Face repo id for the embedding model.
-    pub embedding_model_id: String,
-    /// Optional custom Hugging Face endpoint. Supports mirrors such as
-    /// `https://hf-mirror.com/`.
-    pub embedding_hf_endpoint: Option<String>,
-    /// Optional Hugging Face token for gated or rate-limited downloads.
-    pub embedding_hf_token: Option<String>,
-    /// Optional local cache directory for downloaded embedding models.
-    pub embedding_cache_dir: Option<std::path::PathBuf>,
-    /// Whether the SDK should attempt to download the model when
-    /// `embedding_model_path` is not provided.
-    pub auto_download_embedding_model: bool,
-    /// Whether to enable local ANN indexing for semantic recall.
-    /// When enabled, the SDK builds a local HNSW index file next to the graph
-    /// (e.g. `global.ann.bin`) and uses it to narrow candidates before exact scoring.
-    pub ann_enabled: bool,
-    /// Minimum number of embedded memories required before using ANN.
-    pub ann_min_vectors: usize,
-    /// Candidate multiplier for ANN search. Actual retrieved candidates are
-    /// `limit * ann_candidate_multiplier` (bounded by available vectors).
-    pub ann_candidate_multiplier: usize,
+
+    // ── Wiki mode ──
+    /// Enable LLM wiki retrieval (query expansion / rerank / link discovery).
+    pub wiki_enabled: bool,
+    /// Whether to asynchronously LLM-enrich entries after write
+    /// (title / summary / aliases / wiki links).
+    pub enrich_on_write: bool,
+    /// Enable LLM query expansion (disabled → pure lexical recall).
+    pub query_expansion_enabled: bool,
+    /// Enable LLM rerank (disabled → truncate by lexical score).
+    pub rerank_enabled: bool,
+    /// Lexical prefilter candidate count = max_results × this multiplier.
+    pub rerank_candidate_multiplier: usize,
+    /// Whether to discover [[links]] to existing entries on write.
+    pub link_discovery_enabled: bool,
+    /// Character budget for injected MemoryIndex.
+    pub index_budget_chars: usize,
+    /// Lexical dedupe overlap ratio threshold (title/alias/tag/content overlap).
+    pub dedupe_min_overlap_ratio: f32,
+
     /// Maximum candidate memories retrieved per query (before scoring)
     pub max_candidates: usize,
     /// Maximum results returned after scoring and ranking
@@ -697,12 +675,6 @@ pub struct MemoryConfig {
     pub auto_extract_message_window: usize,
     /// Max number of extracted memories to process per turn.
     pub auto_extract_max_items_per_turn: usize,
-    /// Similarity threshold for duplicate detection.
-    pub dedupe_similarity_threshold: f32,
-    /// Similarity threshold used when grouping memories into clusters.
-    pub cluster_similarity_threshold: f32,
-    /// Minimum number of members required to keep a generated cluster.
-    pub cluster_min_members: usize,
     /// Policy to apply when contradiction is detected.
     pub contradiction_policy: ContradictionPolicy,
     /// Confidence decay applied when contradiction policy is downgrade.
@@ -711,24 +683,20 @@ pub struct MemoryConfig {
     pub retention_days: Option<u64>,
     /// Optional per-scope maximum number of memories retained on disk.
     pub memory_size_limit: Option<usize>,
-    /// Automatically rebuild embeddings when the configured model/version changes.
-    pub rebuild_on_model_change: bool,
 }
 
 impl Default for MemoryConfig {
     fn default() -> Self {
         Self {
             enabled: false,
-            embedding_enabled: true,
-            embedding_model_path: None,
-            embedding_model_id: "Qwen/Qwen3-Embedding-0.6B".to_string(),
-            embedding_hf_endpoint: None,
-            embedding_hf_token: None,
-            embedding_cache_dir: None,
-            auto_download_embedding_model: false,
-            ann_enabled: false,
-            ann_min_vectors: 256,
-            ann_candidate_multiplier: 8,
+            wiki_enabled: true,
+            enrich_on_write: true,
+            query_expansion_enabled: true,
+            rerank_enabled: true,
+            rerank_candidate_multiplier: 5,
+            link_discovery_enabled: true,
+            index_budget_chars: 1_200,
+            dedupe_min_overlap_ratio: 0.6,
             max_candidates: 30,
             max_results: 10,
             injection_max_chars: 1_500,
@@ -743,14 +711,10 @@ impl Default for MemoryConfig {
             auto_promote_target: AutoExtractScope::Project,
             auto_extract_message_window: 6,
             auto_extract_max_items_per_turn: 4,
-            dedupe_similarity_threshold: 0.92,
-            cluster_similarity_threshold: 0.9,
-            cluster_min_members: 2,
             contradiction_policy: ContradictionPolicy::MarkContradictionEdge,
             contradiction_confidence_decay: 0.2,
             retention_days: None,
             memory_size_limit: None,
-            rebuild_on_model_change: false,
         }
     }
 }

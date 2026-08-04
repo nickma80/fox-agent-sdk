@@ -340,17 +340,17 @@ fn try_flexible_match(content: &str, old_string: &str) -> Result<String, ToolErr
     }
 
     // Close-but-not-exact window: guide the model with the location
-    if let Some((start_line, matched)) = best {
-        if matched as f64 / old_lines.len() as f64 >= 0.5 {
-            return Err(ToolError::Message {
-                message: format!(
-                    "old_string not found exactly. Closest match around line {start_line} \
-                     ({matched}/{} lines matched). The file may have changed since the \
-                     model last read it — use the read tool to fetch the current content.",
-                    old_lines.len()
-                ),
-            });
-        }
+    if let Some((start_line, matched)) = best
+        && matched as f64 / old_lines.len() as f64 >= 0.5
+    {
+        return Err(ToolError::Message {
+            message: format!(
+                "old_string not found exactly. Closest match around line {start_line} \
+                 ({matched}/{} lines matched). The file may have changed since the \
+                 model last read it — use the read tool to fetch the current content.",
+                old_lines.len()
+            ),
+        });
     }
 
     Err(ToolError::Message {

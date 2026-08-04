@@ -126,10 +126,10 @@ fn check_retry_after_deny(events: &[AgentEvent]) -> Vec<RuleViolation> {
                 call_id, output, ..
             } if output.is_error => {
                 let t = &output.text;
-                if t.contains("denied") || t.contains("blocked") || t.contains("Deny") {
-                    if let Some(name) = tool_names.get(call_id) {
-                        last_denied_tool = Some(name.clone());
-                    }
+                if (t.contains("denied") || t.contains("blocked") || t.contains("Deny"))
+                    && let Some(name) = tool_names.get(call_id)
+                {
+                    last_denied_tool = Some(name.clone());
                 }
             }
             _ => {}

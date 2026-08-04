@@ -198,8 +198,10 @@ mod tests {
 
     #[test]
     fn test_render_with_objective() {
-        let mut status = AgentStatus::default();
-        status.current_objective = "Implement Phase A".to_string();
+        let status = AgentStatus {
+            current_objective: "Implement Phase A".to_string(),
+            ..Default::default()
+        };
         let rendered = status.render().unwrap();
         assert!(rendered.contains("Implement Phase A"));
         assert!(rendered.contains("# Task Status"));
@@ -209,33 +211,37 @@ mod tests {
 
     #[test]
     fn test_render_with_turn_only() {
-        let mut status = AgentStatus::default();
-        status.turn = 5;
+        let status = AgentStatus {
+            turn: 5,
+            ..Default::default()
+        };
         let rendered = status.render().unwrap();
         assert!(rendered.contains("| Turn"), "should have runtime table");
     }
 
     #[test]
     fn test_render_with_plan_steps() {
-        let mut status = AgentStatus::default();
-        status.current_objective = "Refactor context".to_string();
-        status.plan_steps = vec![
-            PlanStepStatus {
-                description: "Phase A: Status Bar".to_string(),
-                status: StepStatus::Done,
-                tool_calls: 3,
-            },
-            PlanStepStatus {
-                description: "Phase B: L2 Compression".to_string(),
-                status: StepStatus::InProgress,
-                tool_calls: 1,
-            },
-            PlanStepStatus {
-                description: "Phase C: L3 Summary".to_string(),
-                status: StepStatus::Pending,
-                tool_calls: 0,
-            },
-        ];
+        let status = AgentStatus {
+            current_objective: "Refactor context".to_string(),
+            plan_steps: vec![
+                PlanStepStatus {
+                    description: "Phase A: Status Bar".to_string(),
+                    status: StepStatus::Done,
+                    tool_calls: 3,
+                },
+                PlanStepStatus {
+                    description: "Phase B: L2 Compression".to_string(),
+                    status: StepStatus::InProgress,
+                    tool_calls: 1,
+                },
+                PlanStepStatus {
+                    description: "Phase C: L3 Summary".to_string(),
+                    status: StepStatus::Pending,
+                    tool_calls: 0,
+                },
+            ],
+            ..Default::default()
+        };
         let rendered = status.render().unwrap();
         assert!(rendered.contains("[x] Phase A: Status Bar"));
         assert!(rendered.contains("[~] Phase B: L2 Compression"));
@@ -245,12 +251,14 @@ mod tests {
 
     #[test]
     fn test_render_runtime_stats() {
-        let mut status = AgentStatus::default();
-        status.current_objective = "Test".to_string();
-        status.turn = 10;
-        status.tools_called = 42;
-        status.compactions = 3;
-        status.elapsed_secs = 125;
+        let status = AgentStatus {
+            current_objective: "Test".to_string(),
+            turn: 10,
+            tools_called: 42,
+            compactions: 3,
+            elapsed_secs: 125,
+            ..Default::default()
+        };
         let rendered = status.render().unwrap();
         assert!(rendered.contains("| Turn"), "should have runtime table");
         assert!(rendered.contains("2m 5s"), "should format elapsed time");
@@ -258,10 +266,12 @@ mod tests {
 
     #[test]
     fn test_render_drift_warning() {
-        let mut status = AgentStatus::default();
-        status.current_objective = "Search codebase".to_string();
-        status.consecutive_auto_turns = 4;
-        status.auto_turn_limit = 5;
+        let status = AgentStatus {
+            current_objective: "Search codebase".to_string(),
+            consecutive_auto_turns: 4,
+            auto_turn_limit: 5,
+            ..Default::default()
+        };
         let rendered = status.render().unwrap();
         assert!(rendered.contains("⚠️"), "should show drift warning");
         assert!(rendered.contains("WARNING"));
@@ -270,10 +280,12 @@ mod tests {
 
     #[test]
     fn test_render_no_drift_warning_below_threshold() {
-        let mut status = AgentStatus::default();
-        status.current_objective = "Search codebase".to_string();
-        status.consecutive_auto_turns = 2;
-        status.auto_turn_limit = 5;
+        let status = AgentStatus {
+            current_objective: "Search codebase".to_string(),
+            consecutive_auto_turns: 2,
+            auto_turn_limit: 5,
+            ..Default::default()
+        };
         let rendered = status.render().unwrap();
         assert!(!rendered.contains("⚠️"), "should NOT show drift warning");
         assert!(!rendered.contains("WARNING"));

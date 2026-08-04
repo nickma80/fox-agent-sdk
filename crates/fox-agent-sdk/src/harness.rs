@@ -1,7 +1,7 @@
 use fox_agent_core::{
     ContextInfo, FilePlanningStore, FileSessionStore, FoxAgentSdkConfig, HooksConfig,
     InjectedInterrupt, InterruptManager, McpServerProfile, McpToolDescriptorSnapshot,
-    MemoryStateEvent, PermissionResult, PlanningStore, Role, SessionStore, SkillInfo,
+    MemoryStateEvent, Model, PermissionResult, PlanningStore, Role, SessionStore, SkillInfo,
     SkillRegistry, SplitPrompt, Tool, ToolContext, ToolDefinition, ToolError, ToolOutput,
     WorkspaceSandbox, set_default_planning_store,
 };
@@ -248,6 +248,17 @@ impl Harness {
             routing_engine: RoutingPolicyEngine::new(routing_cfg),
             governance_metrics: GovernanceMetrics::new(),
         }
+    }
+
+    /// Attach the LLM wiki assistant derived from the model's provider
+    /// (PRD §6 Phase 6).
+    ///
+    /// Replaces `memory_manager` with a copy that carries a
+    /// `ProviderBackedWikiAssistant` built from `model.provider()`.  No-op when
+    /// the model does not expose a direct provider.  Enables LLM query
+    /// expansion / rerank / enrich / dedupe in the memory pipeline.
+    pub fn attach_wiki_assistant(&mut self, model: Arc<dyn Model>) {
+        self.memory_manager = self.memory_manager.clone().with_wiki_assistant(model);
     }
 
     pub async fn register_tool(&self, tool: Arc<dyn Tool>) {

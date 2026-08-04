@@ -14,6 +14,25 @@
 #
 # ─────────────────────────────────────────────────────────────
 
+# ── Model ───────────────────────────────────────────────────
+
+# Default model id.  Ignored when AgentBuilder::model_id() is called.
+# Falls back to "gpt-4o" when neither is set.
+default_model = "deepseek-v4-flash"
+
+# ── Storage ─────────────────────────────────────────────────
+
+# Root directory for all persisted data.  Relative paths are resolved
+# against the working_dir provided to AgentBuilder.
+# Subdirectories: sessions/  planning/  memory/
+storage_dir = ".fox-agent-sdk"   # default
+
+# Persist session snapshots at key lifecycle points.
+auto_snapshot = true             # default
+
+# Optional path to a global AGENTS.md for domain-level instructions.
+# global_agents_md_path = "/path/to/AGENTS.md"
+
 # ── Provider ────────────────────────────────────────────────
 # LLM provider configuration.  When set, the builder auto-creates
 # the provider from this block — no need to call .provider_config().
@@ -35,43 +54,21 @@ BearerToken = "sk-your-api-key-here"
 # Optional: extra HTTP headers sent with every request
 # default_headers = []
 
-# ── Model ───────────────────────────────────────────────────
-
-# Default model id.  Ignored when AgentBuilder::model_id() is called.
-# Falls back to "gpt-4o" when neither is set.
-default_model = "deepseek-v4-flash"
-
-# ── Storage ─────────────────────────────────────────────────
-
-# Root directory for all persisted data.  Relative paths are resolved
-# against the working_dir provided to AgentBuilder.
-# Subdirectories: sessions/  planning/  memory/
-storage_dir = ".fox-agent-sdk"   # default
-
-# Persist session snapshots at key lifecycle points.
-auto_snapshot = true             # default
-
-# Optional path to a global AGENTS.md for domain-level instructions.
-# global_agents_md_path = "/path/to/AGENTS.md"
-
 # ── Memory ──────────────────────────────────────────────────
 
 [memory]
 enabled = false                  # default: false — cross-session memory
 
-# Embedding model (used for semantic recall)
-embedding_enabled = true         # default
-embedding_model_id = "Qwen/Qwen3-Embedding-0.6B"
-# embedding_model_path = "/local/path/to/model"  # pre-downloaded model
-# embedding_hf_endpoint = "https://hf-mirror.com/"  # HF mirror for China
-# embedding_cache_dir = "/path/to/hf-cache"
-# embedding_hf_token = "hf_xxx"  # for gated models
-auto_download_embedding_model = false  # default: false (don't auto-download)
-
-# ANN (Approximate Nearest Neighbor) index
-ann_enabled = false              # default
-ann_min_vectors = 256            # min embeddings before using ANN
-ann_candidate_multiplier = 8     # candidates = limit × multiplier
+# LLM wiki 模式（PRD §5）：语义召回由主 Agent LLM 完成（查询扩展 + 重排），
+# 不依赖 embedding/ANN。记忆 = 条目（title/summary/aliases/tags）+ [[链接]] + 索引。
+wiki_enabled = true              # default: true — 启用 LLM wiki 检索
+enrich_on_write = true           # default: true — 写入后后台 LLM 增强（title/summary/aliases/[[链接]]）
+query_expansion_enabled = true   # default: true — LLM 查询扩展（关闭则纯词汇召回）
+rerank_enabled = true            # default: true — LLM 重排（关闭则按词汇得分截断）
+rerank_candidate_multiplier = 5  # default: 5 — 词汇预筛候选数 = max_results × 倍数
+link_discovery_enabled = true    # default: true — 写入时发现到已有条目的 [[链接]]
+index_budget_chars = 1200        # default: 1200 — 注入的 MemoryIndex 摘要字符预算
+dedupe_min_overlap_ratio = 0.6   # default: 0.6 — 词重叠比例去重阈值（Jaccard）
 
 # Retrieval
 max_candidates = 30              # max candidates before scoring
@@ -86,14 +83,14 @@ verify_relevance = false         # default
 
 # Auto-extraction from conversation
 auto_extract = false             # default
-auto_extract_scope = "Project"   # "Project" or "Global"
+auto_extract_scope = "Project"   # "Session" | "Project" | "Global"
 auto_extract_message_window = 6  # recent messages for transcript
 auto_extract_max_items_per_turn = 4
 
-# Deduplication & clustering
-dedupe_similarity_threshold = 0.92
-cluster_similarity_threshold = 0.9
-cluster_min_members = 2
+# Auto-promotion of reinforced session memories (needs auto_extract_scope = "Session")
+auto_promote_enabled = false     # default — 自动提升高频会话记忆到更长寿命作用域
+auto_promote_strength_threshold = 3  # default — 增强次数达到该值即提升
+auto_promote_target = "Project"  # default — 提升目标作用域 ("Project" or "Global")
 
 # Contradiction handling
 contradiction_policy = "MarkContradictionEdge"  # Ignore | Supersede | DowngradeConfidence | MarkContradictionEdge
@@ -102,8 +99,6 @@ contradiction_confidence_decay = 0.2
 # Retention
 # retention_days = 90            # auto-delete memories older than N days
 # memory_size_limit = 10_000     # max memories per scope on disk
-
-rebuild_on_model_change = false  # re-embed when model/version changes
 
 # ── Compaction ──────────────────────────────────────────────
 

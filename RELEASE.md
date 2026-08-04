@@ -31,7 +31,7 @@ Fox Agent SDK 首个公开发布版本。面向 AI 应用开发的生产级 Agen
 - 联网工具：`websearch`（Web 搜索）、`webfetch`（网页抓取）
 - 代码理解：`lsp`（语言服务器协议）、`agentgrep`（语义代码搜索）
 - 规划工具：`goal`（长期目标 + 里程碑）、`plan`（依赖分解）、`todo`（即时任务）
-- Memory 管线：语义嵌入搜索 + 关键词回退 + HNSW ANN 向量加速；三层作用域隔离（Session / Project / Global）+ 记忆提升（手动 `promote` / 达阈值自动提升）
+- Memory 管线：LLM wiki 检索（查询扩展 + 词汇召回 + 重排 + BFS 图扩散），无 embedding；三层作用域隔离（Session / Project / Global）+ 记忆提升（手动 `promote` / 达阈值自动提升）
 - Skill 系统：兼容 Claude Code 技能文件（`.claude/skills/*.md`），按需加载
 - Plugin/Hook 系统：支持 Claude Code marketplace 插件的安装与发现
 - 高噪声工具输出自动外置到 Artifact Store（TTL + 多级配额 + LRU 淘汰），`artifact_read` 按需分页回读
@@ -63,7 +63,7 @@ Fox Agent SDK 首个公开发布版本。面向 AI 应用开发的生产级 Agen
 ## 基础设施
 
 - **配置管理**：TOML 配置文件 + 环境变量 + 全局代理（`~/.fox`）
-- **Memory 存储**：本地文件 + 向量索引（vectorlite / HNSW ANN）
+- **Memory 存储**：本地 JSON 文件（MemoryGraph + MemoryIndex）
 - **Compaction**：上下文压缩，防止 token 超限
 - **Artifact Store**：大体积中间信息外置存储（TTL、Session/Project/Global 三级配额、LRU 淘汰、GC）
 - **事件系统**：结构化 AgentEvent，支持录制与回放
@@ -89,7 +89,7 @@ Fox Agent SDK 首个公开发布版本。面向 AI 应用开发的生产级 Agen
 
 ## 已知限制
 
-- Memory 嵌入模型需在首次使用时自动下载（~600MB），下载期间语义搜索回退到关键词匹配；可通过 `embedding_model_path` / `embedding_cache_dir` 指定本地模型
+- Memory 语义检索复用主 Agent LLM（查询扩展/重排），无外部模型下载；LLM 不可用时自动回退纯词汇召回
 - Swarm 监管器尚未支持跨进程 Agent 分发
 - `fox-agent-py` 为内嵌 Python 绑定（pyo3），尚未发布独立 PyPI 包
 - 工具集部分依赖 `agentgrep`（Git 依赖），首次构建需拉取

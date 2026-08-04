@@ -255,15 +255,10 @@ fn explain_hit(hit: &RecallHit) -> String {
     let source = match hit.retrieval_source {
         RetrievalSource::Recent => "recent",
         RetrievalSource::Keyword => "keyword",
-        RetrievalSource::Semantic => "semantic",
-        RetrievalSource::SemanticAnn => "semantic-ann",
         RetrievalSource::CascadeSeed => "cascade-seed",
         RetrievalSource::CascadeGraph => "cascade-graph",
     };
     let mut parts = vec![format!("source={source}")];
-    if let Some(score) = hit.score_breakdown.semantic_score {
-        parts.push(format!("semantic={score:.2}"));
-    }
     if let Some(score) = hit.score_breakdown.keyword_score {
         parts.push(format!("keyword={score:.2}"));
     }
@@ -290,13 +285,13 @@ mod tests {
             entry,
             score,
             score_breakdown: ScoreBreakdown {
-                semantic_score: Some(score),
+                keyword_score: Some(score),
                 recency_score: 0.8,
                 trust_score: 1.0,
                 final_score: score,
                 ..Default::default()
             },
-            retrieval_source: RetrievalSource::Semantic,
+            retrieval_source: RetrievalSource::Keyword,
         }
     }
 
@@ -316,7 +311,7 @@ mod tests {
     fn display_prompt_includes_reason_summary() {
         let hits = vec![hit(MemoryCategory::Preference, "prefer concise rust", 0.97)];
         let display = format_recall_hits_display_prompt(&hits, 200, 2).unwrap();
-        assert!(display.contains("reason: source=semantic"));
+        assert!(display.contains("reason: source=keyword"));
         assert!(display.contains("final="));
     }
 }

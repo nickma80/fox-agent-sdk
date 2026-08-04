@@ -95,14 +95,14 @@ let mut agent = AgentBuilder::new()
 
 ### 记忆系统
 
-跨会话长期记忆，支持语义召回（embedding 向量）和图结构级联检索：
+跨会话长期记忆，支持 LLM wiki 语义召回（无 embedding）和图结构级联检索：
 
 - **三级作用域** — Session（临时草稿）/ Project（项目知识库）/ Global（用户偏好），物理文件隔离
-- **自动提取** — LLM 从对话中抽取候选记忆 → 去重 → 冲突检测 → 写入
-- **语义召回** — Cascade 模式（Semantic + Keyword + BFS 图扩展），可选 HNSW ANN 加速
+- **自动提取** — LLM 从对话中抽取候选记忆 → 去重 → 冲突检测 → 写入（后台 enrich 生成 title/aliases/链接）
+- **语义召回** — Wiki 模式（LLM 查询扩展 + 词汇预筛 + 重排 + BFS 图扩散）
 - **上下文注入** — 每轮开始前后台异步召回，按 category 分组 + 字符/条数预算控制后注入 `dynamic_part`
 - **自动提升** — 跨多轮被反复强化的 Session 记忆自动提升到 Project/Global
-- **治理** — 保留策略、大小限制、模型变化自动重嵌、审计日志、GC 清理
+- **治理** — 保留策略、大小限制、索引重建、审计日志、GC 清理
 
 ```toml
 [memory]

@@ -143,16 +143,16 @@ let defs = executor.tool_definitions().await;
 │                         MemoryManager                             │
 │  · 双作用域: Project (按工作目录哈希) / Global (全局)              │
 │  · 存储格式: MemoryGraph v2 (HashMap-based JSON)                  │
-│  · 重复检测: 384维 embedding 余弦相似度 (≥0.85)                    │
-│  · 索引: search_text (归一化 content + tags 的纯文本)              │
-│  · 三层管线: Search(embedding) → Verify(sidecar) → Inject(prompt) │
+│  · 重复检测: 词重叠比例 + 可选 LLM 判断                            │
+│  · 索引: search_text + MemoryIndex (title/tags/aliases/summary)   │
+│  · 三层管线: Search(wiki) → Verify(sidecar) → Inject(prompt)      │
 └────┬───────────────────────┬────────────────────────────────────┘
      │                       │
      ▼                       ▼
 ┌──────────────┐    ┌──────────────────┐
 │  MemoryGraph  │    │  Sidecar          │
 │  · tags 节点   │    │  (外部 LLM 模型)  │
-│  · clusters    │    │                  │
+│  · [[链接]]    │    │                  │
 │  · 6种边类型   │    │  · 相关性验证     │
 │  · BFS 级联    │    │  · 矛盾检测       │
 │    cascade     │    │  · 记忆提取       │
@@ -186,12 +186,12 @@ BFS `cascade_retrieve` 通过标签传播和边权重衰减发现间接相关记
 
 | 类型 | 说明 |
 |------|------|
-| `MemoryEntry` | 单条记忆: id, category, content, tags, search_text, embedding, confidence, trust... |
+| `MemoryEntry` | 单条记忆: id, category, content, tags, search_text, title/summary/aliases (LLM), confidence, trust... |
 | `MemoryCategory` | Fact / Preference / Entity / Correction / Custom |
 | `TrustLevel` | High (用户明确) / Medium (观察) / Low (推断) |
 | `MemoryScope` | Session / Project / Global / All |
-| `MemoryGraph` | 有向图: memories, tags, clusters, edges, reverse_edges |
-| `EdgeKind` | HasTag / InCluster / RelatesTo / Supersedes / Contradicts / DerivedFrom |
+| `MemoryGraph` | 有向图: memories, tags, edges, reverse_edges |
+| `EdgeKind` | HasTag / RelatesTo / Supersedes / Contradicts / DerivedFrom |
 
 ---
 
@@ -200,7 +200,7 @@ BFS `cascade_retrieve` 通过标签传播和边权重衰减发现间接相关记
 #### 决策说明
 
 1. **存储路径 → 配置化**：`FoxAgentSdkConfig.storage_dir` 统一管理，memory 存于 `{storage_dir}/memory/`
-2. **Embedding 模型路径 → 配置化**：`FoxAgentSdkConfig.memory.embedding_model_path`，缺省尝试内置 ONNX
+2. **语义能力 → Provider**：查询扩展/重排/enrich 通过 `fox_agent_core::Provider` trait 调用主 agent 的模型（无需独立 embedding 模型）
 3. **Sidecar (Haiku) → Provider 模型**：不使用 babycode 的独立 Haiku 调用，改为通过 `fox_agent_core::Provider` trait 调用主 agent 的模型做相关性验证和记忆提取
 4. **跳过 MemoryStore**：只迁移 `MemoryGraph (v2)`，不做 `from_legacy_store` 迁移
 
@@ -212,9 +212,9 @@ pub struct MemoryConfig {
     pub enabled: bool,
     /// 记忆存储根目录。None = 默认 ~/.fox-agent/memory/
     pub storage_dir: Option<PathBuf>,
-    /// embedding 模型文件路径 (ONNX)。None = 尝试内置模型或禁用 embedding
-    pub embedding_model_path: Option<PathBuf>,
-    /// 最大候选记忆数 (embedding/keyword 检索)
+    /// 启用 wiki 检索（查询扩展/重排/enrich）
+    pub wiki_enabled: bool,
+    /// 最大候选记忆数 (wiki/keyword 检索)
     pub max_candidates: usize,        // default: 30
     /// 最终返回的最大结果数
     pub max_results: usize,            // default: 10
@@ -286,7 +286,7 @@ pub trait MemoryExtractor: Send + Sync {
 fox-agent-core/src/memory/
 ├── mod.rs           # MemoryManager (无 Sidecar 依赖的纯逻辑)
 ├── types.rs         # MemoryEntry, MemoryCategory, TrustLevel, MemoryScope, MemoryStore (仅保留 MemoryGraph 兼容)
-├── graph.rs         # MemoryGraph v2, Edge, EdgeKind, TagEntry, ClusterEntry (无 from_legacy_store)
+├── graph.rs         # MemoryGraph v2, Edge, EdgeKind, TagEntry (无 from_legacy_store)
 ├── storage.rs       # 文件持久化 (JSON), 读/写/缓存, GC 清理
 ├── ranking.rs       # top_k_by_score, top_k_by_ord (纯函数)
 ├── prompt.rs        # format_entries_for_prompt, format_relevant_prompt
@@ -304,8 +304,8 @@ fox-agent-core/src/memory/
 |------|----------|---------------|
 | 存储 API | `jcode_storage::read_json` (自动备份恢复) | `read_json_with_backup()` 自实现 |
 | ID 生成 | `jcode_core::id::new_id("mem")` | `uuid::Uuid::new_v4()` |
-| embedding | `crate::embedding::embed()` | 可选 feature gate `memory-embeddings` |
-| embedding 模型 | 硬编码 MiniLM ONNX | 配置化 `embedding_model_path` |
+| 语义召回 | babycode 向量嵌入 | LLM wiki（查询扩展 + 词汇预筛 + 重排），复用 Provider |
+| 语义模型 | 独立 embedding 模型 | 复用主 Agent `Provider`（`model_for_memory_tasks`） |
 | logging | `crate::harness::logging` | `tracing` crate |
 | Sidecar | 独立 Haiku 模型 | `Provider` trait 注入 |
 | 事件 | `MemoryEventKind` + 全局变量 | `MemoryStateEvent` enum 扩展 + `tracing::event` |
@@ -363,16 +363,15 @@ impl MemoryManager {
 - 项目路径使用 SHA256 哈希的短前缀 (前 16 位) 作为文件名
 - Graph 加载时尝试缓存命中，miss 后读 JSON
 
-#### 无 embedding 的回退
+#### LLM 不可用的回退
 
-当 `embedding_model_path` 未配置或加载失败时，`recall(mode: "semantic")` 回退到关键词搜索：
+当 `wiki_enabled` 未启用或 LLM 调用失败时，`recall(mode: "wiki")` 回退到「词汇预筛 + 图扩散」：
 
 ```rust
 pub enum RecallMode {
     Recent,     // 按 updated_at 倒序
     Keyword,    // 纯文本 search_text 包含
-    Semantic,   // embedding 余弦相似度 (需要 feature)
-    Cascade,    // embedding + BFS 图扩散 (需要 feature)
+    Wiki,       // LLM wiki：查询扩展 + 词汇召回 + 图扩散
 }
 ```
 
@@ -383,8 +382,8 @@ pub enum RecallMode {
 从 `jcode-memory-types/src/graph.rs` 移植，仅保留 v2 版本 (graph_version = 2)：
 
 - ✅ `MemoryGraph` — HashMap 存储的图结构
-- ✅ `EdgeKind` — HasTag / InCluster / RelatesTo / Supersedes / Contradicts / DerivedFrom
-- ✅ `TagEntry`, `ClusterEntry` — 标签和聚类节点
+- ✅ `EdgeKind` — HasTag / RelatesTo / Supersedes / Contradicts / DerivedFrom
+- ✅ `TagEntry` — 标签节点
 - ✅ `cascade_retrieve()` — BFS 级联检索 (带权重衰减)
 - ❌ `from_legacy_store()` — 不迁移
 - ❌ `GRAPH_VERSION` 版本检测逻辑 — 始终为 v2
@@ -394,7 +393,6 @@ pub struct MemoryGraph {
     pub graph_version: u32,         // 固定 2
     pub memories: HashMap<String, MemoryEntry>,
     pub tags: HashMap<String, TagEntry>,
-    pub clusters: HashMap<String, ClusterEntry>,
     pub edges: HashMap<String, Vec<Edge>>,
     pub reverse_edges: HashMap<String, Vec<String>>,
     pub metadata: GraphMetadata,
@@ -416,7 +414,7 @@ pub struct MemoryTool {
 
 支持 action:
 - `remember` — 存储 (content, category, scope=[session|project|global], tags)
-- `recall` — 检索 (query, mode=[recent|keyword|semantic|cascade], limit, scope)
+- `recall` — 检索 (query, mode=[recent|keyword|wiki], limit, scope)
 - `search` — 文本搜索 (query, scope)
 - `list` — 列出所有 (scope)
 - `forget` — 删除 (id)
@@ -425,6 +423,12 @@ pub struct MemoryTool {
 - `link` — 链接记忆 (from_id, to_id, weight)
 - `related` — 图遍历 (id, depth)
 - `stats` — 图统计信息
+- `reindex` — 重建图内搜索字段索引 (scope)
+- `rebuild_index` — 重建 MemoryIndex 并持久化 `{graph}.index.json` (scope)
+- `enrich` — 批量补增强 `enriched=false` 条目 (scope, limit=0 不限；需装配 wiki assistant)
+- `export` — 导出 wiki (index.md / pages/*.md)
+- `import` — 导入 (id, content, ...)
+- `compact` — 图压缩 (older_than_hours)
 
 ---
 
