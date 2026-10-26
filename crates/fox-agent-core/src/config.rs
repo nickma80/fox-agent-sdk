@@ -193,6 +193,13 @@ pub struct FoxAgentSdkConfig {
     /// (e.g. a coding agent, a trading agent) that ships with its own
     /// global domain instructions.
     pub global_agents_md_path: Option<std::path::PathBuf>,
+
+    /// Observability export (OTel GenAI) configuration.
+    ///
+    /// Disabled by default; when enabled, events are exported to an OTLP/HTTP
+    /// endpoint following the OTel GenAI semantic conventions plus `fox_agent.*`
+    /// extensions. No dedicated platform exporters are provided.
+    pub observability: OtelGenAiConfig,
 }
 
 impl Default for FoxAgentSdkConfig {
@@ -215,6 +222,7 @@ impl Default for FoxAgentSdkConfig {
             plugins: PluginsConfig::default(),
             proxy: None,
             global_agents_md_path: None,
+            observability: OtelGenAiConfig::default(),
         }
     }
 }
@@ -1439,6 +1447,71 @@ impl Default for McpConfig {
             default_risk_level: McpRiskLevel::High,
             expose_resources: false,
             max_resources_per_injection: default_max_resources(),
+        }
+    }
+}
+
+/// Observability export configuration (OTel GenAI semantic conventions).
+///
+/// The SDK supports **only** OTel GenAI + `fox_agent.*` extensions — no
+/// dedicated platform exporters (fox-smith / Langfuse) are bundled. Any OTel
+/// backend can be used as the sink via OTLP/HTTP.
+///
+/// When `enabled = false` (default), the export pipeline is never spawned and
+/// the SDK incurs zero overhead. Endpoint and identity must be configured
+/// explicitly in the config file; nothing is read from the environment.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct OtelGenAiConfig {
+    /// Master switch for the observability export pipeline.
+    pub enabled: bool,
+    /// OTLP/HTTP base URL (e.g. `http://127.0.0.1:4318`).
+    ///
+    /// Required when `enabled = true`. If the URL already ends with
+    /// `/v1/traces` it is used as-is, otherwise `/v1/traces` is appended.
+    pub endpoint: Option<String>,
+    /// `service.name` resource attribute.
+    pub service_name: String,
+    /// `gen_ai.agent.name` span attribute.
+    pub agent_name: String,
+    /// `gen_ai.agent.id` span attribute (optional).
+    pub agent_id: Option<String>,
+    /// Sampling ratio (0.0–1.0), applied as a hash of the trace id.
+    pub sample_rate: f64,
+    /// Batch flush size (number of spans per HTTP request).
+    pub batch_size: usize,
+    /// Batch flush interval in milliseconds.
+    pub flush_interval_ms: u64,
+    /// HTTP export timeout in seconds.
+    pub export_timeout_secs: u64,
+    /// Opt-In content capture: emit `gen_ai.output.messages` for chat spans.
+    pub capture_content: bool,
+    /// Maximum characters kept per captured content chunk.
+    pub max_content_chars: usize,
+    /// Offline disk queue directory used for retry/backfill after failures.
+    pub queue_dir: Option<std::path::PathBuf>,
+    /// Custom HTTP headers (e.g. `[["Authorization", "Bearer x"]]`).
+    pub headers: Vec<(String, String)>,
+}
+
+impl Default for OtelGenAiConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            endpoint: None,
+            service_name: "fox-agent".to_string(),
+            agent_name: "agent".to_string(),
+            agent_id: None,
+            sample_rate: 1.0,
+            batch_size: 100,
+            flush_interval_ms: 5000,
+            export_timeout_secs: 30,
+            capture_content: false,
+            max_content_chars: 65_536,
+            queue_dir: Some(std::path::PathBuf::from(
+                ".fox-agent-sdk/observability-queue",
+            )),
+            headers: Vec::new(),
         }
     }
 }

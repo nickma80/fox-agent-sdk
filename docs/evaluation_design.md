@@ -623,3 +623,146 @@ quality_judge = []   # 启用 TaskJudge 端到端测试
 - 需要额外配置 `cargo test --features swe_bench -- --ignored` 才能启用
 
 **建议**：Phase 2 后续可为 TaskJudge 集成一个轻量本地 Judge 模型（如 Ollama + llama3.2:1b），减少对云端 LLM 的依赖。
+
+---
+
+## 9. 观察性数据反向输出（OTel GenAI 语义约定）
+
+### 9.1 背景与目标
+
+当前 SDK 的评估与运行数据（`AgentEvent` 流、`EvalReport`、`TokenReport`）均为**进程内消费**（`EventRecorder` JSONL、`TaskJudge`、`BehaviorRuleEngine`）。为支持跨 session / 多机聚合、平台化评测（数据集 / 实验对比）、在线监控与人工反馈闭环，需要将事件流与评估结果**反向输出**到外部平台。
+
+本 SDK **只支持导出 OTel GenAI 语义约定**（含 `fox_agent.*` 扩展），不再内置任何专用 exporter（不再支持 fox-smith / Langfuse 专用协议）。任意 OTel 后端（Jaeger、Tempo、OTel Collector、Langfuse OTLP 端点等）均可作为落点：
+
+| 落点 | 定位 | 对接方式 |
+|------|------|----------|
+| **OTel GenAI + `fox_agent.*` 扩展** | 唯一导出协议 | OTLP/HTTP（`/v1/traces`，protobuf JSON 编码） |
+| 任意 OTel 后端（预留扩展） | 通用可观测 | 同一 OTLP 协议，无需专用实现 |
+
+**约束**：反向输出为**可选项、默认关闭**（`[observability].enabled = false`）。CI 门禁（§4）保持本地运行，不依赖外部服务；仅在显式配置启用时生效。
+
+### 9.2 架构：映射器与导出器分离的单路 OTel 管线
+
+```
+fox-agent-sdk 执行流
+      │ AgentEventTx (tokio mpsc)
+      ▼
+┌──────────────────────────────────────────────────────┐
+│ otel_genai 导出管线（配置门控，默认关闭，低侵入）        │
+│  ├── mapper.rs   AgentEvent → OTLP span（GenAI 约定）  │
+│  ├── otlp.rs     OTLP/HTTP JSON 线模型（序列化）        │
+│  ├── queue.rs    本地磁盘队列（离线补传，失败重试）       │
+│  └── mod.rs      OtelGenAiExporter（批量 flush + HTTP） │
+└──────────────────────────────────────────────────────┘
+```
+
+**关键设计**：统一 OTLP/HTTP 输出（protobuf JSON 编码，无 protobuf/tonic 重依赖）。映射器**无状态纯函数**（`AgentEvent` + 纳秒时间戳 → span 列表），导出器持有开放 span 状态；失败时落盘 `queue_dir`，下个周期补传。
+
+### 9.3 Span 映射（对齐最新 GenAI 语义约定）
+
+参考 [open-telemetry/semantic-conventions-genai](https://github.com/open-telemetry/semantic-conventions-genai)（`gen-ai-spans` / `gen-ai-agent-spans` / `gen-ai-events`）：
+
+**Span 命名**：`{gen_ai.operation.name} {实体名}`
+
+| 操作 | Span 名 | Kind | 关键属性 |
+|------|---------|------|----------|
+| 单轮 Agent 执行 | `invoke_agent {agent.name}` | `INTERNAL` | `gen_ai.operation.name=invoke_agent`、`gen_ai.agent.name`、`gen_ai.agent.id`、`gen_ai.conversation.id` |
+| LLM 推理 | `chat {model}` | `CLIENT` | `gen_ai.operation.name=chat`、`gen_ai.request.model`、`gen_ai.provider.name`、`gen_ai.usage.*` |
+| 工具调用 | `execute_tool {tool.name}` | `INTERNAL` | `gen_ai.operation.name=execute_tool`、`gen_ai.tool.name`、`gen_ai.tool.call.id` |
+| 子 Agent 委派 | `invoke_agent {agent.name}` | `INTERNAL` | 挂到父 turn span，`gen_ai.agent.id=subagent` |
+
+**核心属性**（`gen_ai.*`）：
+
+- 必填：`gen_ai.operation.name`、`gen_ai.provider.name`（`gen_ai.system` 已废弃，统一用 provider 名称，如 `deepseek`）
+- 用量：`gen_ai.usage.input_tokens` / `gen_ai.usage.output_tokens` / `gen_ai.usage.reasoning.output_tokens` / `gen_ai.usage.cache_creation.input_tokens` / `gen_ai.usage.cache_read.input_tokens`
+- 响应：`gen_ai.response.finish_reasons`（数组）、`gen_ai.response.id`
+- 会话：`gen_ai.conversation.id`；压缩上下文时 chat span 加 `gen_ai.conversation.compacted=true`
+- 工具：`gen_ai.tool.name` / `gen_ai.tool.type` / `gen_ai.tool.call.id`
+- 评估：`gen_ai.evaluation.name` / `gen_ai.evaluation.score.value`（double）/ `gen_ai.evaluation.score.label` / `gen_ai.evaluation.explanation`
+- 内容捕获（Opt-In，`capture_content=true` 时）：`gen_ai.output.messages`（结构化消息）
+- 错误：`error.type`
+
+**事件**（span events）：
+
+- `gen_ai.evaluation.result`：`TaskJudge` / `BehaviorRuleEngine` / `EvalReport` 结果 → 附加到被评估 span
+- `fox_agent.*` 扩展事件（非标准数据）：权限请求 `fox_agent.permission`、压缩 `fox_agent.compaction`、记忆注入 `fox_agent.memory.injected`、工件存取 `fox_agent.artifact.*`、规划进度 `fox_agent.plan.progress`、子 Agent 路由 `fox_agent.routing`、MCP 连接 `fox_agent.mcp.*`
+
+### 9.4 导出协议（OTLP/HTTP JSON）
+
+- 端点：`POST {endpoint}/v1/traces`（endpoint 为显式配置的 base URL，不依赖环境变量；已带 `/v1/traces` 时原样使用）
+- 编码：protobuf JSON 映射（`traceId` / `spanId` 为 hex 字符串、时间与 int64 为字符串、`kind` 枚举 `INTERNAL=1` / `CLIENT=3`、`status.code` 枚举 `UNSET=0 / OK=1 / ERROR=2`）
+- 认证：任意自定义 `headers`（如 `Authorization: Bearer <api_key>`）
+- 采样：`sample_rate`（0.0–1.0，对 traceId 哈希采样）；批量 `batch_size` / `flush_interval_ms`
+- 失败处理：HTTP 失败或超时 → 落盘 `queue_dir`（每 session 一个 JSONL 文件），下个 flush 周期重放补传
+- SDK 标识：`resource` 属性 `service.name`；`scope.name = "fox-agent-sdk"`、`scope.version = 当前 SDK 版本`
+
+### 9.5 AgentEvent → OTel Span 映射表
+
+| AgentEvent | OTel 产物 |
+|---|---|
+| `TurnStart` | 开启 `invoke_agent` span（Trace 根，`gen_ai.conversation.id` = session） |
+| `TurnEnd` | 关闭 `invoke_agent` span（`outcome=Failed` 时 `status.code=ERROR`） |
+| `ModelMessageStart / End` + `ModelTextDelta / ModelThinkingDelta` | `chat` span（`gen_ai.request.model` / `gen_ai.provider.name`，内容捕获时挂 `gen_ai.output.messages`） |
+| `ModelUsage` | 挂 `gen_ai.usage.*` 到最近一个未关闭的 chat span |
+| `ToolCallStart / End` | `execute_tool` span（`gen_ai.tool.name` / `gen_ai.tool.call.id`，错误时 `status.code=ERROR` + `error.type`） |
+| `Compaction` | 事件 `fox_agent.compaction` + 后续 chat span `gen_ai.conversation.compacted=true` |
+| `MemoryInjected / MemoryStateChanged` | 事件 `fox_agent.memory.injected` / `fox_agent.memory.state` |
+| `ArtifactStored / ArtifactRead / ArtifactGc` | 事件 `fox_agent.artifact.*` |
+| `PermissionRequest` | 事件 `fox_agent.permission` |
+| `PlanProgress / RoutingDecision` | 事件 `fox_agent.plan.progress` / `fox_agent.routing` |
+| `SubagentTaskStarted / Completed` | 嵌套 `invoke_agent` span（父 = turn span） |
+| `McpServerConnected / Disconnected` | 事件 `fox_agent.mcp.*` |
+| `Error` | 将当前活动 span 置为 `status.code=ERROR` + `error.type` |
+
+### 9.6 接入方式（低侵入）
+
+```rust
+// 复用事件订阅（AgentEventTx），不侵入 agent 主流程；未启用时管线整体零开销。
+let (tx, rx) = tokio::sync::mpsc::channel(256);
+let (ui_rx, export_rx) = otel_genai::fanout(rx);          // 事件扇出：UI 展示 + 导出各一份
+tokio::spawn(consume_for_ui(ui_rx));
+
+let otel_cfg = OtelGenAiConfig::from_toml(&cfg)?;         // 读 agent.toml [observability]
+OtelGenAiExporter::spawn(export_rx, otel_cfg, ExportIdentity {
+    provider_name: provider.name().into(),
+    model_id: agent.model_id().to_string(),
+    session_id: agent.harness().session_state.read().await.id.clone(),
+})?;
+
+agent.run_once_streaming(prompt, &tx).await?;
+```
+
+- 导出器消费 `AgentEvent` 流并**本地记录纳秒时间戳**，保证 span 起止时间精度（不依赖信封的秒级时间戳）。
+- 不启用 `[observability]` 时无需引入任何依赖或任务，对主流程零影响。
+
+### 9.7 配置（agent.toml）
+
+```toml
+[observability]                      # 全局开关，默认关闭
+enabled = false
+endpoint = "http://127.0.0.1:4318"   # OTLP/HTTP base URL（显式配置，不读环境变量）
+service_name = "fox-agent"           # resource: service.name
+agent_name = "math-tutor"            # gen_ai.agent.name
+agent_id = ""                        # gen_ai.agent.id（可选）
+sample_rate = 1.0                    # 0.0–1.0，按 traceId 哈希采样
+batch_size = 100                     # 批量 flush 条数
+flush_interval_ms = 5000             # 批量 flush 间隔
+export_timeout_secs = 30             # HTTP 导出超时
+capture_content = false              # Opt-In：捕获输出消息（gen_ai.output.messages）
+max_content_chars = 65536            # 单条内容截断上限
+queue_dir = ".fox-agent-sdk/observability-queue"   # 离线补传目录
+headers = []                         # 自定义请求头，如 [["Authorization", "Bearer xxx"]]
+```
+
+### 9.8 与评估体系的衔接
+
+- **离线评测**（`TaskJudge` / `BehaviorRuleEngine` / SWE-bench）的 `EvalReport` 结果通过 `OtelGenAiExporter::push_evaluation(...)` 输出为 `gen_ai.evaluation.result` 事件，附加到被评估的 span（默认挂 turn span），便于平台侧横向对比与回归趋势。
+- **CI 场景**（§4）默认不输出（保持"不依赖外部服务"约束）；仅显式配置启用。
+- 反向输出与本地评估**互补**：本地保实时性与确定性，平台保沉淀、协作与跨版本对比。
+
+### 9.9 实施计划
+
+| 阶段 | 内容 |
+|------|------|
+| P0（已完成） | `OtelGenAiConfig`（fox-agent-core）；`otel_genai/otlp.rs` 线模型；`otel_genai/mapper.rs`（invoke_agent / chat / execute_tool / 事件）；`OtelGenAiExporter` 批量 HTTP 导出；事件扇出；agent.toml 配置接入 |
+| P1 | `gen_ai.input.messages` 输入内容捕获（需事件流补充输入消息）；`fox_agent.*` 扩展事件收敛为注册表；配额与队列容量治理 |

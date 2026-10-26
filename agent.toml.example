@@ -342,3 +342,25 @@ auto_update_hours = 24
 # password = ""                       # optional basic auth
 # no_proxy = ["localhost", "*.local"] # hosts to bypass
 
+# ── Observability (OTel GenAI export) ───────────────────────
+#
+# Exports the event stream to any OTel backend via OTLP/HTTP following the
+# OTel GenAI semantic conventions (gen_ai.*) plus fox_agent.* extensions.
+# Disabled by default; when disabled the pipeline is never spawned and the
+# agent incurs zero overhead. No dedicated platform exporters are bundled.
+
+[observability]
+enabled = false
+endpoint = "http://127.0.0.1:4318"   # OTLP/HTTP base URL (explicit, not env)
+service_name = "fox-agent"           # resource: service.name
+agent_name = "agent"                 # gen_ai.agent.name
+agent_id = ""                        # gen_ai.agent.id (optional)
+sample_rate = 1.0                    # 0.0–1.0, sampled by trace id hash
+batch_size = 100                     # spans per HTTP request
+flush_interval_ms = 5000             # batch flush interval
+export_timeout_secs = 30             # HTTP timeout
+capture_content = false              # Opt-In: emit gen_ai.output.messages
+max_content_chars = 65536            # per-chunk content truncation limit
+queue_dir = ".fox-agent-sdk/observability-queue"   # offline retry queue
+# headers = [["Authorization", "Bearer <api_key>"]] # custom request headers
+

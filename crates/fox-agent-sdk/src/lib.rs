@@ -19,6 +19,7 @@ mod hooks;
 mod mcp;
 mod memory;
 mod noise;
+pub mod otel_genai;
 mod plugin;
 mod prompt_builder;
 mod replay_runner;
